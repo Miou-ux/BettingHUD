@@ -368,6 +368,7 @@ def simulate_day(
         # 4. Bilan financier
         profit_on_match = 0
         stake_amount = float(base_stake)
+        kelly_reco_stake = None
         if bet_placed_on:
             # execution-aware frictions
             if random.random() < float(market_unavailable_prob):
@@ -379,6 +380,15 @@ def simulate_day(
                     bet_odd = max(1.01, bet_odd * (1.0 - abs(float(slippage_pct))))
                 else:
                     bet_odd = max(1.01, bet_odd * (1.0 - abs(float(slippage_pct))))
+
+            # Recommended stake (independent guidance):
+            # quarter-Kelly, no stop, max 5% of current bankroll.
+            p_side = float(preds["p1_win_prob"]) if bet_placed_on == "P1" else float(preds["p2_win_prob"])
+            b_side = max(0.01, float(bet_odd) - 1.0)
+            kelly_full = max(0.0, (b_side * p_side - (1.0 - p_side)) / b_side)
+            kelly_reco_stake = float(stats["bankroll"]) * 0.25 * kelly_full
+            kelly_reco_stake = min(kelly_reco_stake, float(stats["bankroll"]) * 0.05)
+            kelly_reco_stake = max(0.0, kelly_reco_stake)
 
             # staking policy
             if staking_policy == "adaptive" or confidence_staking:
@@ -428,6 +438,7 @@ def simulate_day(
             "Cotes IA": f"{preds['p1_true_odd']:.2f} / {preds['p2_true_odd']:.2f}",
             "Pari Placé": player_bet if bet_placed_on else "Aucun",
             "Mise": round(stake_amount, 2) if bet_placed_on else None,
+            "Mise reco Kelly 1/4 (cap 5% BR)": round(kelly_reco_stake, 2) if kelly_reco_stake is not None else None,
             "Cote Pari": bet_odd if bet_placed_on else None,
             "EV (%)": f"{ev:.1f}%" if bet_placed_on else None,
             "Résultat": "✅ GAGNÉ" if bet_placed_on and is_bet_won else "❌ PERDU" if bet_placed_on else "-",

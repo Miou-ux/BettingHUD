@@ -144,7 +144,7 @@ class ProfileScraper:
 
         try:
             req = urllib.request.Request(url, headers=self.headers)
-            html = urllib.request.urlopen(req).read().decode('utf-8')
+            html = urllib.request.urlopen(req, timeout=6).read().decode('utf-8')
             soup = BeautifulSoup(html, 'html.parser')
 
             rank = 100

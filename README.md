@@ -1,72 +1,84 @@
 # BettingHUD (Tennis)
 
-Un système d'analyse de paris sportifs pour le tennis, utilisant le scraping pour récupérer les données live/cotes, et combinant modèles statistiques et Machine Learning pour détecter des écarts de cotes (Value Bets).
+Système d'analyse de paris sportifs pour le tennis : scraping live + cotes prematch,
+moteur statistique et modèle ML pour détecter les Value Bets.
+
+## Architecture des données (par tour)
+
+| Tour | Source primaire | Tables SQLite |
+|------|----------------|---------------|
+| **ATP** | [TennisMyLife](https://stats.tennismylife.org/) | `matches_recent` (`source='tennismylife'`) |
+| **WTA** | [Tennis Abstract / Sackmann](https://github.com/JeffSackmann/tennis_wta) | `wta_matches`, `rankings_wta_current` |
+
+Aucune cross-fallback : un joueur ATP introuvable dans TML ne retombe pas sur Sackmann ATP
+(et inversement). Cela garantit que la source affichée dans l'UI correspond bien à celle
+qui a alimenté les stats.
 
 ## Pré-requis
 
 - Python 3.9+
-- Les navigateurs pour Playwright (gérés automatiquement ci-dessous)
+- Playwright (pour les scrapers)
 
 ## Installation
 
-1. Cloner le repository ou récupérer le code
-2. Créer un environnement virtuel et installer les dépendances :
-   ```bash
-   python -m venv venv
-   # Sur Windows:
-   venv\Scripts\activate
-   # Sur macOS/Linux:
-   source venv/bin/activate
-   
-   pip install -r requirements.txt
-   playwright install
-   ```
+```bash
+python -m venv venv
+# Windows :
+venv\Scripts\activate
+# macOS/Linux :
+source venv/bin/activate
+
+pip install -r requirements.txt
+playwright install
+```
 
 ## Initialisation des données
 
-Avant de pouvoir utiliser les moteurs de ML ou de statistiques, vous devez ingérer les données historiques (depuis le repo open-source de Jeff Sackmann) et entraîner le modèle initial.
+```bash
+# 1. ATP -> sync TennisMyLife (~30s pour 2010-2026)
+python scripts/sync_tml_recent.py
+
+# 2. WTA -> ingestion Sackmann (matches + rankings)
+#    Pré-requis : data/raw/tennis_wta/wta_matches_*.csv + wta_rankings_current.csv
+python scripts/pipeline_quality.py
+
+# 3. (optionnel) re-train du modèle ML ATP
+python scripts/update_model_tml.py --min-year 2010
+```
+
+Pour purger les anciennes tables Sackmann ATP héritées (`matches`, `players`, `rankings_atp_current`) :
 
 ```bash
-# 1. Télécharge et prépare la base de données (data/bettinghud.db)
-python scripts/ingest_atp_data.py
-
-# 2. Entraîne le modèle Random Forest initial (crée models/rf_model_v1.pkl)
-python scripts/ml_model.py
+python scripts/purge_sackmann_atp.py
 ```
 
 ## Utilisation
 
-Plusieurs scripts sont disponibles pour tester les différentes briques du projet :
+```bash
+streamlit run app/dashboard.py
+```
 
-- **Dashboard Interactif (MVP) :**
-  ```bash
-  streamlit run app/dashboard.py
-  ```
-  *(Ouvre une interface web sur http://localhost:8501)*
+Scrapers :
 
-- **Démonstration dans le terminal :**
-  ```bash
-  python main.py
-  ```
-
-- **Scrapers :**
-  ```bash
-  # Scraper les cotes prematch du jour sur Flashscore
-  python scripts/scraper_prematch.py
-  
-  # Scraper le score en direct (Placeholder - nécessite un ID de match valide)
-  python scripts/scraper_live.py
-  ```
+```bash
+python scripts/scraper_prematch.py    # cotes prematch Flashscore
+python scripts/scraper_live.py        # score live (placeholder)
+```
 
 ## Structure du projet
 
-- `app/` : Interface utilisateur (Streamlit)
-- `data/` : Données brutes, base SQLite et exports (ignoré par git)
-- `models/` : Modèles Machine Learning entraînés
-- `scripts/` :
-  - `ingest_atp_data.py` : ETL depuis Github vers SQLite
-  - `scraper_prematch.py` : Scraper Playwright pour les matchs à venir
-  - `scraper_live.py` : Scraper Playwright pour le score en direct
-  - `stats_engine.py` : Moteur de probabilités contextuelles (ex: "4-5 au service")
-  - `ml_model.py` : Modèle de prédiction global (Random Forest)
-  - `value_detector.py` : Comparateur Cotes vs Vraie Cote (EV%)
+- `app/dashboard.py` — interface Streamlit
+- `scripts/`
+  - `stats_engine.py` — moteur de stats par tour (ATP TML / WTA Sackmann)
+  - `ml_model.py` — modèle Random Forest entraîné sur TML
+  - `sync_tml_recent.py` — sync ATP TennisMyLife
+  - `ingest_sackmann_wta.py` — ingestion WTA Sackmann
+  - `ingest_rankings_current.py` — ingestion classement WTA courant
+  - `pipeline_quality.py` — orchestration ingest + index SQLite
+  - `apply_sqlite_indexes.py` — index sur matches_recent / wta_matches
+  - `update_model_tml.py` — sync TML + retraining ML
+  - `evaluate_data_coverage.py` — vérif des volumes en base
+  - `purge_sackmann_atp.py` — DROP des tables Sackmann ATP héritées
+  - `scraper_prematch.py`, `scraper_profiles.py` — scraping Playwright
+  - `value_detector.py` — comparaison cote / true odd (EV %)
+  - `player_identity.py` — utilitaires de normalisation de noms

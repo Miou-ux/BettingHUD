@@ -141,7 +141,16 @@ class FlashscoreScraper:
         return all_matches
 
 if __name__ == "__main__":
-    scraper = FlashscoreScraper()
-    matches = asyncio.run(scraper.get_today_matches_and_odds())
-    for m in matches[:10]:
-        print(f"{m['time']} | {m['tournament']} ({m['category']}) | {m['player1']} vs {m['player2']} | Cotes: {m['odd_p1']} - {m['odd_p2']}")
+    lock_path = os.path.join("data", "scraped", ".prematch_scrape.lock")
+    try:
+        scraper = FlashscoreScraper()
+        matches = asyncio.run(scraper.get_today_matches_and_odds())
+        for m in matches[:10]:
+            print(f"{m['time']} | {m['tournament']} ({m['category']}) | {m['player1']} vs {m['player2']} | Cotes: {m['odd_p1']} - {m['odd_p2']}")
+    finally:
+        # Lock retiré quoi qu'il arrive (succès ou erreur) pour permettre une nouvelle exécution.
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except OSError:
+            pass

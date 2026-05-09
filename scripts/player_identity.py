@@ -1,15 +1,34 @@
-import re
-import sqlite3
-from typing import Optional, Dict
+"""Utilitaires de normalisation de noms de joueurs.
 
-import pandas as pd
+Le `PlayerIdentityResolver` historique (qui s'appuyait sur les tables Sackmann
+`players`, `player_aliases`, `players_mapping`) a été retiré : la résolution
+identité passe désormais par les indexes par tour construits dans
+`scripts.stats_engine.TennisStatsEngine` (matches_recent pour l'ATP, wta_matches
+pour la WTA).
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+from typing import List
 
 
 def canonical_name(name: str) -> str:
+    """Réduit un nom à sa forme `nom initiale` (ex. 'Sabalenka A.' -> 'sabalenka a').
+
+    Cette fonction attend un nom au format **'Nom I.'** (le format courant des
+    flux Flashscore). Pour normaliser un nom plein 'Prénom Nom' (Sackmann), passe
+    d'abord par `to_lastname_initial`.
+    """
     n = str(name or "").lower().strip()
+    n = re.sub(r"\([^)]*\)", " ", n)
+    n = re.sub(r"#\d+", " ", n)
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode("ascii")
     n = re.sub(r"[^a-z0-9 ]+", " ", n)
     n = re.sub(r"\s+", " ", n)
     parts = [p for p in n.split(" ") if p]
+    while parts and parts[-1].isdigit():
+        parts.pop()
     if not parts:
         return ""
     if len(parts) == 2 and len(parts[1]) == 1:
@@ -21,86 +40,55 @@ def canonical_name(name: str) -> str:
     return f"{last} {ini}".strip()
 
 
-class PlayerIdentityResolver:
-    def __init__(self, db_path: str = "data/bettinghud.db"):
-        self.db_path = db_path
-        self._ensure_alias_table()
+def normalize_name(name: str) -> str:
+    n = str(name or "").lower().strip()
+    n = re.sub(r"\([^)]*\)", " ", n)
+    n = re.sub(r"#\d+", " ", n)
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode("ascii")
+    n = re.sub(r"[^a-z0-9 ]+", " ", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    return n
 
-    def _ensure_alias_table(self):
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS player_aliases (
-                alias TEXT PRIMARY KEY,
-                canonical_name TEXT,
-                player_id TEXT
-            )
-            """
-        )
-        conn.commit()
-        conn.close()
 
-    def upsert_alias(self, alias: str, canonical: str, player_id: Optional[str]):
-        if not alias:
-            return
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO player_aliases(alias, canonical_name, player_id)
-            VALUES(?,?,?)
-            ON CONFLICT(alias) DO UPDATE SET
-              canonical_name=excluded.canonical_name,
-              player_id=excluded.player_id
-            """,
-            (alias, canonical, None if player_id is None else str(player_id)),
-        )
-        conn.commit()
-        conn.close()
+_NAME_PUNCT_RE = re.compile(r"[^A-Za-z\u00C0-\u017F\s\-]")
+_NAME_SPLIT_RE = re.compile(r"[\s\-]+")
 
-    def resolve_player_id(self, raw_name: str, players_df: pd.DataFrame) -> Optional[str]:
-        alias = canonical_name(raw_name)
-        if not alias:
-            return None
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute("SELECT player_id FROM player_aliases WHERE alias=?", (alias,)).fetchone()
-        conn.close()
-        if row and row[0]:
-            return str(row[0])
 
-        # deterministic fallback against players table
-        parts = str(raw_name or "").strip().split()
-        if len(parts) >= 2:
-            first = parts[0]
-            last = " ".join(parts[1:])
-            exact = players_df[(players_df["name_first"] == first) & (players_df["name_last"] == last)]
-            if not exact.empty:
-                pid = str(exact.iloc[0]["player_id"])
-                self.upsert_alias(alias, alias, pid)
-                return pid
-            if last.endswith("."):
-                first_letter = last[0]
-                last_part = first
-                partial = players_df[
-                    players_df["name_last"].str.contains(last_part, case=False, na=False)
-                    & players_df["name_first"].str.startswith(first_letter, na=False)
-                ]
-                if len(partial) == 1:
-                    pid = str(partial.iloc[0]["player_id"])
-                    self.upsert_alias(alias, alias, pid)
-                    return pid
+def to_lastname_initial(name: str) -> str:
+    """Convertit un nom plein 'Prénom Nom' au format 'Nom P' (canonical-friendly).
 
-        self.upsert_alias(alias, alias, None)
-        return None
+    Si le nom est déjà sous la forme 'Nom I' ou 'Nom I.' (dernier token de 1 ou 2
+    lettres), il est retourné tel quel.
 
-    def audit_collisions(self) -> Dict[str, pd.DataFrame]:
-        conn = sqlite3.connect(self.db_path)
-        aliases = pd.read_sql("SELECT * FROM player_aliases", conn)
-        conn.close()
-        if aliases.empty:
-            return {"collisions": pd.DataFrame(columns=["alias", "n_ids"])}
-        g = aliases.dropna(subset=["player_id"]).groupby("alias", as_index=False)["player_id"].nunique()
-        collisions = g[g["player_id"] > 1].rename(columns={"player_id": "n_ids"})
-        return {"collisions": collisions}
+    Exemples :
+      'Aryna Sabalenka'         -> 'Sabalenka A'
+      'Sabalenka A.'            -> 'Sabalenka A'
+      'Felix Auger-Aliassime'   -> 'Aliassime F'
+    """
+    n = str(name or "")
+    n = re.sub(r"\([^)]*\)", " ", n)
+    n = re.sub(r"#\d+", " ", n)
+    n = _NAME_PUNCT_RE.sub(" ", n)
+    parts = [p for p in _NAME_SPLIT_RE.split(n.strip()) if p]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    last_tok = parts[-1].rstrip(".")
+    if len(last_tok) <= 2:
+        return " ".join(parts)
+    first = parts[0]
+    last = parts[-1]
+    return f"{last} {first[0]}"
 
+
+def name_variants(name: str) -> List[str]:
+    """Variantes simples 'Prénom Nom' / 'Nom Prénom' (utile pour matching rapide)."""
+    norm = normalize_name(name)
+    if not norm:
+        return []
+    parts = norm.split()
+    variants = {norm}
+    if len(parts) >= 2:
+        variants.add(" ".join(parts[::-1]))
+    return [v for v in variants if v]
