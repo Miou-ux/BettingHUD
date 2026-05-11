@@ -34,6 +34,7 @@ from scripts.bets_db import (
     ensure_reconciliation_log,
     ensure_user_bets_schema,
     get_meta,
+    normalize_schedule_date,
     read_cached_results,
     set_meta,
     settle_bet,
@@ -225,10 +226,12 @@ async def reconcile(
         cur.execute(
             """
             SELECT id, date, match_name, bet_on, odds, stake, status,
-                   winner_resolved, profit, result_source
+                   winner_resolved, profit, result_source,
+                   COALESCE(NULLIF(trim(match_date), ''), date) AS eff_date
             FROM user_bets
-            WHERE date >= ? AND date <= ?
-            ORDER BY date ASC, id ASC
+            WHERE COALESCE(NULLIF(trim(match_date), ''), date) >= ?
+              AND COALESCE(NULLIF(trim(match_date), ''), date) <= ?
+            ORDER BY eff_date ASC, id ASC
             """,
             (cutoff.isoformat(), today.isoformat()),
         )
@@ -237,25 +240,28 @@ async def reconcile(
         run_ts = datetime.utcnow().isoformat(timespec="seconds")
         n_checked = n_resettled = n_logged = n_pending_resolved = n_enriched = 0
 
-        for (
-            bet_id,
-            date,
-            match_name,
-            bet_on,
-            odds,
-            stake,
-            status,
-            winner_resolved,
-            profit,
-            result_source,
-        ) in bets:
+        for row in bets:
+            (
+                bet_id,
+                date,
+                match_name,
+                bet_on,
+                odds,
+                stake,
+                status,
+                winner_resolved,
+                profit,
+                result_source,
+                eff_sql,
+            ) = row
             n_checked += 1
             parts = (match_name or "").split(" vs ")
             if len(parts) != 2:
                 continue
             p1_raw, p2_raw = parts[0], parts[1]
+            eff = normalize_schedule_date(eff_sql) or date
             try:
-                bd = datetime.strptime(date, "%Y-%m-%d").date()
+                bd = datetime.strptime(str(eff), "%Y-%m-%d").date()
             except Exception:
                 continue
             nearby = [
@@ -272,7 +278,7 @@ async def reconcile(
                     src_cache,
                     bet_p1=p1_raw,
                     bet_p2=p2_raw,
-                    bet_date=date,
+                    bet_date=str(eff),
                     nearby_dates=nearby,
                     source=src_name,
                 )

@@ -53,8 +53,11 @@ def load_and_filter_bets_csv(
     *,
     year: Optional[int] = None,
     ev_min_pct: Optional[float] = None,
+    allowed_tours: Optional[list[str]] = None,
+    allowed_tourney_levels: Optional[list[str]] = None,
+    extra_tournament_tokens: Optional[list[str]] = None,
 ) -> pd.DataFrame:
-    """Charge le CSV et applique filtres année (colonne date) et EV **minimum** (pourcent UI → fraction)."""
+    """Charge le CSV et applique filtres année/EV/tournoi (si demandés)."""
     df = pd.read_csv(csv_path)
     need = {"p_model", "odd", "won", "date"}
     miss = need - set(df.columns)
@@ -73,6 +76,29 @@ def load_and_filter_bets_csv(
         if "ev" not in df.columns:
             raise ValueError("Filtre EV minimum demandé mais colonne 'ev' absente du CSV.")
         df = df[df["ev"].astype(float) >= float(ev_min_pct) / 100.0]
+    if allowed_tours:
+        if "tour" not in df.columns:
+            raise ValueError("Filtre circuit demandé mais colonne 'tour' absente du CSV.")
+        _tours = {str(x).strip().upper() for x in allowed_tours if str(x).strip()}
+        if _tours:
+            _tour_ser = df["tour"].astype(str).str.strip().str.upper()
+            df = df[_tour_ser.isin(_tours)]
+    if allowed_tourney_levels:
+        if "tourney_level" not in df.columns:
+            raise ValueError("Filtre niveau tournoi demandé mais colonne 'tourney_level' absente du CSV.")
+        _lvls = {str(x).strip().upper() for x in allowed_tourney_levels if str(x).strip()}
+        if _lvls:
+            _lvl_ser = df["tourney_level"].astype(str).str.strip().str.upper()
+            _keep_lvl = _lvl_ser.isin(_lvls)
+            if extra_tournament_tokens and "tournament" in df.columns:
+                toks = [str(t).strip().lower() for t in extra_tournament_tokens if str(t).strip()]
+                if toks:
+                    _tour_ser = df["tournament"].astype(str).str.lower()
+                    _keep_extra = pd.Series(False, index=df.index)
+                    for tok in toks:
+                        _keep_extra = _keep_extra | _tour_ser.str.contains(tok, na=False, regex=False)
+                    _keep_lvl = _keep_lvl | _keep_extra
+            df = df[_keep_lvl]
     return df.reset_index(drop=True)
 
 
@@ -108,6 +134,12 @@ def simulate_sequential_intraday(
     max_stake_pct: float,
     *,
     daily_stake_budget_pct: float = 100.0,
+    use_fixed_stake_pct: bool = False,
+    fixed_stake_pct: float = 0.0,
+    use_adaptive_kelly_quarter: bool = False,
+    adaptive_kelly_base_fraction: float = 0.5,
+    segment_brier_scores: Optional[dict[str, float]] = None,
+    global_brier_score: float = 0.12,
     return_history: bool = False,
 ) -> dict:
     """
@@ -119,6 +151,11 @@ def simulate_sequential_intraday(
     peut partir le même jour » qui amplifie l'irrésalisme avec une forte edge retracée.
 
     `df` : colonnes p_model, odd, won, date (datetime ou parseable).
+    Si `use_adaptive_kelly_quarter=True`, utilise la logique dashboard (défaut base 1/2) :
+      stake_frac = (adaptive_kelly_base_fraction * f*) * max(0, 1 - brier_seg/0.25)
+    avec fallback sur Brier global si segment introuvable.
+    Si `use_fixed_stake_pct=True`, ignore Kelly et engage `fixed_stake_pct`% de la
+    BR du matin par pari (borné par cap par pari, budget jour et liquide restant).
     """
     if df.empty:
         out = {
@@ -167,6 +204,10 @@ def simulate_sequential_intraday(
 
     k_mult = float(kelly_multiplier)
     cap_frac = float(max_stake_pct) / 100.0
+    adapt_frac = max(0.0, float(adaptive_kelly_base_fraction))
+    fixed_frac = max(0.0, float(fixed_stake_pct) / 100.0)
+    seg_brier = segment_brier_scores or {}
+    global_brier = float(global_brier_score)
 
     for _day, day_df in work.groupby("date", sort=True):
         day_df = day_df.reset_index(drop=True)
@@ -184,7 +225,21 @@ def simulate_sequential_intraday(
             p = float(row["p_model"])
             won = _bool_won(row["won"])
             kf = kelly_full_fraction(p, odd)
-            raw = liquid * k_mult * kf
+            if use_fixed_stake_pct:
+                raw = b0 * fixed_frac
+            elif use_adaptive_kelly_quarter:
+                seg_key = str(
+                    row.get("segment_calibration_key")
+                    or row.get("segment_key")
+                    or row.get("seg_used")
+                    or ""
+                ).strip()
+                brier_seg = float(seg_brier.get(seg_key, global_brier))
+                kelly_adj = max(0.0, 1.0 - (brier_seg / 0.25))
+                stake_frac = max(0.0, (adapt_frac * kf) * kelly_adj)
+                raw = liquid * stake_frac
+            else:
+                raw = liquid * k_mult * kf
             # Plafond : % de la BR **du matin** par pari (pas % du liquide restant).
             cap_lim = b0 * cap_frac
             remaining_day_budget = max(0.0, day_deploy_cap - day_deploy_used)

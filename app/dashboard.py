@@ -10,16 +10,23 @@ import threading
 import time
 import subprocess
 import re
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from typing import Optional
 from streamlit_autorefresh import st_autorefresh
 
 # Ajouter le répertoire parent au path pour les imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.value_detector import ValueDetector
-from scripts.ml_model import TennisMLModel
-from scripts.stats_engine import TennisStatsEngine
+from scripts.ml_model import TennisMLModel, resolve_segment_brier_score
+from scripts.stats_engine import (
+    TennisStatsEngine,
+    clutch_score_52weeks,
+    tactical_vector_52weeks,
+    travel_fatigue_index_from_history,
+)
 from scripts.player_identity import to_lastname_initial
 from scripts.scraper_prematch import FlashscoreScraper
 from scripts.backtest_staking_sim import (
@@ -34,6 +41,40 @@ from scripts.data_quality import run_data_quality_checks
 from scripts.model_monitor import compute_monthly_diagnostics, compute_feature_drift
 
 PROFILE_CACHE_SCHEMA = getattr(scraper_profiles, "PROFILE_CACHE_VERSION", 1)
+
+
+def _patch_streamlit_width_compat() -> None:
+    """Compat Streamlit >= 1.4x: mappe `use_container_width` -> `width`."""
+    targets = (
+        "dataframe",
+        "table",
+        "line_chart",
+        "area_chart",
+        "bar_chart",
+        "altair_chart",
+        "plotly_chart",
+    )
+    for name in targets:
+        fn = getattr(st, name, None)
+        if fn is None or getattr(fn, "_width_compat_patched", False):
+            continue
+
+        def _make_wrapper(orig):
+            def _wrapped(*args, **kwargs):
+                if "use_container_width" in kwargs and "width" not in kwargs:
+                    u = bool(kwargs.pop("use_container_width"))
+                    kwargs["width"] = "stretch" if u else "content"
+                else:
+                    kwargs.pop("use_container_width", None)
+                return orig(*args, **kwargs)
+
+            setattr(_wrapped, "_width_compat_patched", True)
+            return _wrapped
+
+        setattr(st, name, _make_wrapper(fn))
+
+
+_patch_streamlit_width_compat()
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -76,6 +117,10 @@ AUTO_ML_TRAIN_INTERVAL_SEC = max(
 AUTO_ML_TRAIN_INITIAL_DELAY_SEC = max(
     60, int(os.getenv("BETTINGHUD_AUTO_ML_TRAIN_INITIAL_DELAY_SEC", "7200"))
 )
+# Kelly ¼ (value bets) — fraction maximale de la bankroll **disponible** par pari recommandée.
+KELLY_RECO_BANKROLL_CAP_FRAC = 0.15
+# Fraction de Kelly pleine avant facteur Brier (stratégie live + défaut backtest « adaptatif »).
+KELLY_RECO_ADAPTIVE_BASE_FRAC = 0.5
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -227,11 +272,32 @@ st.markdown("""
         font-size: 0.9rem;
         font-weight: 700;
     }
+
+    /* Mobile tweaks */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 0.6rem !important;
+            padding-left: 0.7rem !important;
+            padding-right: 0.7rem !important;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 40px;
+            padding: 6px 10px;
+            font-size: 0.82rem;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 1.35rem !important;
+        }
+        div.stButton > button {
+            width: 100%;
+            min-height: 42px;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Incrémenter si l’API de TennisStatsEngine / moteurs change (invalide le cache Streamlit).
-_ENGINES_CACHE_VERSION = 14  # v3.5 + WTA branch (Return-Elo 60/40, K+15%, BP-resilience)
+_ENGINES_CACHE_VERSION = 18  # invalidate: style drift + tactical proximity additions
 
 
 @st.cache_resource
@@ -265,6 +331,14 @@ ml_model, stats_engine, profile_scraper = load_engines(
 )
 
 _init_status.update(label="Prêt.", state="complete")
+
+# Mode d'affichage compact mobile (piloté manuellement pour Streamlit webview/smartphone).
+MOBILE_COMPACT = st.sidebar.toggle(
+    "📱 Mode mobile compact",
+    value=bool(st.session_state.get("mobile_compact_mode", False)),
+    key="mobile_compact_mode",
+    help="Empile les blocs principaux pour faciliter l'usage smartphone.",
+)
 
 @st.cache_resource
 def start_background_scraper():
@@ -523,6 +597,10 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
         p2_svc_elo = fs.get("p2_service_elo")
         p1_ret_elo = fs.get("p1_return_elo")
         p2_ret_elo = fs.get("p2_return_elo")
+        p1_global_tag = fs.get("p1_global_elo_tag")
+        p2_global_tag = fs.get("p2_global_elo_tag")
+        p1_micro_tag = fs.get("p1_micro_elo_tag")
+        p2_micro_tag = fs.get("p2_micro_elo_tag")
     else:
         p1_stats = match.get("p2_stats", {}) or {}
         p2_stats = match.get("p1_stats", {}) or {}
@@ -545,6 +623,10 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
         p2_svc_elo = fs.get("p1_service_elo")
         p1_ret_elo = fs.get("p2_return_elo")
         p2_ret_elo = fs.get("p1_return_elo")
+        p1_global_tag = fs.get("p2_global_elo_tag")
+        p2_global_tag = fs.get("p1_global_elo_tag")
+        p1_micro_tag = fs.get("p2_micro_elo_tag")
+        p2_micro_tag = fs.get("p1_micro_elo_tag")
 
     surface = match.get("surface", "Surface")
 
@@ -566,6 +648,22 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
             return f"{float(v):.0f}{suffix}"
         except Exception:
             return "—"
+
+    def _fmt_elo_col(v, tag, *, kind):
+        """Append a short hint when the rating is missing from the bundle (défaut) or imputed."""
+        s = _fmt_f(v)
+        if s == "—":
+            return s
+        t = (tag or "").strip()
+        if kind == "global":
+            if t == "default":
+                return f"{s} (défaut ML)"
+            if t == "micro_avg":
+                return f"{s} (estim. micro)"
+            return s
+        if t == "default":
+            return f"{s} (défaut ML)"
+        return s
 
     rows = []
     # Classement (smaller rank = better, so we invert for "Avantage")
@@ -606,8 +704,8 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
     # Elo global
     rows.append([
         "🌐 Elo global",
-        _fmt_f(p1_global_elo),
-        _fmt_f(p2_global_elo),
+        _fmt_elo_col(p1_global_elo, p1_global_tag, kind="global"),
+        _fmt_elo_col(p2_global_elo, p2_global_tag, kind="global"),
         _fmt_diff(p1_global_elo, p2_global_elo, p1_label, p2_label, fmt="{:+.0f}"),
     ])
 
@@ -623,8 +721,8 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
         pass
     rows.append([
         f"🏟️ Elo {surface}",
-        _fmt_f(p1_surface_elo),
-        _fmt_f(p2_surface_elo),
+        _fmt_elo_col(p1_surface_elo, p1_global_tag, kind="global"),
+        _fmt_elo_col(p2_surface_elo, p2_global_tag, kind="global"),
         _fmt_diff(
             p1_surface_elo, p2_surface_elo, p1_label, p2_label,
             fmt="{:+.0f}", warning=elo_surface_alert,
@@ -652,14 +750,14 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
     service_label = "🎾 Elo service (micro)"
     rows.append([
         service_label,
-        _fmt_f(p1_svc_elo),
-        _fmt_f(p2_svc_elo),
+        _fmt_elo_col(p1_svc_elo, p1_micro_tag, kind="micro"),
+        _fmt_elo_col(p2_svc_elo, p2_micro_tag, kind="micro"),
         _fmt_diff(p1_svc_elo, p2_svc_elo, p1_label, p2_label, fmt="{:+.0f}"),
     ])
     rows.append([
         return_label,
-        _fmt_f(p1_ret_elo),
-        _fmt_f(p2_ret_elo),
+        _fmt_elo_col(p1_ret_elo, p1_micro_tag, kind="micro"),
+        _fmt_elo_col(p2_ret_elo, p2_micro_tag, kind="micro"),
         _fmt_diff(p1_ret_elo, p2_ret_elo, p1_label, p2_label, fmt="{:+.0f}"),
     ])
 
@@ -1123,7 +1221,7 @@ def _tb_won_played(score_text: str, player_is_winner: bool):
 
 
 _SIGNAL_COLS = (
-    "tourney_date, surface, winner_name, loser_name, score, "
+    "tourney_date, tourney_name, surface, winner_name, loser_name, score, "
     "w_ace, w_svpt, w_1stIn, w_1stWon, w_2ndWon, w_SvGms, w_bpSaved, w_bpFaced, "
     "l_ace, l_svpt, l_1stIn, l_1stWon, l_2ndWon, l_SvGms, l_bpSaved, l_bpFaced"
 )
@@ -1170,39 +1268,49 @@ def _load_signal_matches(tour: str = "ATP"):
     return df
 
 
+def _neutral_live_adv_signals() -> dict:
+    return {
+        "style_advantage_score": 0.5,
+        "p1_clutch_index": 0.5,
+        "p2_clutch_index": 0.5,
+        "p1_days": 7,
+        "p2_days": 7,
+        "p1_first_srv_win10": 0.68,
+        "p2_first_srv_win10": 0.68,
+        "p1_bp_conv10": 0.38,
+        "p2_bp_conv10": 0.38,
+        "p1_dominance_ratio": 1.0,
+        "p2_dominance_ratio": 1.0,
+        "p1_tac_ace": 0.08,
+        "p1_tac_f1_pct": 0.62,
+        "p1_tac_bp_saved_pct": 0.58,
+        "p1_tac_hold_pct": 0.75,
+        "p2_tac_ace": 0.08,
+        "p2_tac_f1_pct": 0.62,
+        "p2_tac_bp_saved_pct": 0.58,
+        "p2_tac_hold_pct": 0.75,
+        "p1_travel_penalty_index": 0.0,
+        "p2_travel_penalty_index": 0.0,
+        "p1_clutch52": 0.5,
+        "p2_clutch52": 0.5,
+    }
+
+
 @st.cache_data(ttl=900)
-def _compute_live_advanced_signals(p1_name: str, p2_name: str, surface: str, tour_hint: str = "ATP"):
+def _compute_live_advanced_signals(
+    p1_name: str,
+    p2_name: str,
+    surface: str,
+    tour_hint: str = "ATP",
+    tournament_name: str = "",
+    ref_dt_iso: Optional[str] = None,
+):
     df = _load_signal_matches(tour_hint)
     p1k, p2k = _name_key(p1_name), _name_key(p2_name)
     if df is None or df.empty:
-        # Aucune donnée disponible pour ce tour : on retourne les défauts neutres.
-        return {
-            "style_advantage_score": 0.5,
-            "p1_clutch_index": 0.5,
-            "p2_clutch_index": 0.5,
-            "p1_days": 7,
-            "p2_days": 7,
-            "p1_first_srv_win10": 0.68,
-            "p2_first_srv_win10": 0.68,
-            "p1_bp_conv10": 0.38,
-            "p2_bp_conv10": 0.38,
-            "p1_dominance_ratio": 1.0,
-            "p2_dominance_ratio": 1.0,
-        }
+        return _neutral_live_adv_signals()
     if not p1k or not p2k:
-        return {
-            "style_advantage_score": 0.5,
-            "p1_clutch_index": 0.5,
-            "p2_clutch_index": 0.5,
-            "p1_days": 7,
-            "p2_days": 7,
-            "p1_first_srv_win10": 0.68,
-            "p2_first_srv_win10": 0.68,
-            "p1_bp_conv10": 0.38,
-            "p2_bp_conv10": 0.38,
-            "p1_dominance_ratio": 1.0,
-            "p2_dominance_ratio": 1.0,
-        }
+        return _neutral_live_adv_signals()
     max_date = df["tourney_date"].max()
     p1_rows = df[(df["w_key"] == p1k) | (df["l_key"] == p1k)].copy().sort_values("tourney_date")
     p2_rows = df[(df["w_key"] == p2k) | (df["l_key"] == p2k)].copy().sort_values("tourney_date")
@@ -1303,6 +1411,18 @@ def _compute_live_advanced_signals(p1_name: str, p2_name: str, surface: str, tou
     p1_first, p1_bp10, p1_dom = _micro(p1_rows, p1k)
     p2_first, p2_bp10, p2_dom = _micro(p2_rows, p2k)
 
+    try:
+        ref_ts = pd.Timestamp(ref_dt_iso).normalize() if ref_dt_iso else pd.Timestamp(max_date).normalize()
+    except Exception:
+        ref_ts = pd.Timestamp(max_date).normalize()
+
+    a1, f1_pct, bp1_sv, ho1 = tactical_vector_52weeks(p1_rows, p1k, ref_ts)
+    a2, f2_pct, bp2_sv, ho2 = tactical_vector_52weeks(p2_rows, p2k, ref_ts)
+    c521 = clutch_score_52weeks(p1_rows, p1k, ref_ts)
+    c522 = clutch_score_52weeks(p2_rows, p2k, ref_ts)
+    tr1 = travel_fatigue_index_from_history(p1_rows, p1k, tournament_name, ref_ts)
+    tr2 = travel_fatigue_index_from_history(p2_rows, p2k, tournament_name, ref_ts)
+
     return {
         "style_advantage_score": style_adv if p2_cluster else 0.5,
         "p1_clutch_index": _clutch(p1_rows, p1k),
@@ -1315,6 +1435,18 @@ def _compute_live_advanced_signals(p1_name: str, p2_name: str, surface: str, tou
         "p2_bp_conv10": p2_bp10,
         "p1_dominance_ratio": p1_dom,
         "p2_dominance_ratio": p2_dom,
+        "p1_tac_ace": float(a1),
+        "p1_tac_f1_pct": float(f1_pct),
+        "p1_tac_bp_saved_pct": float(bp1_sv),
+        "p1_tac_hold_pct": float(ho1),
+        "p2_tac_ace": float(a2),
+        "p2_tac_f1_pct": float(f2_pct),
+        "p2_tac_bp_saved_pct": float(bp2_sv),
+        "p2_tac_hold_pct": float(ho2),
+        "p1_travel_penalty_index": float(tr1),
+        "p2_travel_penalty_index": float(tr2),
+        "p1_clutch52": float(c521),
+        "p2_clutch52": float(c522),
     }
 
 
@@ -1332,11 +1464,13 @@ def _ml_model_mtime() -> float:
     """mtime du bundle XGBoost. Sert de clé d'invalidation pour les caches Streamlit
     qui dépendent des prédictions du modèle (sinon `get_latest_scraped_data` peut
     rendre des prédictions obsolètes après un retraining)."""
-    path = os.path.join("models", "xgb_model_tml_v1.pkl")
-    try:
-        return float(os.path.getmtime(path))
-    except OSError:
-        return 0.0
+    for name in ("xgb_model_tml_v45.pkl", "xgb_model_tml_v4.pkl", "xgb_model_tml_v1.pkl"):
+        path = os.path.join("models", name)
+        try:
+            return float(os.path.getmtime(path))
+        except OSError:
+            continue
+    return 0.0
 
 
 # Auto-refresh du fichier prematch (scrape Tennis Explorer en arrière-plan).
@@ -1570,6 +1704,158 @@ def _filter_df_today_tomorrow_only(df: pd.DataFrame) -> pd.DataFrame:
     return out if not out.empty else df
 
 
+_LIVE_PLAYER_CACHE_TTL_SEC = int(os.getenv("BETTINGHUD_LIVE_PLAYER_CACHE_TTL_SEC", str(12 * 3600)))
+_LIVE_PLAYER_FEATURES_CACHE_TTL_SEC = int(
+    os.getenv("BETTINGHUD_LIVE_PLAYER_FEATURES_CACHE_TTL_SEC", str(12 * 3600))
+)
+
+
+def _ensure_live_player_cache_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_player_cache (
+            cache_key TEXT PRIMARY KEY,
+            updated_ts REAL NOT NULL,
+            pid TEXT,
+            stats_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_live_player_cache_updated_ts ON live_player_cache(updated_ts)")
+    conn.commit()
+
+
+def _load_live_player_cache(cache_keys: list[str], ttl_sec: int) -> dict:
+    if not cache_keys:
+        return {}
+    now = time.time()
+    out = {}
+    try:
+        conn = sqlite3.connect("data/bettinghud.db")
+        try:
+            _ensure_live_player_cache_schema(conn)
+            q_marks = ",".join(["?"] * len(cache_keys))
+            rows = conn.execute(
+                f"SELECT cache_key, updated_ts, pid, stats_json FROM live_player_cache WHERE cache_key IN ({q_marks})",
+                cache_keys,
+            ).fetchall()
+            for ck, ts, pid, sj in rows:
+                if (now - float(ts or 0.0)) > float(ttl_sec):
+                    continue
+                try:
+                    stats = json.loads(sj) if sj else {}
+                except Exception:
+                    stats = {}
+                out[str(ck)] = {"pid": pid, "stats": stats}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    return out
+
+
+def _upsert_live_player_cache(entries: dict) -> None:
+    if not entries:
+        return
+    now = time.time()
+    try:
+        conn = sqlite3.connect("data/bettinghud.db")
+        try:
+            _ensure_live_player_cache_schema(conn)
+            for ck, payload in entries.items():
+                pid = payload.get("pid")
+                stats = payload.get("stats") or {}
+                conn.execute(
+                    """
+                    INSERT INTO live_player_cache(cache_key, updated_ts, pid, stats_json)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        updated_ts=excluded.updated_ts,
+                        pid=excluded.pid,
+                        stats_json=excluded.stats_json
+                    """,
+                    (str(ck), now, None if pid is None else str(pid), json.dumps(stats, ensure_ascii=True)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _ensure_live_player_features_cache_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_player_features_cache (
+            cache_key TEXT PRIMARY KEY,
+            updated_ts REAL NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_live_player_features_cache_updated_ts "
+        "ON live_player_features_cache(updated_ts)"
+    )
+    conn.commit()
+
+
+def _load_live_player_features_cache(cache_keys: list[str], ttl_sec: int) -> dict:
+    if not cache_keys:
+        return {}
+    now = time.time()
+    out = {}
+    try:
+        conn = sqlite3.connect("data/bettinghud.db")
+        try:
+            _ensure_live_player_features_cache_schema(conn)
+            q_marks = ",".join(["?"] * len(cache_keys))
+            rows = conn.execute(
+                f"SELECT cache_key, updated_ts, payload_json FROM live_player_features_cache "
+                f"WHERE cache_key IN ({q_marks})",
+                cache_keys,
+            ).fetchall()
+            for ck, ts, pj in rows:
+                if (now - float(ts or 0.0)) > float(ttl_sec):
+                    continue
+                try:
+                    payload = json.loads(pj) if pj else {}
+                except Exception:
+                    payload = {}
+                out[str(ck)] = payload
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    return out
+
+
+def _upsert_live_player_features_cache(entries: dict) -> None:
+    if not entries:
+        return
+    now = time.time()
+    try:
+        conn = sqlite3.connect("data/bettinghud.db")
+        try:
+            _ensure_live_player_features_cache_schema(conn)
+            for ck, payload in entries.items():
+                conn.execute(
+                    """
+                    INSERT INTO live_player_features_cache(cache_key, updated_ts, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        updated_ts=excluded.updated_ts,
+                        payload_json=excluded.payload_json
+                    """,
+                    (str(ck), now, json.dumps(payload or {}, ensure_ascii=True)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=300)
 def get_latest_scraped_data(
     csv_path: str,
@@ -1701,11 +1987,6 @@ def get_latest_scraped_data(
                 player_url_map[pname] = purl
     pid_by_name = {}
     stats_by_name = {}
-    # Cache session des résolutions (évite de recalculer le même joueur à chaque rerun/refresh).
-    player_resolve_cache = st.session_state.setdefault("player_resolve_cache", {})
-    if st.session_state.get("_stats_provenance_cache_v", 0) < 2:
-        player_resolve_cache.clear()
-        st.session_state["_stats_provenance_cache_v"] = 2
     cache_hits = 0
     if FAST_LIVE_MODE:
         # Mode ultra-rapide: on évite les résolutions identité/stats (coût principal CPU).
@@ -1717,16 +1998,26 @@ def get_latest_scraped_data(
                 "stats_reference_date": None,
             }
     else:
+        cache_keys = []
+        cache_key_by_player = {}
+        for pname in unique_players:
+            ck = "||".join(
+                [
+                    str(pname),
+                    str(player_url_map.get(pname) or ""),
+                    str(tour_by_player.get(pname) or ""),
+                ]
+            )
+            cache_keys.append(ck)
+            cache_key_by_player[pname] = ck
+        persistent_cache = _load_live_player_cache(cache_keys, _LIVE_PLAYER_CACHE_TTL_SEC)
+        cache_updates = {}
 
         def _resolve_one_player(pname: str):
-            cache_key = (
-                pname,
-                str(player_url_map.get(pname) or ""),
-                str(tour_by_player.get(pname) or ""),
-            )
-            cached = player_resolve_cache.get(cache_key)
+            cache_key = cache_key_by_player.get(pname, "")
+            cached = persistent_cache.get(cache_key)
             if cached is not None:
-                return pname, cached.get("pid"), dict(cached.get("stats") or {}), True
+                return pname, cached.get("pid"), dict(cached.get("stats") or {}), True, cache_key
             th = tour_by_player.get(pname)
             meta = stats_engine.get_player_id_meta(
                 pname,
@@ -1736,26 +2027,30 @@ def get_latest_scraped_data(
             )
             pid = meta.get("player_id")
             st_out = stats_engine.get_player_stats(pid, pname, tour_hint=th)
-            player_resolve_cache[cache_key] = {"pid": pid, "stats": dict(st_out)}
-            return pname, pid, st_out, False
+            return pname, pid, st_out, False, cache_key
 
         workers = min(IDENTITY_RESOLVE_WORKERS, max(1, len(unique_players)))
         if workers <= 1 or len(unique_players) <= 2:
             for pname in unique_players:
-                pname2, pid, st_out, from_cache = _resolve_one_player(pname)
+                pname2, pid, st_out, from_cache, cache_key = _resolve_one_player(pname)
                 pid_by_name[pname2] = pid
                 stats_by_name[pname2] = st_out
                 if from_cache:
                     cache_hits += 1
+                else:
+                    cache_updates[cache_key] = {"pid": pid, "stats": dict(st_out)}
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {pool.submit(_resolve_one_player, pn): pn for pn in unique_players}
                 for fut in as_completed(futures):
-                    pname2, pid, st_out, from_cache = fut.result()
+                    pname2, pid, st_out, from_cache, cache_key = fut.result()
                     pid_by_name[pname2] = pid
                     stats_by_name[pname2] = st_out
                     if from_cache:
                         cache_hits += 1
+                    else:
+                        cache_updates[cache_key] = {"pid": pid, "stats": dict(st_out)}
+        _upsert_live_player_cache(cache_updates)
     _mark("identity+stats")
     if PERF_LOG_LIVE_BUILD:
         print(
@@ -1770,7 +2065,45 @@ def get_latest_scraped_data(
     match_quality_by_name = {}
     speed_profile_by_name = {}
     bp_resilience_by_name = {}
+    feature_cache_hits = 0
+    feature_cache_key_by_player = {}
     for pname in unique_players:
+        feature_cache_key_by_player[pname] = "||".join(
+            [
+                str(pname),
+                str(tour_by_player.get(pname) or ""),
+                str(pid_by_name.get(pname) or ""),
+                str(player_url_map.get(pname) or ""),
+                str(_profile_cache_schema),
+            ]
+        )
+    feature_cache = _load_live_player_features_cache(
+        list(feature_cache_key_by_player.values()),
+        _LIVE_PLAYER_FEATURES_CACHE_TTL_SEC,
+    )
+    feature_cache_updates = {}
+    for pname in unique_players:
+        _fkey = feature_cache_key_by_player.get(pname, "")
+        _cached_feat = feature_cache.get(_fkey)
+        if _cached_feat is not None:
+            prepared_stats_by_name[pname] = dict(
+                _cached_feat.get("prepared_stats")
+                or {"rank": 100, "age": 25, "ht": 185, "pts": 1000, "hand": "U", "stats_source": "cache_default", "stats_reference_date": None}
+            )
+            form_by_name[pname] = dict(_cached_feat.get("form") or {"win_pct": 50.0, "matches": 0})
+            fatigue_by_name[pname] = dict(_cached_feat.get("fatigue") or {"minutes_played": 0, "matches": 0})
+            match_quality_by_name[pname] = dict(
+                _cached_feat.get("match_quality") or {"wins_last7d": 0, "three_setters_last14d": 0, "last_round_reached": 0}
+            )
+            speed_profile_by_name[pname] = dict(
+                _cached_feat.get("speed_profile") or {"speed_affinity": 0.0, "speed_performance_delta": 0.0, "samples": 0}
+            )
+            try:
+                bp_resilience_by_name[pname] = float(_cached_feat.get("bp_resilience", 0.5) or 0.5)
+            except Exception:
+                bp_resilience_by_name[pname] = 0.5
+            feature_cache_hits += 1
+            continue
         base = dict(
             stats_by_name.get(
                 pname,
@@ -1807,10 +2140,42 @@ def get_latest_scraped_data(
             ))
         except Exception:
             bp_resilience_by_name[pname] = 0.5
+        feature_cache_updates[_fkey] = {
+            "prepared_stats": dict(prepared_stats_by_name[pname]),
+            "form": dict(form_by_name[pname]),
+            "fatigue": dict(fatigue_by_name[pname]),
+            "match_quality": dict(match_quality_by_name[pname]),
+            "speed_profile": dict(speed_profile_by_name[pname]),
+            "bp_resilience": float(bp_resilience_by_name[pname]),
+        }
+    _upsert_live_player_features_cache(feature_cache_updates)
     _mark("prepare_player_forms")
+    if PERF_LOG_LIVE_BUILD:
+        print(
+            f"[live-build] player_features cache hits: {feature_cache_hits}/{len(unique_players)}",
+            flush=True,
+        )
 
     h2h_cache = {}
-    
+    wx_conn = None
+    weather_for_tournament_day = None
+    _infer_outdoor_wx = None
+    try:
+        wx_conn = sqlite3.connect(ml_model.db_path)
+        from scripts.weather_open_meteo import ensure_weather_schema, weather_for_tournament_day
+        from scripts.surface_speed import infer_outdoor as _infer_outdoor_wx
+
+        ensure_weather_schema(wx_conn)
+    except Exception:
+        if wx_conn is not None:
+            try:
+                wx_conn.close()
+            except Exception:
+                pass
+        wx_conn = None
+        weather_for_tournament_day = None
+        _infer_outdoor_wx = None
+
     matches = []
     for _, row in df.iterrows():
         # Obtenir les IDs et stats
@@ -1845,6 +2210,31 @@ def get_latest_scraped_data(
         
         # Advanced Stats
         match_tour = tour_by_player.get(p1_name) or tour_by_player.get(p2_name)
+        segment_calibration_key = ""
+        _mdate = row.get("date") or (
+            str(row["scraped_at"])[:10] if row.get("scraped_at") is not None else None
+        )
+        r1_def, r2_def = 0.0, 0.0
+        if _mdate:
+            try:
+                r1_def = TennisMLModel.defending_ratio_live(
+                    ml_model.db_path,
+                    p1_id,
+                    row.get("tournament"),
+                    _mdate,
+                    float(p1_stats.get("pts") or 0),
+                    match_tour or "ATP",
+                )
+                r2_def = TennisMLModel.defending_ratio_live(
+                    ml_model.db_path,
+                    p2_id,
+                    row.get("tournament"),
+                    _mdate,
+                    float(p2_stats.get("pts") or 0),
+                    match_tour or "ATP",
+                )
+            except Exception:
+                r1_def, r2_def = 0.0, 0.0
         h2h_key = (str(p1_id), str(p2_id), p1_name, p2_name, match_tour)
         if FAST_LIVE_MODE:
             h2h = {"p1_wins": 0, "p2_wins": 0}
@@ -1858,24 +2248,44 @@ def get_latest_scraped_data(
         p2_form = form_by_name.get(p2_name, {"win_pct": 50.0, "matches": 0})
         p1_fatigue = fatigue_by_name.get(p1_name, {"minutes_played": 0, "matches": 0})
         p2_fatigue = fatigue_by_name.get(p2_name, {"minutes_played": 0, "matches": 0})
-        
+
+        wx_temp_c, wx_humidity = None, None
+        if (
+            wx_conn is not None
+            and weather_for_tournament_day is not None
+            and _infer_outdoor_wx is not None
+            and _mdate
+        ):
+            try:
+                if _infer_outdoor_wx(row.get("indoor"), row.get("tournament")):
+                    d_wx = pd.Timestamp(_mdate).date()
+                    wx_temp_c, wx_humidity = weather_for_tournament_day(
+                        row.get("tournament"),
+                        d_wx,
+                        conn=wx_conn,
+                        prefer_forecast_if_today=True,
+                    )
+            except Exception:
+                wx_temp_c, wx_humidity = None, None
+
         try:
+            _ref_iso = None
+            try:
+                if _mdate is not None:
+                    _ref_iso = str(pd.Timestamp(_mdate).date())
+            except Exception:
+                _ref_iso = None
             adv_signals = (
-                {
-                    "style_advantage_score": 0.5,
-                    "p1_clutch_index": 0.5,
-                    "p2_clutch_index": 0.5,
-                    "p1_days": 7,
-                    "p2_days": 7,
-                    "p1_first_srv_win10": 0.68,
-                    "p2_first_srv_win10": 0.68,
-                    "p1_bp_conv10": 0.38,
-                    "p2_bp_conv10": 0.38,
-                    "p1_dominance_ratio": 1.0,
-                    "p2_dominance_ratio": 1.0,
-                }
+                _neutral_live_adv_signals()
                 if not ENABLE_ADV_SIGNALS
-                else _compute_live_advanced_signals(p1_name, p2_name, surface, tour_hint=match_tour or "ATP")
+                else _compute_live_advanced_signals(
+                    p1_name,
+                    p2_name,
+                    surface,
+                    tour_hint=match_tour or "ATP",
+                    tournament_name=str(row.get("tournament", "") or ""),
+                    ref_dt_iso=_ref_iso,
+                )
             )
             preds = ml_model.predict_match(
                 surface=surface,
@@ -1921,6 +2331,23 @@ def get_latest_scraped_data(
                 p2_bp_resilience=bp_resilience_by_name.get(p2_name, 0.5),
                 tournament_name=str(row.get("tournament", "") or ""),
                 tour=match_tour or "ATP",
+                match_date=_mdate,
+                p1_points_def_ratio=r1_def,
+                p2_points_def_ratio=r2_def,
+                humidity_pct=wx_humidity,
+                temp_c=wx_temp_c,
+                p1_tac_ace=adv_signals.get("p1_tac_ace"),
+                p1_tac_f1_pct=adv_signals.get("p1_tac_f1_pct"),
+                p1_tac_bp_saved_pct=adv_signals.get("p1_tac_bp_saved_pct"),
+                p1_tac_hold_pct=adv_signals.get("p1_tac_hold_pct"),
+                p2_tac_ace=adv_signals.get("p2_tac_ace"),
+                p2_tac_f1_pct=adv_signals.get("p2_tac_f1_pct"),
+                p2_tac_bp_saved_pct=adv_signals.get("p2_tac_bp_saved_pct"),
+                p2_tac_hold_pct=adv_signals.get("p2_tac_hold_pct"),
+                p1_travel_penalty_index=adv_signals.get("p1_travel_penalty_index"),
+                p2_travel_penalty_index=adv_signals.get("p2_travel_penalty_index"),
+                p1_clutch52=adv_signals.get("p1_clutch52"),
+                p2_clutch52=adv_signals.get("p2_clutch52"),
             )
             true_odd_p1 = preds['p1_true_odd']
             true_odd_p2 = preds['p2_true_odd']
@@ -1928,6 +2355,7 @@ def get_latest_scraped_data(
             calibration_used = preds.get("calibration_used", "Globale")
             feature_snapshot = preds.get("feature_snapshot", {}) or {}
             top_features = preds.get("top_features", []) or []
+            segment_calibration_key = str(preds.get("segment_calibration_key", "") or "")
         except Exception as _exc:
             if PERF_LOG_LIVE_BUILD:
                 import traceback as _tb
@@ -1983,8 +2411,14 @@ def get_latest_scraped_data(
             "p2_match_quality": match_quality_by_name.get(p2_name, {}),
             "p1_profile_loaded": p1_profile_loaded,
             "p2_profile_loaded": p2_profile_loaded,
+            "segment_calibration_key": segment_calibration_key,
         })
     _mark("rows_build+predict")
+    if wx_conn is not None:
+        try:
+            wx_conn.close()
+        except Exception:
+            pass
     return matches
 
 st.title("🎾 BettingHUD - Value Bets Tracker")
@@ -1994,6 +2428,7 @@ from scripts.bets_db import (
     compute_live_tracker_bankroll_eur,
     get_data_freshness_snapshot,
     init_all as _init_bets_db,
+    normalize_schedule_date,
     save_bet_enriched as _save_bet_enriched,
     set_live_tracker_manual_adjust_eur,
     set_live_tracker_start_br,
@@ -2082,6 +2517,8 @@ def save_bet(
     surface=None,
     tournament=None,
     match_id=None,
+    segment_key=None,
+    match_date=None,
     p_model=None,
     ev_at_bet=None,
     bookmaker_source=None,
@@ -2099,6 +2536,8 @@ def save_bet(
         surface=surface,
         tournament=tournament,
         match_id=match_id,
+        segment_key=segment_key,
+        match_date=match_date,
         p_model=p_model,
         ev_at_bet=ev_at_bet,
         bookmaker_source=bookmaker_source,
@@ -2143,6 +2582,24 @@ def get_existing_bets_index():
         for _, r in df.iterrows()
     }
 
+
+def _compute_clv_alert(df_bets: pd.DataFrame) -> tuple[float | None, str | None]:
+    """Alert message based on last 20 CLV values (independent from match result)."""
+    if df_bets is None or df_bets.empty or "clv_score" not in df_bets.columns:
+        return None, None
+    clv = pd.to_numeric(df_bets["clv_score"], errors="coerce").dropna()
+    if clv.empty:
+        return None, None
+    last20 = clv.tail(20)
+    if last20.empty:
+        return None, None
+    m = float(last20.mean())
+    if m < 0.0:
+        return m, "Alerte : Le modèle perd de la valeur face au marché. Vérifier la calibration."
+    if m > 0.05:
+        return m, "Edge Validé : Le modèle bat l'efficience du marché."
+    return m, None
+
 @st.cache_data(ttl=900)
 def compute_model_diagnostics(year_start: int, year_end: int, max_matches: int, seed: int):
     import random
@@ -2154,7 +2611,17 @@ def compute_model_diagnostics(year_start: int, year_end: int, max_matches: int, 
 
     conn = sqlite3.connect("data/bettinghud.db")
     query = (
-        "SELECT * FROM matches_recent "
+        "SELECT "
+        "tourney_date, surface, tourney_name, "
+        "winner_name, loser_name, "
+        "winner_rank, loser_rank, "
+        "winner_age, loser_age, "
+        "winner_ht, loser_ht, "
+        "winner_rank_points, loser_rank_points, "
+        "winner_id, loser_id, "
+        "winner_hand, loser_hand, "
+        "winner_ioc, loser_ioc "
+        "FROM matches_recent "
         "WHERE source = 'tennismylife' "
         "AND CAST(tourney_date AS TEXT) BETWEEN ? AND ? "
         "AND tourney_level IN ('A','M','G') "
@@ -2468,7 +2935,16 @@ def start_weekly_ml_train():
 start_auto_tours_db_sync()
 start_weekly_ml_train()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🎯 Live Tracker", "📊 Backtest Kelly (CSV)", "💼 Mon Portefeuille", "🧪 Diagnostics Modèle", "🧩 Annexe - Paris Alternatifs", "📡 Tracking modèle (réel)"])
+tab1, tab2, tab3, tab4, tab6, tab_hf = st.tabs(
+    [
+        "🎯 Live Tracker",
+        "📊 Backtest Kelly (CSV)",
+        "💼 Mon Portefeuille",
+        "🧪 Diagnostics Modèle",
+        "📡 Tracking modèle (réel)",
+        "🧠 Human Factors",
+    ]
+)
 
 with tab1:
     if FAST_LIVE_MODE:
@@ -2504,10 +2980,12 @@ with tab1:
 
     st.markdown("---")
     
-    col_filter_day, col_filter_tourney = st.columns(2)
-    
-    with col_filter_day:
+    if MOBILE_COMPACT:
         day_filter = st.radio("📅 Filtrer par jour :", ["Aujourd'hui", "Demain", "Tous"], horizontal=True)
+    else:
+        col_filter_day, col_filter_tourney = st.columns(2)
+        with col_filter_day:
+            day_filter = st.radio("📅 Filtrer par jour :", ["Aujourd'hui", "Demain", "Tous"], horizontal=True)
 
     if day_filter == "Aujourd'hui":
         st.caption(
@@ -2531,16 +3009,17 @@ with tab1:
 
     # Extraire les tournois uniques basés sur le filtre de jour sélectionné
     tournaments = ["Tous"] + sorted(list(set([m['tournament'] for m in filtered_matches])))
-    
-    with col_filter_tourney:
+    if MOBILE_COMPACT:
         tourney_filter = st.selectbox("🏆 Filtrer par tournoi :", tournaments)
+    else:
+        with col_filter_tourney:
+            tourney_filter = st.selectbox("🏆 Filtrer par tournoi :", tournaments)
         
     # 2. Filtre par tournoi
     if tourney_filter != "Tous":
         filtered_matches = [m for m in filtered_matches if m['tournament'] == tourney_filter]
 
-    _pf1, _pf2 = st.columns([1, 2])
-    with _pf1:
+    if MOBILE_COMPACT:
         _player_q = st.text_input(
             "Rechercher un joueur",
             value="",
@@ -2548,6 +3027,16 @@ with tab1:
             placeholder="ex. Zverev",
             help="Filtre table + opportunités sur un joueur (partie du nom, sans tenir compte de la casse).",
         )
+    else:
+        _pf1, _pf2 = st.columns([1, 2])
+        with _pf1:
+            _player_q = st.text_input(
+                "Rechercher un joueur",
+                value="",
+                key="live_player_name_filter",
+                placeholder="ex. Zverev",
+                help="Filtre table + opportunités sur un joueur (partie du nom, sans tenir compte de la casse).",
+            )
     _pq_l = str(_player_q or "").strip().lower()
     if _pq_l:
         filtered_matches = [
@@ -2557,8 +3046,7 @@ with tab1:
             or _pq_l in str(m.get("player2", "")).lower()
         ]
 
-    live_col1, live_col2 = st.columns(2)
-    with live_col1:
+    if MOBILE_COMPACT:
         live_ev_threshold = st.slider(
             "Seuil EV minimum (Live, %)",
             min_value=1.0,
@@ -2567,12 +3055,28 @@ with tab1:
             step=0.5,
             key="live_ev_threshold",
         )
-    with live_col2:
         live_conf_filter = st.selectbox(
             "Filtre confiance IA",
             ["Toutes", "Moyenne+", "Forte+", "Très forte"],
             key="live_conf_filter",
         )
+    else:
+        live_col1, live_col2 = st.columns(2)
+        with live_col1:
+            live_ev_threshold = st.slider(
+                "Seuil EV minimum (Live, %)",
+                min_value=1.0,
+                max_value=12.0,
+                value=8.0,
+                step=0.5,
+                key="live_ev_threshold",
+            )
+        with live_col2:
+            live_conf_filter = st.selectbox(
+                "Filtre confiance IA",
+                ["Toutes", "Moyenne+", "Forte+", "Très forte"],
+                key="live_conf_filter",
+            )
 
     with st.expander("⚙️ Bankroll Live Tracker (référence + ajustements)", expanded=False):
         st.caption(
@@ -2642,11 +3146,19 @@ with tab1:
     br_avail = max(0.0, float(br_snap["available_eur"]))
     br_committed = float(br_snap["committed_open_eur"])
     br_equity = float(br_snap["equity_eur"])
-    mb1, mb2, mb3, mb4 = st.columns(4)
-    mb1.metric("BR référence (€)", f"{br_snap['start_eur']:.2f}")
-    mb2.metric("BR disponible (€)", f"{br_avail:.2f}")
-    mb3.metric("Engagé (€)", f"{br_committed:.2f}")
-    mb4.metric("Capital total (€)", f"{br_equity:.2f}")
+    if MOBILE_COMPACT:
+        _mbr1, _mbr2 = st.columns(2)
+        _mbr1.metric("BR réf. (€)", f"{br_snap['start_eur']:.2f}")
+        _mbr2.metric("BR dispo (€)", f"{br_avail:.2f}")
+        _mbr3, _mbr4 = st.columns(2)
+        _mbr3.metric("Engagé (€)", f"{br_committed:.2f}")
+        _mbr4.metric("Capital total (€)", f"{br_equity:.2f}")
+    else:
+        mb1, mb2, mb3, mb4 = st.columns(4)
+        mb1.metric("BR référence (€)", f"{br_snap['start_eur']:.2f}")
+        mb2.metric("BR disponible (€)", f"{br_avail:.2f}")
+        mb3.metric("Engagé (€)", f"{br_committed:.2f}")
+        mb4.metric("Capital total (€)", f"{br_equity:.2f}")
     _man = float(br_snap.get("manual_adjust_eur", 0.0))
     _capt = (
         "Reco Kelly : % de la **BR disponible** (après paris en cours et correction manuelle éventuelle). "
@@ -2655,7 +3167,7 @@ with tab1:
     if abs(_man) > 1e-6:
         _raw = float(br_snap.get("available_raw_eur", br_avail - _man))
         _capt += f" **Correction manuelle : {_man:+.2f} €** (sans correction : {_raw:.2f} €)."
-    _capt += " **Mode BR : tous les paris (hypothèse Kelly 1/4 globale).**"
+    _capt += " **Mode BR : tous les paris (hypothèse Kelly 1/2 adaptatif globale).**"
     st.caption(_capt)
 
     # Streamlit mémorise les `number_input` par clé : si la BR change (nouveau pari, résultat…),
@@ -2678,16 +3190,27 @@ with tab1:
             value_bets.append({"match": match, "player": 2, "val": p2_val, "idx": idx})
 
     # Top KPIs
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("🎾 Matchs scannés", len(filtered_matches))
-    kpi2.metric("🚨 Value Bets trouvés", len(value_bets))
-    if filtered_matches:
-        te_full = sum(
-            1 for m in filtered_matches if m.get("p1_profile_loaded") and m.get("p2_profile_loaded")
-        )
-        kpi3.metric("📡 Profils TE complets", f"{te_full}/{len(filtered_matches)} matchs")
+    if MOBILE_COMPACT:
+        st.metric("🎾 Matchs scannés", len(filtered_matches))
+        st.metric("🚨 Value Bets trouvés", len(value_bets))
+        if filtered_matches:
+            te_full = sum(
+                1 for m in filtered_matches if m.get("p1_profile_loaded") and m.get("p2_profile_loaded")
+            )
+            st.metric("📡 Profils TE complets", f"{te_full}/{len(filtered_matches)} matchs")
+        else:
+            st.metric("📡 Profils TE complets", "—")
     else:
-        kpi3.metric("📡 Profils TE complets", "—")
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("🎾 Matchs scannés", len(filtered_matches))
+        kpi2.metric("🚨 Value Bets trouvés", len(value_bets))
+        if filtered_matches:
+            te_full = sum(
+                1 for m in filtered_matches if m.get("p1_profile_loaded") and m.get("p2_profile_loaded")
+            )
+            kpi3.metric("📡 Profils TE complets", f"{te_full}/{len(filtered_matches)} matchs")
+        else:
+            kpi3.metric("📡 Profils TE complets", "—")
     if _csv_path:
         fresh = datetime.fromtimestamp(_csv_mtime).strftime("%d/%m %H:%M")
         age_min = max(0.0, (time.time() - _csv_mtime) / 60.0)
@@ -2735,9 +3258,12 @@ with tab1:
         ]
 
     # Options de tri
-    col_sort1, col_sort2 = st.columns([1, 3])
-    with col_sort1:
+    if MOBILE_COMPACT:
         sort_option = st.selectbox("Trier par :", ["Value EV (Plus haute)", "Value EV (Plus basse)", "Cote (Plus basse)"])
+    else:
+        col_sort1, col_sort2 = st.columns([1, 3])
+        with col_sort1:
+            sort_option = st.selectbox("Trier par :", ["Value EV (Plus haute)", "Value EV (Plus basse)", "Cote (Plus basse)"])
     
     if sort_option == "Value EV (Plus haute)":
         value_bets.sort(key=lambda x: x["val"]["value_pct"], reverse=True)
@@ -2782,8 +3308,7 @@ with tab1:
                 mid = match.get("prematch_id") or f"row_{idx}"
                 _odd_key = f"custom_odd_{mid}_p{p_num}"
                 _default_odd_live = float(odd_book) if odd_book >= 1.01 else 1.01
-                _oc1, _oc2 = st.columns([1.15, 2.85])
-                with _oc1:
+                if MOBILE_COMPACT:
                     custom_odd = st.number_input(
                         "Cote réelle",
                         min_value=1.01,
@@ -2793,8 +3318,6 @@ with tab1:
                         key=_odd_key,
                         help="Kelly, EV reco et pré-remplissage de la mise utilisent cette cote.",
                     )
-                with _oc2:
-                    st.caption("")
                     _book_vs = (
                         f"Réf. book agrégé : **{odd_book}** · "
                         if abs(float(custom_odd) - float(odd_book)) > 1e-3
@@ -2804,13 +3327,41 @@ with tab1:
                         f"{_book_vs}"
                         "L’espérance (EV) ci-contre suppose que vous passez votre pari à la cote saisie."
                     )
+                else:
+                    _oc1, _oc2 = st.columns([1.15, 2.85])
+                    with _oc1:
+                        custom_odd = st.number_input(
+                            "Cote réelle",
+                            min_value=1.01,
+                            max_value=100.0,
+                            value=_default_odd_live,
+                            step=0.05,
+                            key=_odd_key,
+                            help="Kelly, EV reco et pré-remplissage de la mise utilisent cette cote.",
+                        )
+                    with _oc2:
+                        st.caption("")
+                        _book_vs = (
+                            f"Réf. book agrégé : **{odd_book}** · "
+                            if abs(float(custom_odd) - float(odd_book)) > 1e-3
+                            else ""
+                        )
+                        st.caption(
+                            f"{_book_vs}"
+                            "L’espérance (EV) ci-contre suppose que vous passez votre pari à la cote saisie."
+                        )
 
                 _ev_live = detector.detect_value(
                     float(custom_odd), float(odd_true), confidence=None
                 )
                 ev_live_pct = float(_ev_live.get("value_pct") or 0.0)
 
-                c1, c2, c3 = st.columns([1.5, 2, 1.5])
+                if MOBILE_COMPACT:
+                    c1 = st.container()
+                    c2 = st.container()
+                    c3 = st.container()
+                else:
+                    c1, c2, c3 = st.columns([1.5, 2, 1.5])
                 with c1:
                     _ev_cls = "ev-highlight" if ev_live_pct >= -1e-9 else "ev-highlight-neg"
                     st.markdown(
@@ -2824,24 +3375,76 @@ with tab1:
                     st.markdown(f"Cote Bookmaker: <span class='odd-highlight'>{odd_book}</span>", unsafe_allow_html=True)
                     st.markdown(f"Cote Estimée: **{odd_true:.2f}**")
                     st.markdown(f"Probabilité: **{1/odd_true*100:.1f}%**")
-                    # Kelly ¼ sur la **cote saisie**, plafond 10 % de la BR disponible.
+                    # Kelly partiel (défaut 1/2) sur la **cote saisie**, plafond BR dispo → KELLY_RECO_BANKROLL_CAP_FRAC.
                     p_model_side = min(1.0, max(0.0, 1.0 / float(odd_true))) if odd_true and odd_true > 0 else 0.0
                     b_side = max(0.01, float(custom_odd) - 1.0)
                     kelly_full = max(0.0, (b_side * p_model_side - (1.0 - p_model_side)) / b_side)
-                    kelly_quarter = 0.25 * kelly_full
-                    reco_frac = max(0.0, min(kelly_quarter, 0.10))
+                    kelly_partial = float(KELLY_RECO_ADAPTIVE_BASE_FRAC) * kelly_full
+                    _seg_k = str(match.get("segment_calibration_key") or "")
+                    _brier_s = resolve_segment_brier_score(ml_model, _seg_k)
+                    _kelly_adj = max(0.0, 1.0 - (_brier_s / 0.25))
+                    reco_frac = max(0.0, min(kelly_partial * _kelly_adj, KELLY_RECO_BANKROLL_CAP_FRAC))
                     reco_pct = reco_frac * 100.0
                     reco_eur = br_avail * reco_frac
+                    _cap_pct = int(round(KELLY_RECO_BANKROLL_CAP_FRAC * 100.0))
+                    _k_label = "1/2" if float(KELLY_RECO_ADAPTIVE_BASE_FRAC) >= 0.5 else "1/4"
                     st.markdown(
-                        f"**Mise reco (Kelly 1/4, cap 10 % BR disponible)** : **{reco_eur:.2f} €**"
+                        f"**Mise reco (Kelly {_k_label} × Brier-adaptatif, cap {_cap_pct} % BR)** : **{reco_eur:.2f} €**"
                     )
                     st.caption(
-                        f"{reco_pct:.2f}% de la BR restante (**{br_avail:.2f} €**)."
+                        f"{reco_pct:.2f}% de la BR restante (**{br_avail:.2f} €**). "
+                        f"Brier segment≈{_brier_s:.3f}, facteur {_kelly_adj:.2f}."
                     )
                     
                     with st.popover("ℹ️ Pourquoi cette value ?"):
                         p1_stats = match.get("p1_stats", {})
                         p2_stats = match.get("p2_stats", {})
+                        _fs = match.get("feature_snapshot") or {}
+                        _card_is_p1 = int(p_num) == 1
+                        _style_left = _fs.get("human_p1_style", "—") if _card_is_p1 else _fs.get("human_p2_style", "—")
+                        _style_right = _fs.get("human_p2_style", "—") if _card_is_p1 else _fs.get("human_p1_style", "—")
+                        _jet_left = bool(_fs.get("p1_jetlag_alert")) if _card_is_p1 else bool(_fs.get("p2_jetlag_alert"))
+                        _jet_right = bool(_fs.get("p2_jetlag_alert")) if _card_is_p1 else bool(_fs.get("p1_jetlag_alert"))
+                        _cl_left = float(_fs.get("p1_clutch52", 0.5) or 0.5) if _card_is_p1 else float(_fs.get("p2_clutch52", 0.5) or 0.5)
+                        _cl_right = float(_fs.get("p2_clutch52", 0.5) or 0.5) if _card_is_p1 else float(_fs.get("p1_clutch52", 0.5) or 0.5)
+                        _smb_raw = _fs.get("style_matchup_bias")
+                        _smb_view = (float(_smb_raw) if _smb_raw is not None else None)
+                        if _smb_view is not None and not _card_is_p1:
+                            _smb_view = -_smb_view
+                        _hf_rows = []
+                        _hf_rows.append(
+                            [
+                                "Style (joueur vs adversaire)",
+                                f"{_style_left} vs {_style_right}",
+                            ]
+                        )
+                        _jet = []
+                        if _jet_left:
+                            _jet.append("Joueur")
+                        if _jet_right:
+                            _jet.append("Adversaire")
+                        _hf_rows.append(["Jetlag alert", ", ".join(_jet) if _jet else "Aucune alerte"])
+                        try:
+                            _hf_rows.append(
+                                [
+                                    "Clutch 52s (joueur/adversaire)",
+                                    f"{_cl_left*100:.0f}% / {_cl_right*100:.0f}%",
+                                ]
+                            )
+                        except Exception:
+                            _hf_rows.append(["Clutch 52s (joueur/adversaire)", "—"])
+                        _hf_rows.append(
+                            ["Style matchup bias (joueur)", f"{float(_smb_view):+.3f}" if _smb_view is not None else "—"]
+                        )
+
+                        st.markdown("#### Human Factors (résumé)")
+                        st.dataframe(
+                            pd.DataFrame(_hf_rows, columns=["Signal", "Valeur"]),
+                            hide_index=True,
+                            use_container_width=True,
+                            height=165,
+                        )
+
                         comp_rows = _build_comparison_rows(
                             match, player_name, opp_name, p_num, _infobulle_hand_label
                         )
@@ -2977,8 +3580,11 @@ with tab1:
                         value=min(float(default_stake), _max_stake),
                         step=0.5,
                         key=_stake_key,
-                        help="Pré-rempli avec la reco Kelly (1/4, cap 10 %) sur la BR **disponible**, "
-                        "**selon votre cote réelle**. Remis à jour quand la dispo ou cette cote changent.",
+                        help=(
+                            "Pré-rempli avec la reco Kelly (1/2 adaptatif Brier, cap "
+                            f"{int(round(KELLY_RECO_BANKROLL_CAP_FRAC * 100.0))} %) sur la BR **disponible**, "
+                            "**selon votre cote réelle**. Remis à jour quand la dispo ou cette cote changent."
+                        ),
                     )
                     st.caption(
                         "S’aligne sur la reco quand la BR disponible ou la « Cote réelle » changent."
@@ -3004,6 +3610,8 @@ with tab1:
                                 surface=match.get("surface"),
                                 tournament=match.get("tournament"),
                                 match_id=str(mid) if mid else None,
+                                segment_key=str(match.get("segment_calibration_key") or "") or None,
+                                match_date=match.get("date"),
                                 p_model=(1.0 / float(odd_true)) if odd_true and odd_true > 0 else None,
                                 ev_at_bet=(ev_live_pct / 100.0),
                                 bookmaker_source=(
@@ -3093,9 +3701,39 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
         value=True,
         key="kcsv_use_ev_filter",
     )
+    k_scope = st.checkbox(
+        "Limiter aux tournois pariables (ATP/WTA + niveaux sélectionnés)",
+        value=True,
+        key="kcsv_scope_bettable",
+    )
+    if k_scope:
+        k_scope_cols = st.columns([2, 3])
+        with k_scope_cols[0]:
+            k_levels = st.multiselect(
+                "Niveaux tournoi inclus",
+                options=["G", "M", "A", "F", "O", "D", "T"],
+                default=["G", "M", "A"],
+                key="kcsv_levels",
+                help="G=Grand Chelem, M=Masters/WTA1000, A=ATP/WTA 250/500 (mapping tennis-data/TML).",
+            )
+        with k_scope_cols[1]:
+            k_extra_events = st.text_input(
+                "Compétitions extra (mots-clés, séparés par virgules)",
+                value="olympics,davis cup,billie jean king cup,united cup,atp finals,wta finals,laver cup",
+                key="kcsv_extra_events",
+                help="Appliqué seulement si la colonne `tournament` existe dans le CSV.",
+            )
     k_row1 = st.columns([1, 1, 1])
     with k_row1[0]:
-        k_year = st.number_input("Année cible", min_value=2015, max_value=2035, value=2025, step=1, key="kcsv_year")
+        k_years = st.multiselect(
+            "Année(s) cible(s)",
+            options=list(range(2015, 2036)),
+            default=[2025],
+            key="kcsv_years",
+        )
+        if not k_years:
+            st.caption("Sélectionne au moins une année (défaut conseillé: 2025).")
+        _years_selected = sorted({int(y) for y in (k_years or [2025])})
     with k_row1[1]:
         k_ev_min = st.number_input(
             "EV min (%)",
@@ -3120,13 +3758,28 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
     with k_row2[0]:
         k_frac_label = st.selectbox(
             "Kelly",
-            options=["Kelly ¼", "Kelly ½", "Kelly plein"],
+            options=[
+                "Kelly 1/2 adaptatif (Brier)",
+                "Kelly 1/4 adaptatif (Brier)",
+                "Kelly ¼",
+                "Kelly ½",
+                "Kelly plein",
+                "% fixe de la BR",
+            ],
             index=0,
             key="kcsv_kmult",
-            help="Multiplicateur sur la fraction Kelly pleine.",
+            help="Mode adaptatif : fraction Kelly (1/2 ou 1/4) × max(0, 1 - Brier_segment/0.25), comme le live (défaut 1/2).",
         )
         k_frac_map = {"Kelly ¼": 0.25, "Kelly ½": 0.5, "Kelly plein": 1.0}
-        k_mult = float(k_frac_map[k_frac_label])
+        k_use_pct_br = k_frac_label == "% fixe de la BR"
+        k_use_adapt = "adaptatif" in k_frac_label.lower()
+        if k_frac_label.startswith("Kelly 1/2 adaptatif"):
+            k_adapt_base = 0.5
+        elif k_frac_label.startswith("Kelly 1/4 adaptatif"):
+            k_adapt_base = 0.25
+        else:
+            k_adapt_base = 0.25  # non utilisé si mode non adaptatif
+        k_mult = k_adapt_base if k_use_adapt else float(k_frac_map.get(k_frac_label, 0.25))
     with k_row2[1]:
         k_cap = st.slider(
             "Mise max (% BR du matin / pari)",
@@ -3136,6 +3789,20 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
             step=0.5,
             key="kcsv_cap_pct",
         )
+    with k_row2[2]:
+        if k_use_pct_br:
+            k_fixed_stake_pct = st.number_input(
+                "Mise fixe (% BR du matin / pari)",
+                min_value=0.1,
+                max_value=100.0,
+                value=2.0,
+                step=0.1,
+                key="kcsv_fixed_stake_pct",
+                help="Utilisé uniquement si l'option `% fixe de la BR` est sélectionnée.",
+            )
+        else:
+            st.markdown("")
+            k_fixed_stake_pct = 0.0
     k_row2b = st.columns([1, 1, 2])
     with k_row2b[0]:
         k_day_budget = st.slider(
@@ -3155,14 +3822,94 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
             "Chemin CSV (vide = auto depuis `data/`)",
             value="",
             key="kcsv_path_ov",
-            help="Relatif à la racine du projet ; sinon recherche `backtest_<année>_bets*.csv`.",
+            help="Relatif à la racine du projet ; sinon recherche `backtest_<année>_bets*.csv` pour chaque année sélectionnée.",
         )
 
     def _csv_path_pick_bt() -> str | None:
         if k_csv_ov.strip():
             p = os.path.join(_PROJECT_ROOT, k_csv_ov.strip().replace("/", os.sep))
             return p if os.path.isfile(p) else None
-        return resolve_backtest_csv(_PROJECT_ROOT, int(k_year))
+        return resolve_backtest_csv(_PROJECT_ROOT, int(_years_selected[0]))
+
+    def _csv_paths_pick_bt(years: list[int]) -> tuple[list[tuple[int, str]], list[int]]:
+        if k_csv_ov.strip():
+            p = os.path.join(_PROJECT_ROOT, k_csv_ov.strip().replace("/", os.sep))
+            if not os.path.isfile(p):
+                return [], years
+            return [(int(y), p) for y in years], []
+        pairs: list[tuple[int, str]] = []
+        missing: list[int] = []
+        for y in years:
+            p = resolve_backtest_csv(_PROJECT_ROOT, int(y))
+            if p and os.path.isfile(p):
+                pairs.append((int(y), p))
+            else:
+                missing.append(int(y))
+        return pairs, missing
+
+    k_tournaments = []
+    k_use_tourney_filter = False
+    _csv_preview_pairs, _csv_preview_missing = _csv_paths_pick_bt(_years_selected)
+    for _, _csv_preview_path in _csv_preview_pairs:
+        try:
+            _df_header = pd.read_csv(_csv_preview_path, nrows=0)
+            _tour_col = next(
+                (c for c in ("tournament", "tourney_name", "tournament_name") if c in _df_header.columns),
+                None,
+            )
+            if _tour_col is None:
+                continue
+            _df_tournaments = pd.read_csv(_csv_preview_path, usecols=[_tour_col])
+            _ser_t = _df_tournaments[_tour_col].dropna().astype(str).str.strip()
+            k_tournaments.extend([x for x in _ser_t.unique().tolist() if x])
+        except Exception:
+            continue
+    if k_tournaments:
+        k_tournaments = sorted(set(k_tournaments))
+    if k_tournaments:
+        k_use_tourney_filter = st.checkbox(
+            "Filtrer par tournoi(s) précis",
+            value=False,
+            key="kcsv_use_tournament_filter",
+        )
+    if k_use_tourney_filter:
+        k_tourney_search = st.text_input(
+            "Recherche tournoi",
+            value="",
+            key="kcsv_tournament_search",
+            help="Ex: Roland Garros (tolère 'Rolland Garros').",
+        )
+        _search_norm = str(k_tourney_search or "").strip().lower()
+        _search_alias = {
+            "rolland garros": "roland garros",
+            "roland garros": "roland garros",
+            "rg": "roland garros",
+        }
+        _search_norm = _search_alias.get(_search_norm, _search_norm)
+        if _search_norm:
+            _opts = [t for t in k_tournaments if _search_norm in str(t).lower()]
+        else:
+            _opts = k_tournaments
+        k_tournaments_selected = st.multiselect(
+            "Tournoi(x) inclus",
+            options=_opts,
+            default=[],
+            key="kcsv_tournament_filter",
+            help="Si vide, aucun filtre tournoi n'est appliqué.",
+        )
+        if _search_norm in {"roland garros", "rg"} and not k_tournaments_selected:
+            _rg_auto = [t for t in _opts if "roland garros" in str(t).lower()]
+            if _rg_auto:
+                st.caption(f"Suggestion: {', '.join(_rg_auto[:3])}")
+    else:
+        k_tournaments_selected = []
+    k_gs_choice = st.selectbox(
+        "Grand Chelem ciblé",
+        options=["Tous", "Australian Open", "Roland Garros", "Wimbledon", "US Open"],
+        index=0,
+        key="kcsv_gs_filter",
+        help="Permet de filtrer rapidement un Grand Chelem en particulier.",
+    )
 
     st.markdown("### Lancer la projection")
     if st.button("Calculer projection Kelly intra-jour", key="kcsv_run"):
@@ -3172,32 +3919,105 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
                 "`python scripts/backtest_2026.py --year <année> --out data/backtest_<année>_bets.csv`."
             )
         else:
-            pth = _csv_path_pick_bt()
-            if not pth:
+            _path_pairs, _missing_years = _csv_paths_pick_bt(_years_selected)
+            if not _path_pairs:
                 st.error(
                     "Fichier introuvable. Exemple : "
                     "`python scripts/backtest_2026.py --year <année> --ev-min … --out data/backtest_<année>_bets.csv`."
                 )
+                if _missing_years:
+                    st.caption(f"Années sans CSV détecté: {', '.join(map(str, _missing_years))}")
             else:
                 try:
-                    kw_f = dict(year=int(k_year))
+                    kw_f = dict()
                     if k_fev:
                         kw_f["ev_min_pct"] = float(k_ev_min)
-                    df_bt = load_and_filter_bets_csv(pth, **kw_f)
+                    if k_scope:
+                        kw_f["allowed_tours"] = ["ATP", "WTA"]
+                        kw_f["allowed_tourney_levels"] = list(k_levels)
+                        kw_f["extra_tournament_tokens"] = [
+                            t.strip() for t in str(k_extra_events).split(",") if t.strip()
+                        ]
+                    _frames_bt = []
+                    for _yy, _pp in _path_pairs:
+                        _frames_bt.append(load_and_filter_bets_csv(_pp, year=int(_yy), **kw_f))
+                    df_bt = pd.concat(_frames_bt, ignore_index=True) if _frames_bt else pd.DataFrame()
+                    if not df_bt.empty:
+                        df_bt["date"] = pd.to_datetime(df_bt["date"], errors="coerce")
+                        df_bt = df_bt.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+                    _tour_col = next(
+                        (c for c in ("tournament", "tourney_name", "tournament_name") if c in df_bt.columns),
+                        None,
+                    )
+                    if k_use_tourney_filter and k_tournaments_selected and _tour_col is not None:
+                        _sel = {str(x).strip() for x in k_tournaments_selected if str(x).strip()}
+                        if _sel:
+                            _tour_series = df_bt[_tour_col].astype(str).str.strip()
+                            df_bt = df_bt[_tour_series.isin(_sel)].reset_index(drop=True)
+                    elif k_use_tourney_filter and k_tournaments_selected and _tour_col is None:
+                        st.error(
+                            "Le CSV backtest ne contient pas de colonne tournoi (`tournament`/`tourney_name`). "
+                            "Régénère le CSV pour activer le filtre tournoi."
+                        )
+                        df_bt = pd.DataFrame()
+                    if k_gs_choice != "Tous" and _tour_col is not None:
+                        _tser = (
+                            df_bt[_tour_col]
+                            .astype(str)
+                            .str.lower()
+                            .str.replace("-", " ", regex=False)
+                            .str.replace(".", " ", regex=False)
+                            .str.replace(r"\s+", " ", regex=True)
+                            .str.strip()
+                        )
+                        _gs_alias = {
+                            "Australian Open": ["australian open", "ao"],
+                            "Roland Garros": ["roland garros", "rolland garros", "french open", "rolandgarros"],
+                            "Wimbledon": ["wimbledon"],
+                            "US Open": ["us open", "u.s. open"],
+                        }
+                        _tokens = _gs_alias.get(k_gs_choice, [])
+                        _keep = pd.Series(False, index=df_bt.index)
+                        for _tok in _tokens:
+                            _keep = _keep | _tser.str.contains(_tok, na=False, regex=False)
+                        df_bt = df_bt[_keep].reset_index(drop=True)
+                    elif k_gs_choice != "Tous" and _tour_col is None:
+                        st.error(
+                            "Filtre Grand Chelem indisponible: colonne tournoi absente du CSV "
+                            "(`tournament`/`tourney_name`). Régénère le CSV backtest."
+                        )
+                        df_bt = pd.DataFrame()
                     if df_bt.empty:
                         st.warning("Aucun pari après filtres année / EV.")
                     else:
+                        _ = resolve_segment_brier_score(ml_model, "")
+                        _seg_brier = getattr(ml_model, "segment_brier_scores", {}) or {}
+                        _glob_brier = float(getattr(ml_model, "global_test_brier", 0.12))
                         res = simulate_sequential_intraday(
                             df_bt,
                             bankroll_start=float(k_br0),
                             kelly_multiplier=k_mult,
                             max_stake_pct=float(k_cap),
                             daily_stake_budget_pct=float(k_day_budget),
+                            use_fixed_stake_pct=bool(k_use_pct_br),
+                            fixed_stake_pct=float(k_fixed_stake_pct),
+                            use_adaptive_kelly_quarter=bool(k_use_adapt),
+                            adaptive_kelly_base_fraction=float(k_adapt_base),
+                            segment_brier_scores=_seg_brier,
+                            global_brier_score=_glob_brier,
                             return_history=True,
                         )
                         st.success(
-                            f"**{len(df_bt)}** paris depuis `{os.path.relpath(pth, _PROJECT_ROOT)}`."
+                            f"**{len(df_bt)}** paris · années {min(_years_selected)}-{max(_years_selected)} "
+                            f"({len(_years_selected)} an(s))."
                         )
+                        _used_csvs = sorted(
+                            {
+                                os.path.relpath(_pp, _PROJECT_ROOT)
+                                for _, _pp in _path_pairs
+                            }
+                        )
+                        st.caption(f"CSV utilisés: {', '.join(_used_csvs)}")
                         st.info(
                             "Hypothèse **no-leak** : `p_model` produites avec entraînement **avant** cutoff année "
                             "(voir `backtest_2026.py`)."
@@ -3255,7 +4075,7 @@ le **plafond** reste « X % **de la BR du matin** par pari »). Les PnL s’ap
         """
     )
 
-with tab5:
+if False:  # Onglet alternatif retiré à la demande utilisateur.
     st.header("🧩 Projet annexe: Marchés alternatifs (ATP/WTA)")
     st.caption("Expérimentation hors backtest: value bets sur marchés non-vainqueur (jeux, tie-break, sets).")
 
@@ -3387,6 +4207,8 @@ with tab5:
                             surface=m.get("surface"),
                             tournament=m.get("tournament"),
                             match_id=str(m.get("prematch_id")) if m.get("prematch_id") else None,
+                            segment_key=str(m.get("segment_calibration_key") or "") or None,
+                            match_date=m.get("date"),
                             p_model=(1.0 / float(mk["true_odd"])) if mk.get("true_odd") else None,
                             ev_at_bet=float(mk.get("value_pct", 0.0)) / 100.0,
                             bookmaker_source="book_avg",
@@ -3396,7 +4218,47 @@ with tab5:
 with tab3:
     st.header("💼 Mon Portefeuille de Paris")
     st.markdown("Suivez vos performances, filtrez vos paris et visualisez rapidement votre risque/rendement.")
-    
+
+    # CLV sync (best effort, throttled): refresh closing odds from latest prematch snapshot.
+    _last_clv_sync = float(st.session_state.get("portfolio_last_clv_sync_ts", 0.0) or 0.0)
+    if time.time() - _last_clv_sync >= 600.0:
+        try:
+            from scripts.sync_tml_recent import update_closing_odds
+
+            _n_clv = int(update_closing_odds(db_path="data/bettinghud.db"))
+            st.session_state["portfolio_last_clv_sync_ts"] = time.time()
+            if _n_clv > 0:
+                st.caption(f"CLV sync: {_n_clv} pari(s) mis à jour.")
+        except Exception:
+            pass
+    if MOBILE_COMPACT:
+        if st.button("🔁 Forcer MAJ CLV", key="portfolio_force_clv_update"):
+            try:
+                from scripts.sync_tml_recent import update_closing_odds
+
+                _n_clv_manual = int(update_closing_odds(db_path="data/bettinghud.db"))
+                st.success(f"CLV mise à jour : {_n_clv_manual} pari(s).")
+                st.session_state["portfolio_last_clv_sync_ts"] = time.time()
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Échec MAJ CLV: {_e}")
+        st.caption("Met à jour `closing_odd`/`clv_score` depuis le dernier snapshot prematch.")
+    else:
+        _clv_btn_col1, _clv_btn_col2 = st.columns([1, 4])
+        with _clv_btn_col1:
+            if st.button("🔁 Forcer MAJ CLV", key="portfolio_force_clv_update"):
+                try:
+                    from scripts.sync_tml_recent import update_closing_odds
+
+                    _n_clv_manual = int(update_closing_odds(db_path="data/bettinghud.db"))
+                    st.success(f"CLV mise à jour : {_n_clv_manual} pari(s).")
+                    st.session_state["portfolio_last_clv_sync_ts"] = time.time()
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"Échec MAJ CLV: {_e}")
+        with _clv_btn_col2:
+            st.caption("Met à jour `closing_odd`/`clv_score` depuis le dernier snapshot prematch.")
+
     conn = sqlite3.connect('data/bettinghud.db')
     df_bets = pd.read_sql("SELECT * FROM user_bets ORDER BY id ASC", conn)
     conn.close()
@@ -3408,8 +4270,9 @@ with tab3:
     auto_interval_sec = PORTFOLIO_AUTO_RESULTS_INTERVAL_SEC
     has_pending = not df_bets.empty and (df_bets["status"] == "En cours").any()
     if ENABLE_PORTFOLIO_AUTO_RESULTS and has_pending:
-        # Rerun périodique pour résoudre les paris sans action utilisateur.
-        st_autorefresh(interval=60 * 1000, key="portfolio_results_autorefresh")
+        # Désactivé pour garantir une expérience stable dans l'onglet Backtest
+        # (les reruns globaux de streamlit_autorefresh impactent tous les onglets).
+        pass
     if ENABLE_PORTFOLIO_AUTO_RESULTS and has_pending and (auto_now - float(last_auto) >= auto_interval_sec):
         st.session_state["portfolio_last_auto_results_ts"] = auto_now
         try:
@@ -3430,8 +4293,16 @@ with tab3:
     if df_bets.empty:
         st.info("Vous n'avez pas encore enregistré de paris. Allez dans l'onglet 'Live Tracker' pour trouver de la Value !")
     else:
-        # Base temporelle propre pour un graphe lisible
-        df_bets["date_dt"] = pd.to_datetime(df_bets["date"], errors="coerce")
+        # Base temporelle : jour du match (match_date) si disponible, sinon jour d'enregistrement
+        if "match_date" in df_bets.columns:
+            _sched = df_bets["match_date"].map(
+                lambda x: normalize_schedule_date(x)
+                if pd.notna(x) and str(x).strip() != ""
+                else None
+            )
+            df_bets["date_dt"] = pd.to_datetime(_sched.fillna(df_bets["date"]), errors="coerce")
+        else:
+            df_bets["date_dt"] = pd.to_datetime(df_bets["date"], errors="coerce")
         if df_bets["date_dt"].isna().all():
             df_bets["date_dt"] = pd.Timestamp.today().normalize()
         else:
@@ -3452,12 +4323,21 @@ with tab3:
                 "Mode simplifié: BR Kelly calculée sur tous les paris (live + legacy). "
                 "La BR disponible se met à jour quand les paris passent Gagné / Perdu / Annulé."
             )
-            lx1, lx2, lx3, lx4, lx5 = st.columns(5)
-            lx1.metric("Paris live", len(df_live_pf))
-            lx2.metric("En cours", len(lt_open))
-            lx3.metric("BR dispo (€)", f"{snap_pf['available_eur']:.2f}")
-            lx4.metric("Engagé (€)", f"{snap_pf['committed_open_eur']:.2f}")
-            lx5.metric("Capital total (€)", f"{snap_pf['equity_eur']:.2f}")
+            if MOBILE_COMPACT:
+                _lx1, _lx2 = st.columns(2)
+                _lx1.metric("Paris live", len(df_live_pf))
+                _lx2.metric("En cours", len(lt_open))
+                _lx3, _lx4 = st.columns(2)
+                _lx3.metric("BR dispo (€)", f"{snap_pf['available_eur']:.2f}")
+                _lx4.metric("Engagé (€)", f"{snap_pf['committed_open_eur']:.2f}")
+                st.metric("Capital total (€)", f"{snap_pf['equity_eur']:.2f}")
+            else:
+                lx1, lx2, lx3, lx4, lx5 = st.columns(5)
+                lx1.metric("Paris live", len(df_live_pf))
+                lx2.metric("En cours", len(lt_open))
+                lx3.metric("BR dispo (€)", f"{snap_pf['available_eur']:.2f}")
+                lx4.metric("Engagé (€)", f"{snap_pf['committed_open_eur']:.2f}")
+                lx5.metric("Capital total (€)", f"{snap_pf['equity_eur']:.2f}")
             st_sub = float(lt_closed["stake"].sum()) if not lt_closed.empty else 0.0
             pl_sub = float(lt_closed["profit"].sum()) if not lt_closed.empty else 0.0
             wr_lt = (
@@ -3466,10 +4346,87 @@ with tab3:
                 else 0.0
             )
             roi_lt = (pl_sub / st_sub * 100.0) if st_sub > 0 else 0.0
-            ly1, ly2, ly3 = st.columns(3)
-            ly1.metric("Profit net (clos, €)", f"{pl_sub:.2f}")
-            ly2.metric("ROI sur mises clôturées", f"{roi_lt:.1f}%")
-            ly3.metric("Winrate clos", f"{wr_lt:.1f}%")
+            if MOBILE_COMPACT:
+                _ly1, _ly2 = st.columns(2)
+                _ly1.metric("Profit net (clos, €)", f"{pl_sub:.2f}")
+                _ly2.metric("ROI clôturé", f"{roi_lt:.1f}%")
+                st.metric("Winrate clos", f"{wr_lt:.1f}%")
+            else:
+                ly1, ly2, ly3 = st.columns(3)
+                ly1.metric("Profit net (clos, €)", f"{pl_sub:.2f}")
+                ly2.metric("ROI sur mises clôturées", f"{roi_lt:.1f}%")
+                ly3.metric("Winrate clos", f"{wr_lt:.1f}%")
+
+        # --- CLV analytics (independent from match result) ---
+        if "clv_score" in df_bets.columns:
+            df_clv = df_bets.copy()
+            df_clv["clv_score"] = pd.to_numeric(df_clv["clv_score"], errors="coerce")
+            df_clv["closing_odd"] = pd.to_numeric(df_clv.get("closing_odd"), errors="coerce")
+            df_clv = df_clv[df_clv["clv_score"].notna()].copy()
+            if not df_clv.empty:
+                st.markdown("### 📉 Closing Line Value (CLV)")
+                if MOBILE_COMPACT:
+                    c_k1, c_k2 = st.columns(2)
+                    c_k3, c_k4 = st.columns(2)
+                else:
+                    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
+                clv_mean = float(df_clv["clv_score"].mean())
+                clv_med = float(df_clv["clv_score"].median())
+                clv_cov = float(len(df_clv) / max(1, len(df_bets)) * 100.0)
+                c_k1.metric("CLV Moyenne", f"{clv_mean*100:+.2f}%")
+                c_k2.metric("CLV Médiane", f"{clv_med*100:+.2f}%")
+                c_k3.metric("Paris avec closing", f"{len(df_clv)}/{len(df_bets)}")
+                c_k4.metric("Couverture CLV", f"{clv_cov:.1f}%")
+
+                plot = df_clv.sort_values(["date_dt", "id"]).copy()
+                plot["cum_clv_pct"] = (plot["clv_score"].cumsum() * 100.0)
+                plot["cum_profit"] = plot["profit"].cumsum()
+                plot_df = plot.set_index("date_dt")[["cum_clv_pct", "cum_profit"]]
+                st.caption("CLV cumulée (en points de %) vs profit cumulé réel")
+                st.line_chart(plot_df, use_container_width=True)
+
+                if MOBILE_COMPACT:
+                    seg1 = st.container()
+                    seg2 = st.container()
+                else:
+                    seg1, seg2 = st.columns(2)
+                with seg1:
+                    st.caption("CLV par circuit (ATP vs WTA)")
+                    clv_tour = df_clv.assign(
+                        tour_key=df_clv.get("tour").fillna("N/A").replace("", "N/A")
+                    ).groupby("tour_key", as_index=False).agg(
+                        clv_mean=("clv_score", "mean"),
+                        n=("clv_score", "count"),
+                    )
+                    if not clv_tour.empty:
+                        clv_tour.columns = ["Circuit", "CLV moyenne", "n"]
+                        clv_tour["CLV moyenne"] = clv_tour["CLV moyenne"] * 100.0
+                        st.dataframe(clv_tour, use_container_width=True, hide_index=True)
+                with seg2:
+                    st.caption("CLV par segment (Clay_G, Hard_M, etc.)")
+                    seg_col = "segment_key" if "segment_key" in df_clv.columns else None
+                    if seg_col is None:
+                        st.info("Aucun segment stocké pour ces paris.")
+                    else:
+                        dseg = df_clv.copy()
+                        dseg["segment_key"] = dseg["segment_key"].fillna("").astype(str)
+                        dseg = dseg[dseg["segment_key"].str.strip() != ""]
+                        if dseg.empty:
+                            st.info("Aucun segment stocké pour ces paris.")
+                        else:
+                            clv_seg = dseg.groupby("segment_key", as_index=False).agg(
+                                clv_mean=("clv_score", "mean"),
+                                n=("clv_score", "count"),
+                            )
+                            clv_seg.columns = ["Segment", "CLV moyenne", "n"]
+                            clv_seg["CLV moyenne"] = clv_seg["CLV moyenne"] * 100.0
+                            st.dataframe(
+                                clv_seg.sort_values("n", ascending=False),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+            else:
+                st.caption("CLV: pas encore de closing odds disponibles pour les paris enregistrés.")
 
         df_bets["cumulative_profit"] = df_bets["profit"].cumsum()
         
@@ -3503,16 +4460,30 @@ with tab3:
         daily_curve["drawdown_pct"] = ((daily_curve["peak_profit"] - daily_curve["cumulative_profit"]) / denom * 100.0).fillna(0.0)
         max_drawdown = float(daily_curve["drawdown_pct"].max()) if not daily_curve.empty else 0.0
         
-        k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-        k1.metric("Paris totaux", len(df_bets))
-        k2.metric("En cours", nb_en_cours)
-        k3.metric("Gagnés", nb_gagnes)
-        k4.metric("Perdus", nb_perdus)
-        k5.metric("Annulés", nb_annule, help="Walkover / abandon : la mise est remboursée")
-        k6.metric("Profit net", f"{total_profit:.2f} U", f"{roi:.1f}% ROI")
-        k7.metric("Winrate (clos)", f"{winrate_closed:.1f}%")
+        if MOBILE_COMPACT:
+            _k1, _k2 = st.columns(2)
+            _k1.metric("Paris", len(df_bets))
+            _k2.metric("En cours", nb_en_cours)
+            _k3, _k4 = st.columns(2)
+            _k3.metric("Gagnés", nb_gagnes)
+            _k4.metric("Perdus", nb_perdus)
+            _k5, _k6 = st.columns(2)
+            _k5.metric("Annulés", nb_annule, help="Walkover / abandon : mise remboursée")
+            _k6.metric("Winrate", f"{winrate_closed:.1f}%")
+            st.metric("Profit net", f"{total_profit:.2f} U", f"{roi:.1f}% ROI")
+            c1 = st.container()
+            c2 = st.container()
+        else:
+            k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+            k1.metric("Paris totaux", len(df_bets))
+            k2.metric("En cours", nb_en_cours)
+            k3.metric("Gagnés", nb_gagnes)
+            k4.metric("Perdus", nb_perdus)
+            k5.metric("Annulés", nb_annule, help="Walkover / abandon : la mise est remboursée")
+            k6.metric("Profit net", f"{total_profit:.2f} U", f"{roi:.1f}% ROI")
+            k7.metric("Winrate (clos)", f"{winrate_closed:.1f}%")
 
-        c1, c2 = st.columns([3, 1])
+            c1, c2 = st.columns([3, 1])
         with c1:
             st.subheader("📈 Évolution du profit cumulé")
             chart_df = daily_curve.set_index("date_dt")[["cumulative_profit"]]
@@ -3643,13 +4614,58 @@ with tab3:
             elif val == 'En cours': return 'background-color: lightblue; color: black'
             return ''
             
-        st.dataframe(
-            df_view[['date', 'match_name', 'bet_on', 'odds', 'stake', 'status', 'profit']].style.map(color_status, subset=['status']),
-            use_container_width=True
-        )
+        _hist_cols = ["date", "match_name", "bet_on", "odds", "stake", "status", "profit"]
+        if "match_date" in df_view.columns:
+            _hist_cols.insert(1, "match_date")
+        _hist_df = df_view[_hist_cols].copy()
+        if "match_date" in _hist_df.columns:
+            _hist_df = _hist_df.rename(columns={"date": "Pari (jour)", "match_date": "Match (jour)"})
+        else:
+            _hist_df = _hist_df.rename(columns={"date": "Pari (jour)"})
+        if MOBILE_COMPACT:
+            _compact_cols = [c for c in ["Match (jour)", "Pari (jour)", "bet_on", "odds", "stake", "status", "profit"] if c in _hist_df.columns]
+            _compact = _hist_df[_compact_cols].copy()
+            _compact = _compact.rename(
+                columns={
+                    "bet_on": "Sélection",
+                    "odds": "Cote",
+                    "stake": "Mise",
+                    "status": "Statut",
+                    "profit": "P/L",
+                }
+            )
+            st.dataframe(
+                _compact.style.map(color_status, subset=["Statut"] if "Statut" in _compact.columns else []),
+                use_container_width=True,
+            )
+            with st.expander("Voir historique complet", expanded=False):
+                st.dataframe(
+                    _hist_df.style.map(color_status, subset=["status"]),
+                    use_container_width=True,
+                )
+        else:
+            st.dataframe(
+                _hist_df.style.map(color_status, subset=["status"]),
+                use_container_width=True,
+            )
 
 with tab4:
     st.header("🧪 Diagnostics Modèle")
+    try:
+        _conn_alert = sqlite3.connect("data/bettinghud.db")
+        _df_alert = pd.read_sql(
+            "SELECT id, date, clv_score FROM user_bets WHERE clv_score IS NOT NULL ORDER BY id ASC",
+            _conn_alert,
+        )
+        _conn_alert.close()
+        _clv20_mean, _clv_msg = _compute_clv_alert(_df_alert)
+        if _clv_msg:
+            if _clv20_mean is not None and _clv20_mean < 0.0:
+                st.warning(f"⚠️ {_clv_msg} (CLV20={_clv20_mean*100:+.2f}%)")
+            elif _clv20_mean is not None and _clv20_mean > 0.05:
+                st.success(f"✅ {_clv_msg} (CLV20={_clv20_mean*100:+.2f}%)")
+    except Exception:
+        pass
     st.markdown("Calibration des probabilités, ROI par niveau de confiance, et métriques globales (source TennisMyLife / `matches_recent`).")
 
     c1, c2, c3 = st.columns(3)
@@ -3791,32 +4807,62 @@ with tab6:
         else:
             st.info(f"ℹ️ {drift.get('message')}")
 
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Paris clos", g["n"])
-        m2.metric(
-            "Hit-rate réel",
-            f"{g['hit']*100:.1f}%",
-            f"prév. {g['expected_hit']*100:.1f}%",
-        )
-        m3.metric(
-            "ROI réel",
-            f"{g['realised_roi']*100:.1f}%",
-            f"prév. {g['expected_roi']*100:+.1f}%",
-        )
-        m4.metric(
-            "Brier",
-            f"{g['brier']:.3f}",
-            f"backtest {g['baseline_brier']:.3f}",
-            delta_color="inverse",
-        )
-        m5.metric(
-            "vs baseline ROI",
-            f"{(g['realised_roi'] - g['baseline_roi'])*100:+.1f} pp",
-        )
-        m6.metric(
-            "vs baseline hit",
-            f"{(g['hit'] - g['baseline_hit'])*100:+.1f} pp",
-        )
+        if MOBILE_COMPACT:
+            m1, m2 = st.columns(2)
+            m1.metric("Paris clos", g["n"])
+            m2.metric(
+                "Hit-rate réel",
+                f"{g['hit']*100:.1f}%",
+                f"prév. {g['expected_hit']*100:.1f}%",
+            )
+            m3, m4 = st.columns(2)
+            m3.metric(
+                "ROI réel",
+                f"{g['realised_roi']*100:.1f}%",
+                f"prév. {g['expected_roi']*100:+.1f}%",
+            )
+            m4.metric(
+                "Brier",
+                f"{g['brier']:.3f}",
+                f"backtest {g['baseline_brier']:.3f}",
+                delta_color="inverse",
+            )
+            m5, m6 = st.columns(2)
+            m5.metric(
+                "vs baseline ROI",
+                f"{(g['realised_roi'] - g['baseline_roi'])*100:+.1f} pp",
+            )
+            m6.metric(
+                "vs baseline hit",
+                f"{(g['hit'] - g['baseline_hit'])*100:+.1f} pp",
+            )
+        else:
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Paris clos", g["n"])
+            m2.metric(
+                "Hit-rate réel",
+                f"{g['hit']*100:.1f}%",
+                f"prév. {g['expected_hit']*100:.1f}%",
+            )
+            m3.metric(
+                "ROI réel",
+                f"{g['realised_roi']*100:.1f}%",
+                f"prév. {g['expected_roi']*100:+.1f}%",
+            )
+            m4.metric(
+                "Brier",
+                f"{g['brier']:.3f}",
+                f"backtest {g['baseline_brier']:.3f}",
+                delta_color="inverse",
+            )
+            m5.metric(
+                "vs baseline ROI",
+                f"{(g['realised_roi'] - g['baseline_roi'])*100:+.1f} pp",
+            )
+            m6.metric(
+                "vs baseline hit",
+                f"{(g['hit'] - g['baseline_hit'])*100:+.1f} pp",
+            )
 
         st.markdown("---")
         st.subheader("📐 Calibration : probabilité prédite vs taux observé")
@@ -3834,7 +4880,12 @@ with tab6:
             )
             disp = calib_df[["mean_p", "observed", "gap", "n"]].copy()
             disp.columns = ["proba moyenne", "observé", "gap (obs - prév.)", "n"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            if MOBILE_COMPACT:
+                st.dataframe(disp[["proba moyenne", "observé", "n"]], use_container_width=True, hide_index=True)
+                with st.expander("Détails calibration", expanded=False):
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(disp, use_container_width=True, hide_index=True)
         else:
             st.info("Pas assez de paris pour tracer la courbe de calibration.")
 
@@ -3854,11 +4905,20 @@ with tab6:
             st.bar_chart(chart_ev, use_container_width=True)
             disp_ev = ev_df[["ev_bucket", "n", "hit", "roi", "expected_roi", "delta_roi"]].copy()
             disp_ev.columns = ["EV bucket", "n", "hit", "ROI réel", "ROI prévu", "delta"]
-            st.dataframe(disp_ev, use_container_width=True, hide_index=True)
+            if MOBILE_COMPACT:
+                st.dataframe(disp_ev[["EV bucket", "n", "ROI réel"]], use_container_width=True, hide_index=True)
+                with st.expander("Détails ROI par bucket EV", expanded=False):
+                    st.dataframe(disp_ev, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(disp_ev, use_container_width=True, hide_index=True)
         else:
             st.info("Aucun pari clos avec EV stockée. Place quelques paris depuis la nouvelle UI.")
 
-        c1, c2 = st.columns(2)
+        if MOBILE_COMPACT:
+            c1 = st.container()
+            c2 = st.container()
+        else:
+            c1, c2 = st.columns(2)
         with c1:
             st.subheader("🎾 Par tour (ATP / WTA)")
             by_tour = tracking.get("by_tour", [])
@@ -3868,7 +4928,12 @@ with tab6:
                 df_tour["hit_pct"] = df_tour["hit"] * 100.0
                 disp_tour = df_tour[["key", "n", "hit_pct", "roi_pct", "brier", "delta_roi"]].copy()
                 disp_tour.columns = ["Tour", "n", "hit %", "ROI %", "Brier", "Δ ROI vs prévu"]
-                st.dataframe(disp_tour, use_container_width=True, hide_index=True)
+                if MOBILE_COMPACT:
+                    st.dataframe(disp_tour[["Tour", "n", "ROI %"]], use_container_width=True, hide_index=True)
+                    with st.expander("Détails par tour", expanded=False):
+                        st.dataframe(disp_tour, use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(disp_tour, use_container_width=True, hide_index=True)
             else:
                 st.info("Pas de données par tour.")
         with c2:
@@ -3880,7 +4945,12 @@ with tab6:
                 df_s["hit_pct"] = df_s["hit"] * 100.0
                 disp_s = df_s[["key", "n", "hit_pct", "roi_pct", "brier", "delta_roi"]].copy()
                 disp_s.columns = ["Surface", "n", "hit %", "ROI %", "Brier", "Δ ROI vs prévu"]
-                st.dataframe(disp_s, use_container_width=True, hide_index=True)
+                if MOBILE_COMPACT:
+                    st.dataframe(disp_s[["Surface", "n", "ROI %"]], use_container_width=True, hide_index=True)
+                    with st.expander("Détails par surface", expanded=False):
+                        st.dataframe(disp_s, use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(disp_s, use_container_width=True, hide_index=True)
             else:
                 st.info("Pas de données par surface.")
 
@@ -3900,7 +4970,147 @@ with tab6:
         if recon_df.empty:
             st.info("Aucune divergence enregistrée pour l'instant. Lance une réconciliation depuis l'onglet Portefeuille.")
         else:
-            st.dataframe(recon_df, use_container_width=True, hide_index=True)
+            if MOBILE_COMPACT:
+                _rc = [c for c in ["run_ts", "match_name", "action", "new_status"] if c in recon_df.columns]
+                st.dataframe(recon_df[_rc], use_container_width=True, hide_index=True)
+                with st.expander("Voir log réconciliation complet", expanded=False):
+                    st.dataframe(recon_df, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(recon_df, use_container_width=True, hide_index=True)
+
+with tab_hf:
+    st.header("🧠 Human Factors")
+    st.caption(
+        "Styles tactiques (KMeans v4.5), voyage/jetlag inféré depuis l’historique des matchs, "
+        "et score clutch 52 semaines. Le bundle `xgb_model_tml_v45.pkl` doit être entraîné pour les étiquettes de style ML."
+    )
+    hf_ctrl1, hf_ctrl2, hf_ctrl3 = st.columns([1, 1, 2])
+    with hf_ctrl1:
+        hf_enable = st.checkbox("Charger la vue détaillée", value=False, key="hf_enable_detailed")
+    with hf_ctrl2:
+        hf_page_size = st.selectbox("Lignes/page", [10, 20, 30, 60], index=1, key="hf_page_size")
+    with hf_ctrl3:
+        st.caption("Astuce perf: laisse décoché si tu n’analyses pas l’onglet maintenant.")
+    if not hf_enable:
+        st.info("Vue détaillée désactivée pour accélérer le chargement global. Coche l’option pour afficher les cartes HF.")
+    else:
+        _csv_x, _mtime_x = _prematch_csv_signature()
+        hf_list = get_latest_scraped_data(
+            _csv_x,
+            _mtime_x,
+            PROFILE_CACHE_SCHEMA,
+            _ml_model_mtime(),
+            _ENGINES_CACHE_VERSION,
+        )
+        hf_list = [
+            z
+            for z in hf_list
+            if float(z.get("odd_p1") or 0) > 1.0 and float(z.get("odd_p2") or 0) > 1.0
+        ]
+        if not hf_list:
+            st.info("Aucun match live à afficher. Vérifie le scraper Flashscore puis « Rafraîchir les données ».")
+            hf_page_rows = []
+            hf_page_start = 0
+        else:
+            hf_total = len(hf_list)
+            hf_pages = max(1, int(np.ceil(hf_total / float(hf_page_size))))
+            hf_page = st.number_input(
+                "Page HF",
+                min_value=1,
+                max_value=hf_pages,
+                value=1,
+                step=1,
+                key="hf_page_idx",
+            )
+            hf_page_start = int((hf_page - 1) * hf_page_size)
+            hf_page_rows = hf_list[hf_page_start: hf_page_start + int(hf_page_size)]
+            st.caption(
+                f"Affichage {hf_page_start + 1}-{hf_page_start + len(hf_page_rows)} / {hf_total} matchs."
+            )
+        for _i_hf, zm in enumerate(hf_page_rows, start=hf_page_start):
+            fs = zm.get("feature_snapshot") or {}
+            st.markdown(f"**{zm.get('player1', '')}** vs **{zm.get('player2', '')}** — `{zm.get('tournament', '')}`")
+            hc1, hc2, hc3 = st.columns(3)
+            with hc1:
+                st.markdown(f"Style **P1** : `{fs.get('human_p1_style', '—')}`")
+                if fs.get("p1_jetlag_alert"):
+                    st.markdown("⚠️ **Jetlag Alert** — P1")
+            with hc2:
+                st.markdown(f"Style **P2** : `{fs.get('human_p2_style', '—')}`")
+                if fs.get("p2_jetlag_alert"):
+                    st.markdown("⚠️ **Jetlag Alert** — P2")
+            with hc3:
+                smb = fs.get("style_matchup_bias")
+                if smb is not None:
+                    st.caption(f"Style matchup bias (ML) : {float(smb):+.3f}")
+            p1_style = str(fs.get("human_p1_style") or "—")
+            p2_style = str(fs.get("human_p2_style") or "—")
+            wr_p1 = fs.get("style_surface_winrate_p1")
+            n_duels = int(fs.get("style_surface_winrate_samples", 0) or 0)
+            smb_val = float(fs.get("style_matchup_bias", 0.0) or 0.0)
+            slow_flag = bool(fs.get("style_is_slow_surface", False))
+            if wr_p1 is None:
+                wr_p1 = float(np.clip(0.5 + smb_val, 0.0, 1.0))
+            wr_p1 = float(np.clip(float(wr_p1), 0.0, 1.0))
+            _style_emoji = {
+                "Big Server": "🚀",
+                "Counter-Puncher": "🛡️",
+                "Aggressive Baseliner": "⚡",
+                "Aggressive": "⚡",
+                "Tactical / Slicer": "🎯",
+                "Tactical/Slicer": "🎯",
+            }
+            st.caption(
+                f"P1: {p1_style} {_style_emoji.get(p1_style, '')} | "
+                f"P2: {p2_style} {_style_emoji.get(p2_style, '')}"
+            )
+            st.markdown(
+                f"**Analyse Tactique :** Le style **{p1_style}** gagne statistiquement **{wr_p1*100:.1f}%** "
+                f"de ses duels contre **{p2_style}** sur cette surface."
+            )
+            if float(fs.get("style_drift_detected", 0.0) or 0.0) > 0.5:
+                st.warning("⚠️ Évolution de style détectée : Profil tactique en transition.")
+            if smb_val >= 0.04:
+                expl = "Avantage tactique net pour P1."
+            elif smb_val <= -0.04:
+                expl = "Matchup défavorable pour P1 sur cette configuration."
+            else:
+                expl = "Matchup tactique relativement équilibré."
+            if slow_flag and "Big Server" in p1_style and "Counter-Puncher" in p2_style:
+                expl += " Surface lente: le serveur est davantage neutralisé."
+            st.caption(expl)
+            st.slider(
+                "Mismatch Tactique ↔ Avantage Tactique",
+                min_value=0,
+                max_value=100,
+                value=int(round(np.clip(50.0 + smb_val * 300.0, 0.0, 100.0))),
+                disabled=True,
+                key=f"hf_battle_slider_{_i_hf}",
+                help=f"Jauge basée sur le biais tactique final (n={n_duels}).",
+            )
+            _labels = ["Big Server", "Aggressive Baseliner", "Tactical / Slicer", "Counter-Puncher"]
+            _mix1 = fs.get("p1_style_mix") or [0.25, 0.25, 0.25, 0.25]
+            _mix2 = fs.get("p2_style_mix") or [0.25, 0.25, 0.25, 0.25]
+            st.caption("Proximité styles (distribution KMeans)")
+            sm1, sm2 = st.columns(2)
+            with sm1:
+                st.markdown(f"**{zm.get('player1', 'P1')}**")
+                for lb, vv in zip(_labels, _mix1):
+                    st.progress(float(np.clip(vv, 0.0, 1.0)), text=f"{lb}: {float(vv)*100:.0f}%")
+            with sm2:
+                st.markdown(f"**{zm.get('player2', 'P2')}**")
+                for lb, vv in zip(_labels, _mix2):
+                    st.progress(float(np.clip(vv, 0.0, 1.0)), text=f"{lb}: {float(vv)*100:.0f}%")
+            g1, g2 = st.columns(2)
+            with g1:
+                c1 = float(fs.get("p1_clutch52", 0.5) or 0.5)
+                st.metric("Clutch P1 (52 sem.)", f"{c1:.0%}")
+                st.progress(min(1.0, max(0.0, c1)))
+            with g2:
+                c2 = float(fs.get("p2_clutch52", 0.5) or 0.5)
+                st.metric("Clutch P2 (52 sem.)", f"{c2:.0%}")
+                st.progress(min(1.0, max(0.0, c2)))
+            st.divider()
 
 # Bouton de rafraîchissement
 if st.button("🔄 Rafraîchir les données"):
@@ -3946,7 +5156,7 @@ with st.sidebar.expander("Fraîcheur ATP/WTA & modèle ML", expanded=False):
         f"**Dernier entraînement ML** (`update_model_tml`) : `{_format_meta_utc(_fresh.get('last_ml_train_iso'))}`"
     )
     st.markdown(
-        f"**Fichier modèle** (`xgb_model_tml_v1.pkl`) : `{_format_mtime_local(_fresh.get('model_bundle_mtime'))}`"
+        f"**Fichier modèle** (`xgb_model_tml_v45.pkl`, `v4` ou `v1`) : `{_format_mtime_local(_fresh.get('model_bundle_mtime'))}`"
     )
     _la = _fresh.get("last_atp_match")
     if _la:
@@ -3973,8 +5183,8 @@ with st.sidebar.expander("Fraîcheur ATP/WTA & modèle ML", expanded=False):
 auto_mode = st.sidebar.checkbox("Mode Auto (Scrape 10m / Refresh 1m)", value=False)
 if auto_mode:
     start_background_scraper()
-    st_autorefresh(interval=60 * 1000, key="data_autorefresh")
-    st.sidebar.success("Auto-Refresh activé ! 🔄")
+    st.sidebar.success("Mode Auto activé (scraper en arrière-plan).")
+    st.sidebar.caption("Auto-refresh visuel désactivé pour éviter les reruns automatiques du Backtest.")
 else:
     st.sidebar.info("Mode manuel actif")
     if st.sidebar.button("🚀 Lancer le Scraper manuellement"):

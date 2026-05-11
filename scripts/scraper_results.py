@@ -40,6 +40,7 @@ from scripts.bets_db import (
     DB_PATH_DEFAULT,
     ensure_match_results_cache,
     ensure_user_bets_schema,
+    normalize_schedule_date,
     read_cached_results,
     settle_bet,
     write_cached_results,
@@ -84,6 +85,9 @@ LOGGER = _setup_logger()
 WINDOW_DAYS_DEFAULT = 7
 NAME_FUZZY_THRESHOLD = 88  # 0..100 — surname fuzzy ratio required for a match
 NEARBY_DAY_OFFSETS = (-2, -1, 1, 2, 3)  # handle longer postponements
+# Upper inclusive date for TE/Sackmann cache load + fuzzy lookup: Tennis Explorer often
+# files late EU matches on the "next calendar day" while bets stay on the booked date.
+LOOKUP_UPPER_EXTRA_DAYS = max(NEARBY_DAY_OFFSETS)  # 3 — keep aligned with NEARBY forward span
 RETIRED_TOKENS = ("ret.", "ret ", "retired", "abandon", " abd")
 WALKOVER_TOKENS = ("w.o.", "wo.", "walkover", " w/o", " w.o", "default")
 CANCELLED_TOKENS = ("cancel", "annul")
@@ -492,8 +496,10 @@ class ResultsScraper:
             ensure_match_results_cache(conn)
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, date, match_name, bet_on, odds, stake "
-                "FROM user_bets WHERE status = 'En cours'"
+                """
+                SELECT id, date, match_name, bet_on, odds, stake, match_date
+                FROM user_bets WHERE status = 'En cours'
+                """
             )
             pending = cur.fetchall()
             if not pending:
@@ -502,15 +508,23 @@ class ResultsScraper:
 
             today = datetime.now().date()
             cutoff = today - timedelta(days=self.window_days)
+            lookup_upper = today + timedelta(days=LOOKUP_UPPER_EXTRA_DAYS)
             target_dates: set[str] = set()
-            for _, bet_date, *_ in pending:
+            for row in pending:
+                placement_date = row[1]
+                raw_sched = row[6]
+                resolve_date = normalize_schedule_date(raw_sched) or placement_date
                 try:
-                    d = datetime.strptime(bet_date, "%Y-%m-%d").date()
+                    d = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
                 except Exception:
                     continue
                 if d < cutoff or d > today:
                     continue
                 target_dates.add(d.isoformat())
+                for off in NEARBY_DAY_OFFSETS:
+                    adj = d + timedelta(days=off)
+                    if cutoff <= adj <= lookup_upper:
+                        target_dates.add(adj.isoformat())
 
             if not target_dates:
                 LOGGER.info("Pending bets all outside window (%dd) — nothing to do", self.window_days)
@@ -520,39 +534,51 @@ class ResultsScraper:
             cache = read_cached_results(conn, target_dates)
 
             # 2) determine which dates we still need to scrape on Tennis Explorer
-            dates_needing_te = []
-            pending_dates = {
-                d
-                for _, d, *_ in pending
-                if isinstance(d, str) and d in target_dates
-            }
-            for d in sorted(target_dates):
-                bucket = cache.get(d) or {}
+            dates_needing_te: set[str] = set()
+            pending_dates: set[str] = set()
+            for row in pending:
+                placement_date = row[1]
+                raw_sched = row[6]
+                eff = normalize_schedule_date(raw_sched) or placement_date
+                if isinstance(eff, str) and eff in target_dates:
+                    pending_dates.add(eff)
+            for d_iso in sorted(target_dates):
+                bucket = cache.get(d_iso) or {}
+                try:
+                    d_obj = datetime.strptime(d_iso, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                # Tennis Explorer buckets can be +1/+2 calendar days vs the booked date;
+                # keep refreshing future buckets in expanded range until they become past days.
+                if d_obj > today:
+                    dates_needing_te.add(d_iso)
+                    continue
                 # always re-scrape today (live data); skip past days that already
                 # have a tennisexplorer entry in cache
-                if d == today.isoformat():
-                    dates_needing_te.append(d)
+                if d_iso == today.isoformat():
+                    dates_needing_te.add(d_iso)
                     continue
                 # If there are still pending bets on that date, force a fresh
                 # TE pass to avoid stale cache locking unresolved bets forever.
-                if d in pending_dates:
-                    dates_needing_te.append(d)
+                if d_iso in pending_dates:
+                    dates_needing_te.add(d_iso)
                     continue
                 has_te_entry = any(
                     v.get("source") == "tennisexplorer" for v in bucket.values()
                 )
                 if not has_te_entry:
-                    dates_needing_te.append(d)
+                    dates_needing_te.add(d_iso)
 
+            dates_te_list = sorted(dates_needing_te)
             te_results: dict[str, list[dict]] = {}
-            if dates_needing_te:
+            if dates_te_list:
                 try:
-                    te_results = await _scrape_te_dates(dates_needing_te)
+                    te_results = await _scrape_te_dates(dates_te_list)
                     n_te = _store_te_results_in_cache(conn, te_results)
                     LOGGER.info(
                         "Tennis Explorer: cached %d entries across %d dates",
                         n_te,
-                        len(dates_needing_te),
+                        len(dates_te_list),
                     )
                 except Exception as exc:
                     LOGGER.error("Tennis Explorer scraping failed entirely: %s", exc)
@@ -572,9 +598,10 @@ class ResultsScraper:
 
             # 5) Resolve pending bets
             updated = 0
-            for bet_id, bet_date, match_name, bet_on, odds, stake in pending:
+            for bet_id, placement_date, match_name, bet_on, odds, stake, raw_sched in pending:
+                resolve_date = normalize_schedule_date(raw_sched) or placement_date
                 try:
-                    bd = datetime.strptime(bet_date, "%Y-%m-%d").date()
+                    bd = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
                 except Exception:
                     continue
                 if bd < cutoff or bd > today:
@@ -585,15 +612,15 @@ class ResultsScraper:
                     LOGGER.warning("Bet %s has invalid match_name format: %r", bet_id, match_name)
                     continue
                 p1_raw, p2_raw = parts[0], parts[1]
-                # search nearby dates (+/- 1 day) to handle rescheduling
+                # search NEARBY_DAY_OFFSETS on [cutoff, lookup_upper] for rescheduling / TE buckets
                 nearby = [
                     (bd + timedelta(days=k)).isoformat()
                     for k in NEARBY_DAY_OFFSETS
-                    if cutoff <= bd + timedelta(days=k) <= today
+                    if cutoff <= bd + timedelta(days=k) <= lookup_upper
                 ]
                 hit = _lookup_in_cache(
                     cache,
-                    bet_date=bet_date,
+                    bet_date=str(resolve_date),
                     bet_p1=p1_raw,
                     bet_p2=p2_raw,
                     nearby_dates=nearby,

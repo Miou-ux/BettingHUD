@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 import argparse
 import os
 import sqlite3
@@ -7,8 +7,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.sync_tml_recent import sync_years
 from scripts.ml_model import TennisMLModel
+from scripts.sync_tours_daily import run_sync_bundle
 from scripts.bets_db import (
     DB_PATH_DEFAULT,
     META_LAST_ML_TRAIN_TS,
@@ -31,10 +31,12 @@ def update_model(min_year=2010):
     _log(f"=== Pipeline TML + ML | min_year={min_year} max_year={current_year} ===")
 
     t0 = time.perf_counter()
-    _log("Début synchronisation TennisMyLife (matches_recent) ...")
-    sync_years(min_year=min_year, max_year=current_year)
+    _log("Début synchronisation ATP+WTA (TML + Sackmann/TA) ...")
+    rc_sync = run_sync_bundle()
+    if rc_sync != 0:
+        _log(f"[WARN] Sync ATP+WTA incomplète (rc={rc_sync}). L'entraînement continue avec les données disponibles.")
     dt_sync = time.perf_counter() - t0
-    _log(f"Fin sync TML — durée {dt_sync:.1f}s ({dt_sync/60:.1f} min)")
+    _log(f"Fin sync ATP+WTA — durée {dt_sync:.1f}s ({dt_sync/60:.1f} min)")
 
     t1 = time.perf_counter()
     _log("Début chargement modèle + entraînement ...")
@@ -46,6 +48,9 @@ def update_model(min_year=2010):
     ml.train()
     dt_train = time.perf_counter() - t2
     _log(f"Fin entraînement ML — durée {dt_train:.1f}s ({dt_train/60:.1f} min)")
+    _log("Clusters « Player style » : consulter le bloc stdout « --- Player style clusters --- » (tri Ace%, random_state=42).")
+    _log("Matchup Synergy v4.6 : matrice style×style×surface + priors ATP/WTA (bayésien) persistés dans le bundle.")
+    _log("Style Drift v4.6 : détection transition (52 semaines vs 10 derniers matchs) incluse dans les features.")
 
     dt_total = time.perf_counter() - t_pipeline
     _log(f"=== TERMINÉ — total pipeline {dt_total:.1f}s ({dt_total/60:.1f} min) ===")

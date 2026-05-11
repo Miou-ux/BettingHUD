@@ -2,7 +2,8 @@ import os
 import sqlite3
 import re
 import sys
-from collections import deque
+from collections import defaultdict, deque
+from typing import Optional, Tuple
 
 import joblib
 import matplotlib.pyplot as plt
@@ -10,14 +11,198 @@ import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, brier_score_loss, classification_report
+from sklearn.cluster import KMeans
 from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBClassifier
 
 _ML_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ML_DIR not in sys.path:
     sys.path.insert(0, _ML_DIR)
+from tournament_geo import haversine_km, tournament_site_lon_lat_tz  # noqa: E402
 from micro_elo_engine import run_micro_elo_scan  # noqa: E402
-from surface_speed import lookup_surface_speed  # noqa: E402
+from surface_speed import (  # noqa: E402
+    effective_surface_speed_cpi,
+    infer_outdoor,
+    lookup_surface_speed,
+    weather_impact_scalars,
+)
+from value_detector import ValueDetector  # noqa: E402
+
+# Rang sémantique 0->3 après tri déterministe (moyenne Ace% dans le cluster sur les points d'ajustement) :
+STYLE_SEMANTIC_LABELS = (
+    "Big Server",  # 0 — plus forte moyenne Ace%
+    "Aggressive Baseliner",  # 1 — 2e par Ace% (référence attendue : 1st won % relativement haute au sein du jeu WTA/ATP varié)
+    "Tactical / Slicer",  # 2 — profil intermédiaire
+    "Counter-Puncher",  # 3 — plus faible moyenne Ace% (référence : résilience BP / jeu de contenance dans la matrice de matchup)
+)
+
+
+def build_style_semantic_rank_map(
+    km: KMeans,
+    X_fit: np.ndarray,
+) -> Tuple[np.ndarray, dict]:
+    """
+    Après kmeans.fit(X_fit) : pour chaque id brut de cluster sklearn, attribue un rang sémantique
+    stable 0..k-1 en triant par **moyenne de la colonne Ace%** (première coordonnée) sur les points
+    qui lui sont assignés (`labels_`). En cas de cluster vide, repli sur l’Ace centroïdale.
+
+    En cas d’égalité flottante : tri secondaire centroïde Ace décroissant, puis **id brut croissant**
+    pour une reproductibilité totale à données fixées avec `random_state=42`.
+
+    Retourne (rank_map, calibration_dict_jsonable) où `rank_map[cid_brut]` = rang sémantique.
+    """
+    X = np.asarray(X_fit, dtype=float)
+    labels = np.asarray(km.labels_, dtype=int)
+    k = int(km.n_clusters)
+    mean_aces = np.zeros(k, dtype=float)
+    counts = np.zeros(k, dtype=int)
+    cent_ace = np.asarray(km.cluster_centers_[:, 0], dtype=float)
+
+    for cid in range(k):
+        sel = labels == cid
+        counts[cid] = int(np.sum(sel))
+        if counts[cid] == 0:
+            mean_aces[cid] = float(cent_ace[cid])
+        else:
+            mean_aces[cid] = float(np.mean(X[sel, 0]))
+
+    order_cids = sorted(range(k), key=lambda c: (-mean_aces[c], -float(cent_ace[c]), int(c)))
+    rank_map = np.empty(k, dtype=int)
+    for semantic_r, cid in enumerate(order_cids):
+        rank_map[int(cid)] = int(semantic_r)
+
+    calibration = {
+        "mean_ace_by_raw_cluster_id": mean_aces.tolist(),
+        "centroid_ace_col0_by_raw_cluster_id": cent_ace.tolist(),
+        "count_assignments_on_fit_rows": counts.tolist(),
+        "deterministic_semantic_sort_raw_cluster_ids_desc": order_cids,
+        "style_semantic_labels_rank_0_is_big_server": list(STYLE_SEMANTIC_LABELS),
+    }
+    return rank_map, calibration
+
+
+def assign_player_style(
+    stats_52w: np.ndarray,
+    km: KMeans,
+    rank_of_cluster: np.ndarray,
+) -> Tuple[int, str]:
+    """Retourne (semantic_rank, label) à partir du vecteur tactique 52s [ace, 1st%, bp_saved, hold]."""
+    v = np.asarray(stats_52w, dtype=float).reshape(1, -1)
+    cid = int(km.predict(v)[0])
+    rk = int(rank_of_cluster[cid])
+    rk = max(0, min(len(STYLE_SEMANTIC_LABELS) - 1, rk))
+    return rk, STYLE_SEMANTIC_LABELS[rk]
+
+
+def style_matchup_bias_from_ranks(rank_p1: int, rank_p2: int, surface_slow: bool) -> float:
+    """Pondère le matchup style×surface (antisymétrique en (p1,p2))."""
+    r1, r2 = int(rank_p1), int(rank_p2)
+    r1 = max(0, min(3, r1))
+    r2 = max(0, min(3, r2))
+    base = np.zeros((4, 4), dtype=float)
+    slow = np.zeros((4, 4), dtype=float)
+    # Petit edge de base (symétrique antisymétrisé ci-dessous).
+    base[3, 0], base[0, 3] = 0.012, -0.012
+    base[3, 1], base[1, 3] = 0.007, -0.007
+    base[1, 2], base[2, 1] = 0.005, -0.005
+    base[2, 0], base[0, 2] = -0.004, 0.004
+    # Bonus contre-puncher vs gros serveur sur surface lente (consigne utilisateur).
+    slow[3, 0], slow[0, 3] = 0.028, -0.028
+    slow[2, 0], slow[0, 2] = 0.010, -0.010
+    s = 1.0 if surface_slow else 0.0
+    v = (base[r1, r2] - base[r2, r1]) + s * (slow[r1, r2] - slow[r2, r1])
+    return float(np.clip(v, -0.08, 0.08))
+
+
+def style_interaction_key(p1_style: str, p2_style: str, surface: str) -> str:
+    s1 = str(p1_style or "Unknown").strip() or "Unknown"
+    s2 = str(p2_style or "Unknown").strip() or "Unknown"
+    sf = str(surface or "Hard").strip().title() or "Hard"
+    return f"{s1}_vs_{s2}_{sf}"
+
+
+def _normalize_style_label(style_name: str) -> str:
+    s = str(style_name or "").strip().lower().replace("  ", " ")
+    if s in {"big server", "big_server"}:
+        return "Big Server"
+    if s in {"aggressive baseliner", "aggressive", "aggressive_baseliner"}:
+        return "Aggressive"
+    if s in {"tactical / slicer", "tactical/slicer", "tactical slicer"}:
+        return "Tactical/Slicer"
+    if s in {"counter-puncher", "counter puncher", "counter_puncher"}:
+        return "Counter-Puncher"
+    return "Unknown"
+
+
+# (Circuit, P1_Style, P2_Style, Slow_Surface) -> winrate delta prior (P1 perspective).
+TACTICAL_PRIORS = {
+    # ATP: service dominance patterns.
+    ("ATP", "Big Server", "Counter-Puncher", True): -0.10,
+    ("ATP", "Big Server", "Counter-Puncher", False): +0.08,
+    ("ATP", "Counter-Puncher", "Aggressive", True): +0.06,
+    # WTA: return/rhythm patterns.
+    ("WTA", "Aggressive", "Counter-Puncher", True): -0.05,
+    ("WTA", "Aggressive", "Counter-Puncher", False): +0.07,
+    ("WTA", "Tactical/Slicer", "Aggressive", True): +0.08,
+}
+
+
+def compute_matchup_synergy(
+    p1_style: str,
+    p2_style: str,
+    tour_label: str,
+    surface: str,
+    surface_speed: float,
+    style_surface_winrate_index: Optional[dict] = None,  # key: "TOUR|style_vs_style_surface"
+) -> dict:
+    """Bias bayésien: prior métier + empirical style matchup par circuit/surface."""
+    p1s = _normalize_style_label(p1_style)
+    p2s = _normalize_style_label(p2_style)
+    surf = str(surface or "Hard").strip().title() or "Hard"
+    speed = float(surface_speed) if surface_speed is not None else 0.75
+    is_slow = (surf.lower() == "clay") or (speed < 0.65)
+    tour_u = (str(tour_label or "ATP").upper() if tour_label else "ATP")
+    if tour_u not in {"ATP", "WTA"}:
+        tour_u = "ATP"
+
+    key_local = style_interaction_key(p1s, p2s, surf)
+    key = f"{tour_u}|{key_local}"
+    stats = (style_surface_winrate_index or {}).get(key, {})
+    n = int(stats.get("n", 0) or 0)
+    wr = float(stats.get("winrate", 0.5) or 0.5)
+    wr = float(np.clip(wr, 0.0, 1.0))
+    prior_value = float(TACTICAL_PRIORS.get((tour_u, p1s, p2s, bool(is_slow)), 0.0))
+    empirical_delta = float(wr - 0.5)
+    # weight = 1 / (1 + n/30). Unknown matchup -> full prior.
+    weight = 1.0 / (1.0 + (float(n) / 30.0))
+    bias = float(weight * prior_value + (1.0 - weight) * empirical_delta)
+
+    return {
+        "style_interaction_key": key,
+        "style_prior_value": prior_value,
+        "style_is_slow_surface": bool(is_slow),
+        "style_surface_winrate": wr,
+        "style_surface_samples": n,
+        "style_matchup_bias": float(np.clip(bias, -0.16, 0.16)),
+    }
+
+
+def resolve_segment_brier_score(ml: object, seg_key: object) -> float:
+    """Brier du segment (test) ou repli global — utilisable depuis le dashboard même si
+    Streamlit a mis en cache une instance de `TennisMLModel` créée avant l’ajout de
+    la méthode `segment_brier_for_key` sur la classe.
+    """
+    try:
+        loader = getattr(ml, "_load_bundle_if_needed", None)
+        if callable(loader):
+            loader()
+    except Exception:
+        pass
+    sk = str(seg_key or "").strip()
+    d = getattr(ml, "segment_brier_scores", None) or {}
+    if sk and sk in d:
+        return float(d[sk])
+    return float(getattr(ml, "global_test_brier", 0.12))
 
 
 class TennisMLModel:
@@ -52,7 +237,13 @@ class TennisMLModel:
         self.micro_speed_baseline = 0.75
         self.micro_speed_alpha = 0.35
         self.segment_blend_weight = 0.7
-        # ~30 features — Micro-Elo v3.5 + surface-speed interactions
+        self.segment_brier_scores = {}
+        self.global_test_brier = 0.12
+        self.style_kmeans: Optional[KMeans] = None
+        self.style_rank_map = None  # np.ndarray length K : brut sklearn -> rang sémantique 0..K-1
+        self.style_semantic_calibration: Optional[dict] = None  # mean_aces par brut, logs entraînement / bundle
+        self.style_surface_winrate_index: dict = {}
+        # ~43 features — v4.5 Human Factors: style KMeans, voyage, clutch 52s
         self.features = [
             "surface_encoded",
             "tournament_level_encoded",
@@ -90,9 +281,20 @@ class TennisMLModel:
             "home_adv_diff",
             "altitude",
             "indoor",
+            "humidity_impact",
+            "temperature_impact",
+            "market_sentiment_signal",
+            "points_defending_pct",
+            "pre_slam_fatigue",
+            "style_drift_detected",
+            "style_cluster_distance_diff",
+            "style_matchup_bias",
+            "travel_fatigue_index",
+            "style_cross_surface_impact",
+            "clutch_diff",
         ]
-        self.model_path = "models/xgb_model_tml_v1.pkl"
-        self.feature_plot_path = "models/feature_importance_tml_v1.png"
+        self.model_path = "models/xgb_model_tml_v45.pkl"
+        self.feature_plot_path = "models/feature_importance_tml_v45.png"
 
     @staticmethod
     def _expected_score(r_a, r_b):
@@ -130,6 +332,38 @@ class TennisMLModel:
         if len(parts) >= 2 and len(parts[-1]) == 1:
             initial = parts[-1]
         return f"{last} {initial}".strip()
+
+    @staticmethod
+    def _aligned_index_name_key(name):
+        """Même logique que les index `stats_engine` / Sackmann (Prénom Nom -> Nom I.)."""
+        try:
+            from scripts.player_identity import canonical_name, to_lastname_initial
+
+            raw = str(name or "").strip()
+            if not raw:
+                return None
+            c = canonical_name(to_lastname_initial(raw))
+            return c if c else TennisMLModel._name_key(raw)
+        except Exception:
+            return TennisMLModel._name_key(name)
+
+    def _get_refined_matchup_bias(
+        self,
+        *,
+        p1_style_name: str,
+        p2_style_name: str,
+        surface: str,
+        surface_speed: float,
+        tour_label: str,
+    ) -> dict:
+        return compute_matchup_synergy(
+            p1_style=p1_style_name,
+            p2_style=p2_style_name,
+            tour_label=tour_label,
+            surface=surface,
+            surface_speed=surface_speed,
+            style_surface_winrate_index=getattr(self, "style_surface_winrate_index", {}) or {},
+        )
 
     @staticmethod
     def _safe_second_srv_ratio(points_won_2nd, svpt, first_in):
@@ -334,6 +568,56 @@ class TennisMLModel:
         m = {"A": 1.0, "M": 2.0, "G": 3.0}
         return m.get(raw, 1.0)
 
+    @staticmethod
+    def _normalize_tourney_key(name):
+        n = str(name or "").lower()
+        n = re.sub(r"[^a-z0-9 ]+", " ", n)
+        n = re.sub(r"\s+", " ", n).strip()
+        return n[:96] if n else ""
+
+    @staticmethod
+    def _approx_defending_points(round_depth: int, tourney_level) -> float:
+        """Rough ATP/WTA scale for points historically tied to finishing round (defending proxy)."""
+        raw = str(tourney_level or "A").strip()
+        wta_alias = {"PM": "M", "P": "M", "I": "A", "D": "A", "F": "M", "O": "A", "W": "A"}
+        code = wta_alias.get(raw, raw)
+        try:
+            rd = int(round_depth) if round_depth is not None else 0
+        except Exception:
+            rd = 0
+        rd = max(0, min(int(rd), 8))
+        if code == "G":
+            table = {0: 0, 1: 10, 2: 45, 3: 90, 4: 180, 5: 360, 6: 720, 7: 1200, 8: 2000}
+        elif code == "M":
+            table = {0: 0, 1: 10, 2: 45, 3: 90, 4: 180, 5: 360, 6: 600, 7: 1000, 8: 1000}
+        else:
+            table = {0: 0, 1: 8, 2: 20, 3: 45, 4: 90, 5: 150, 6: 250, 7: 300, 8: 500}
+        return float(table.get(rd, 0))
+
+    @staticmethod
+    def _is_pre_slam_fatigue_week(ts) -> bool:
+        """Binary week *before* a major — calendar approximation (no outcome leakage)."""
+        if ts is None:
+            return False
+        try:
+            if pd.isna(ts):
+                return False
+        except Exception:
+            return False
+        d = pd.Timestamp(ts).normalize()
+        y = int(d.year)
+        slam_mondays = [
+            pd.Timestamp(y, 1, 15),
+            pd.Timestamp(y, 5, 27),
+            pd.Timestamp(y, 7, 1),
+            pd.Timestamp(y, 8, 26),
+        ]
+        for sm in slam_mondays:
+            start = sm - pd.Timedelta(days=7)
+            if start <= d < sm:
+                return True
+        return False
+
     def _build_elo_features(self, matches_df, base_elo=1500.0, decay_tau_days=365.0):
         """Micro-Elo service/return (Tennis Abstract surface-speed weighting)."""
         out = run_micro_elo_scan(
@@ -384,6 +668,9 @@ class TennisMLModel:
         hist_micro = {}
         # per-player (date, surface_speed, win_flag) for speed affinity / correlation features
         hist_speed = {}
+        # Tactical KMeans input: (dt, ace%, 1st serve won / 1st in, BP saved%, hold%)
+        hist_tac = defaultdict(lambda: deque(maxlen=260))
+        player_last_geo = {}
         last_date = {}
 
         # H2H directional stats
@@ -392,6 +679,8 @@ class TennisMLModel:
         # per-player performance vs opponent style cluster
         style_vs_wins = {}
         style_vs_matches = {}
+        # Same tournament last year : best round reached (for points-defending proxy)
+        edition_player_best_round = {}
 
         w_days_rest, l_days_rest = [], []
         # Smarter "workload" features that disambiguate "few minutes because winning easy"
@@ -421,6 +710,18 @@ class TennisMLModel:
         w_inact_decay, l_inact_decay = [], []
         w_home, l_home = [], []
         altitude_list, indoor_list = [], []
+        w_pts_def_ratio, l_pts_def_ratio = [], []
+        pre_slam_fatigue_list = []
+        w_tac_ace, l_tac_ace = [], []
+        w_tac_f1, l_tac_f1 = [], []
+        w_tac_bp, l_tac_bp = [], []
+        w_tac_hold, l_tac_hold = [], []
+        w_tac10_ace, l_tac10_ace = [], []
+        w_tac10_f1, l_tac10_f1 = [], []
+        w_tac10_bp, l_tac10_bp = [], []
+        w_tac10_hold, l_tac10_hold = [], []
+        w_travel_pen, l_travel_pen = [], []
+        w_clutch52, l_clutch52 = [], []
 
         td7 = pd.Timedelta(days=7)
         td90 = pd.Timedelta(days=90)
@@ -456,6 +757,14 @@ class TennisMLModel:
                 w_speed_affinity.append(0.0); l_speed_affinity.append(0.0)
                 w_speed_perf_delta.append(0.0); l_speed_perf_delta.append(0.0)
                 w_bp_resilience.append(0.5); l_bp_resilience.append(0.5)
+                w_pts_def_ratio.append(0.0); l_pts_def_ratio.append(0.0)
+                pre_slam_fatigue_list.append(0.0)
+                w_tac_ace.append(0.08); l_tac_ace.append(0.08)
+                w_tac_f1.append(0.62); l_tac_f1.append(0.62)
+                w_tac_bp.append(0.58); l_tac_bp.append(0.58)
+                w_tac_hold.append(0.75); l_tac_hold.append(0.75)
+                w_travel_pen.append(0.0); l_travel_pen.append(0.0)
+                w_clutch52.append(0.5); l_clutch52.append(0.5)
                 continue
 
             altitude, indoor, country_ioc = self._infer_tournament_context(row.tourney_name)
@@ -477,11 +786,117 @@ class TennisMLModel:
             w_inact_decay.append(self._inactivity_decay(w_days_rest[-1]))
             l_inact_decay.append(self._inactivity_decay(l_days_rest[-1]))
 
+            nt = self._normalize_tourney_key(getattr(row, "tourney_name", None))
+            y = int(pd.Timestamp(dt).year)
+            lvl_cell = getattr(row, "tourney_level", None)
+            if lvl_cell is None or (isinstance(lvl_cell, float) and np.isnan(lvl_cell)):
+                lvl_cell = self._infer_tourney_level_from_name(getattr(row, "tourney_name", None))
+            def_prev_w = edition_player_best_round.get((wid, nt, y - 1), 0)
+            def_prev_l = edition_player_best_round.get((lid, nt, y - 1), 0)
+            wyn = float(row.winner_rank_points) if pd.notna(getattr(row, "winner_rank_points", np.nan)) else 1.0
+            lyn = float(row.loser_rank_points) if pd.notna(getattr(row, "loser_rank_points", np.nan)) else 1.0
+            wyn = max(1.0, wyn)
+            lyn = max(1.0, lyn)
+            pts_w = self._approx_defending_points(def_prev_w, lvl_cell) / wyn
+            pts_l = self._approx_defending_points(def_prev_l, lvl_cell) / lyn
+            pre_sl = 1.0 if self._is_pre_slam_fatigue_week(dt) else 0.0
+            w_pts_def_ratio.append(float(pts_w))
+            l_pts_def_ratio.append(float(pts_l))
+            pre_slam_fatigue_list.append(float(pre_sl))
+
             rspeed = getattr(row, "surface_speed", np.nan)
             if rspeed is not None and not (isinstance(rspeed, float) and np.isnan(rspeed)):
                 spd = float(rspeed)
             else:
                 spd = float(lookup_surface_speed(getattr(row, "tourney_name", None), getattr(row, "surface", None)))
+
+            clat, clon, ctz = tournament_site_lon_lat_tz(getattr(row, "tourney_name", None))
+
+            def _mean_tac_vec(dq, ref_dt):
+                if dq is None or len(dq) == 0:
+                    return np.array([0.08, 0.62, 0.58, 0.75], dtype=float)
+                rec = [x for x in dq if x[0] >= ref_dt - td365]
+                if len(rec) < 5:
+                    return np.array([0.08, 0.62, 0.58, 0.75], dtype=float)
+                return np.array(
+                    [
+                        float(np.mean([x[1] for x in rec])),
+                        float(np.mean([x[2] for x in rec])),
+                        float(np.mean([x[3] for x in rec])),
+                        float(np.mean([x[4] for x in rec])),
+                    ],
+                    dtype=float,
+                )
+
+            def _mean_clutch52_scalar(cdq, ref_dt):
+                if cdq is None or len(cdq) == 0:
+                    return 0.5
+                c12 = [x for x in cdq if x[0] >= ref_dt - td365]
+                if len(c12) < 3:
+                    return 0.5
+                bp_saved_vals = [x[1] for x in c12 if not pd.isna(x[1])]
+                bp_conv_vals = [x[2] for x in c12 if not pd.isna(x[2])]
+                tb_w = float(np.nansum([x[3] for x in c12]))
+                tb_p = float(np.nansum([x[4] for x in c12]))
+                m1 = float(np.mean(bp_saved_vals)) if bp_saved_vals else 0.5
+                m2 = float(np.mean(bp_conv_vals)) if bp_conv_vals else 0.5
+                m3 = (tb_w / tb_p) if tb_p > 0 else 0.5
+                return float(np.clip((m1 + m2 + m3) / 3.0, 0.0, 1.0))
+
+            def _travel_pen(prev_geo, rest_d):
+                if prev_geo is None:
+                    return 0.0
+                try:
+                    rd = float(rest_d)
+                except Exception:
+                    rd = 14.0
+                if rd >= 4:
+                    return 0.0
+                olat, olon, otz = prev_geo
+                dist_km = haversine_km(float(olat), float(olon), float(clat), float(clon))
+                if dist_km > 4000.0 or abs(float(ctz) - float(otz)) > 4:
+                    return 0.05
+                return 0.0
+
+            tw_vec = _mean_tac_vec(hist_tac.get(wid), dt)
+            tl_vec = _mean_tac_vec(hist_tac.get(lid), dt)
+            def _mean_tac_vec_recent10(dq):
+                if dq is None or len(dq) == 0:
+                    return np.array([0.08, 0.62, 0.58, 0.75], dtype=float)
+                rec = list(dq)[-10:]
+                if len(rec) < 3:
+                    return np.array([0.08, 0.62, 0.58, 0.75], dtype=float)
+                return np.array(
+                    [
+                        float(np.mean([x[1] for x in rec])),
+                        float(np.mean([x[2] for x in rec])),
+                        float(np.mean([x[3] for x in rec])),
+                        float(np.mean([x[4] for x in rec])),
+                    ],
+                    dtype=float,
+                )
+            tw10_vec = _mean_tac_vec_recent10(hist_tac.get(wid))
+            tl10_vec = _mean_tac_vec_recent10(hist_tac.get(lid))
+            w_tac_ace.append(float(tw_vec[0]))
+            w_tac_f1.append(float(tw_vec[1]))
+            w_tac_bp.append(float(tw_vec[2]))
+            w_tac_hold.append(float(tw_vec[3]))
+            l_tac_ace.append(float(tl_vec[0]))
+            l_tac_f1.append(float(tl_vec[1]))
+            l_tac_bp.append(float(tl_vec[2]))
+            l_tac_hold.append(float(tl_vec[3]))
+            w_tac10_ace.append(float(tw10_vec[0]))
+            w_tac10_f1.append(float(tw10_vec[1]))
+            w_tac10_bp.append(float(tw10_vec[2]))
+            w_tac10_hold.append(float(tw10_vec[3]))
+            l_tac10_ace.append(float(tl10_vec[0]))
+            l_tac10_f1.append(float(tl10_vec[1]))
+            l_tac10_bp.append(float(tl10_vec[2]))
+            l_tac10_hold.append(float(tl10_vec[3]))
+            w_clutch52.append(_mean_clutch52_scalar(hist_clutch.get(wid), dt))
+            l_clutch52.append(_mean_clutch52_scalar(hist_clutch.get(lid), dt))
+            w_travel_pen.append(_travel_pen(player_last_geo.get(wid), w_days_rest[-1]))
+            l_travel_pen.append(_travel_pen(player_last_geo.get(lid), l_days_rest[-1]))
 
             def _speed_metrics(pid):
                 dq = hist_speed.get(pid)
@@ -718,6 +1133,12 @@ class TennisMLModel:
             l_break = max(0.0, min(1.0, l_break))
 
             round_depth = self._round_depth(getattr(row, "round", None))
+            edition_player_best_round[(wid, nt, y)] = max(
+                edition_player_best_round.get((wid, nt, y), 0), int(round_depth)
+            )
+            edition_player_best_round[(lid, nt, y)] = max(
+                edition_player_best_round.get((lid, nt, y), 0), int(round_depth)
+            )
             best_of = getattr(row, "best_of", None)
             three_plus = self._is_three_plus_setter(getattr(row, "score", None), best_of)
             hist[wid].append((dt, True, mins, sets, w_ssr_current, round_depth, three_plus))
@@ -734,6 +1155,12 @@ class TennisMLModel:
             l_serve_win = self._safe_ratio((float(row.l_1stWon) if pd.notna(row.l_1stWon) else 0.0) + (float(row.l_2ndWon) if pd.notna(row.l_2ndWon) else 0.0), row.l_svpt, default=0.60)
             hist_style.setdefault(wid, deque()).append((dt, w_ace_rate, w_serve_win, w_break))
             hist_style.setdefault(lid, deque()).append((dt, l_ace_rate, l_serve_win, l_break))
+            w_fst_in_pct = self._safe_ratio(row.w_1stWon, row.w_1stIn, default=np.nan)
+            l_fst_in_pct = self._safe_ratio(row.l_1stWon, row.l_1stIn, default=np.nan)
+            w_bp_sv_m = self._safe_ratio(row.w_bpSaved, row.w_bpFaced, default=np.nan)
+            l_bp_sv_m = self._safe_ratio(row.l_bpSaved, row.l_bpFaced, default=np.nan)
+            hist_tac[wid].append((dt, float(w_ace_rate), float(w_fst_in_pct or 0.62), float(w_bp_sv_m or 0.58), float(w_hold)))
+            hist_tac[lid].append((dt, float(l_ace_rate), float(l_fst_in_pct or 0.62), float(l_bp_sv_m or 0.58), float(l_hold)))
 
             # update clutch rolling stats
             w_bp_saved = self._safe_ratio(row.w_bpSaved, row.w_bpFaced, default=np.nan)
@@ -773,6 +1200,8 @@ class TennisMLModel:
             hist_micro.setdefault(wid, deque()).append((dt, w_first_pct, w_bp_conv, w_dom))
             hist_micro.setdefault(lid, deque()).append((dt, l_first_pct, l_bp_conv, l_dom))
 
+            player_last_geo[wid] = (clat, clon, ctz)
+            player_last_geo[lid] = (clat, clon, ctz)
             last_date[wid] = dt
             last_date[lid] = dt
 
@@ -830,7 +1259,57 @@ class TennisMLModel:
             "loser_speed_perf_delta": pd.Series(l_speed_perf_delta),
             "altitude": pd.Series(altitude_list),
             "indoor": pd.Series(indoor_list),
+            "winner_pts_def_ratio": pd.Series(w_pts_def_ratio),
+            "loser_pts_def_ratio": pd.Series(l_pts_def_ratio),
+            "pre_slam_fatigue": pd.Series(pre_slam_fatigue_list),
+            "winner_tac_ace": pd.Series(w_tac_ace),
+            "loser_tac_ace": pd.Series(l_tac_ace),
+            "winner_tac_f1": pd.Series(w_tac_f1),
+            "loser_tac_f1": pd.Series(l_tac_f1),
+            "winner_tac_bp": pd.Series(w_tac_bp),
+            "loser_tac_bp": pd.Series(l_tac_bp),
+            "winner_tac_hold": pd.Series(w_tac_hold),
+            "loser_tac_hold": pd.Series(l_tac_hold),
+            "winner_tac10_ace": pd.Series(w_tac10_ace),
+            "loser_tac10_ace": pd.Series(l_tac10_ace),
+            "winner_tac10_f1": pd.Series(w_tac10_f1),
+            "loser_tac10_f1": pd.Series(l_tac10_f1),
+            "winner_tac10_bp": pd.Series(w_tac10_bp),
+            "loser_tac10_bp": pd.Series(l_tac10_bp),
+            "winner_tac10_hold": pd.Series(w_tac10_hold),
+            "loser_tac10_hold": pd.Series(l_tac10_hold),
+            "winner_travel_penalty": pd.Series(w_travel_pen),
+            "loser_travel_penalty": pd.Series(l_travel_pen),
+            "winner_clutch52": pd.Series(w_clutch52),
+            "loser_clutch52": pd.Series(l_clutch52),
         }
+
+    def _print_player_style_cluster_report(self) -> None:
+        cal = getattr(self, "style_semantic_calibration", None)
+        km = getattr(self, "style_kmeans", None)
+        rk = getattr(self, "style_rank_map", None)
+        if cal is None or km is None or rk is None:
+            print("\n--- Player style clusters (KMeans) — désactivé (données tactiques insuffisantes ou bundle sans calibration) ---\n")
+            return
+        means = np.asarray(cal.get("mean_ace_by_raw_cluster_id", []), dtype=float)
+        cents = np.asarray(cal.get("centroid_ace_col0_by_raw_cluster_id", []), dtype=float)
+        cnt = np.asarray(cal.get("count_assignments_on_fit_rows", []), dtype=int)
+        order = cal.get("deterministic_semantic_sort_raw_cluster_ids_desc", [])
+        print("\n--- Player style clusters — tri déterministe (mean Ace sur points d’ajustement, décroissant -> rang 0 = Big Server) ---")
+        for sem, raw_cid in enumerate(order):
+            rc = int(raw_cid)
+            ma = float(means[rc]) if rc < len(means) else float("nan")
+            ca = float(cents[rc]) if rc < len(cents) else float("nan")
+            nc = int(cnt[rc]) if rc < len(cnt) else -1
+            print(
+                f"  rang sémantique {sem} ({STYLE_SEMANTIC_LABELS[sem]}): brut cluster_id={rc} | "
+                f"mean_ace={ma:.6f} | centroïde_ace={ca:.6f} | n_points_fit={nc}"
+            )
+        print(f"  style_rank_map (brut->sémantique): {np.asarray(rk, dtype=int).tolist()}")
+        mm = getattr(self, "style_surface_winrate_index", {}) or {}
+        if mm:
+            print(f"  style_surface_winrate_index: {len(mm)} combinaisons style×style×surface")
+        print("--- Fin rapport styles joueur ---\n")
 
     def prepare_data(self):
         print("Chargement et préparation des données (ATP TML + WTA Sackmann)...")
@@ -885,13 +1364,37 @@ class TennisMLModel:
         df = df.sort_values("tourney_date").reset_index(drop=True)
         print(f"  Total rows after cleaning: {len(df)} (ATP={int((df['tour']=='ATP').sum())}, WTA={int((df['tour']=='WTA').sum())})")
 
-        def _row_surface_speed(row):
+        if "humidity_pct" not in df.columns:
+            df["humidity_pct"] = np.nan
+        if "temp_c" not in df.columns:
+            df["temp_c"] = np.nan
+
+        def _row_base_cpi(row):
             v = getattr(row, "surface_speed", None)
             if v is not None and not (isinstance(v, float) and np.isnan(v)):
                 return float(v)
             return float(lookup_surface_speed(getattr(row, "tourney_name", None), getattr(row, "surface", None)))
 
-        df["surface_speed"] = df.apply(_row_surface_speed, axis=1)
+        df["_base_cpi"] = df.apply(_row_base_cpi, axis=1)
+        df["_outdoor"] = df.apply(
+            lambda r: infer_outdoor(getattr(r, "indoor", None), getattr(r, "tourney_name", None)),
+            axis=1,
+        )
+        hum_imp, temp_imp, eff_spd = [], [], []
+        for _, r in df.iterrows():
+            o = bool(r["_outdoor"])
+            hp = float(r["humidity_pct"]) if pd.notna(r["humidity_pct"]) else None
+            tc = float(r["temp_c"]) if pd.notna(r["temp_c"]) else None
+            hi, ti = weather_impact_scalars(o, hp, tc)
+            eff = effective_surface_speed_cpi(float(r["_base_cpi"]), o, hp, tc)
+            hum_imp.append(hi)
+            temp_imp.append(ti)
+            eff_spd.append(eff)
+        df["humidity_impact"] = hum_imp
+        df["temperature_impact"] = temp_imp
+        df["surface_speed"] = eff_spd
+        df["market_sentiment_signal"] = 0.0
+        df.drop(columns=["_base_cpi", "_outdoor"], inplace=True)
 
         # Micro-Elo + legacy Elo columns (pre-match, no leakage)
         (
@@ -916,6 +1419,108 @@ class TennisMLModel:
         temporal = self._build_temporal_features(df)
         for k, v in temporal.items():
             df[k] = v
+
+        _tac_w_cols = ["winner_tac_ace", "winner_tac_f1", "winner_tac_bp", "winner_tac_hold"]
+        _tac_l_cols = ["loser_tac_ace", "loser_tac_f1", "loser_tac_bp", "loser_tac_hold"]
+        _tac10_w_cols = ["winner_tac10_ace", "winner_tac10_f1", "winner_tac10_bp", "winner_tac10_hold"]
+        _tac10_l_cols = ["loser_tac10_ace", "loser_tac10_f1", "loser_tac10_bp", "loser_tac10_hold"]
+        _base_names = ["tac_ace", "tac_f1", "tac_bp", "tac_hold"]
+        _A = df[_tac_w_cols].astype(float).replace([np.inf, -np.inf], np.nan).rename(columns=dict(zip(_tac_w_cols, _base_names)))
+        _B = df[_tac_l_cols].astype(float).replace([np.inf, -np.inf], np.nan).rename(columns=dict(zip(_tac_l_cols, _base_names)))
+        _stack_tac = pd.concat([_A, _B], axis=0, ignore_index=True)
+        _med = _stack_tac.median()
+        _stack_tac = _stack_tac.fillna(_med).fillna(pd.Series({k: [0.08, 0.62, 0.58, 0.75][i] for i, k in enumerate(_base_names)}))
+
+        def _median_fill_tac(sub_old_names: list) -> np.ndarray:
+            sub = df[sub_old_names].astype(float).replace([np.inf, -np.inf], np.nan).rename(columns=dict(zip(sub_old_names, _base_names)))
+            out = sub.copy()
+            for c in _base_names:
+                out[c] = out[c].fillna(float(_med.get(c, 0.08)))
+            return np.asarray(out[_base_names].fillna(0.08).values, dtype=float)
+
+        if len(_stack_tac) >= 400:
+            X_tac = np.asarray(_stack_tac.values, dtype=float)
+            km = KMeans(n_clusters=4, random_state=42, n_init=15, algorithm="lloyd").fit(X_tac)
+            self.style_kmeans = km
+            self.style_rank_map, self.style_semantic_calibration = build_style_semantic_rank_map(km, X_tac)
+            ww = _median_fill_tac(_tac_w_cols)
+            lw = _median_fill_tac(_tac_l_cols)
+            ww10 = _median_fill_tac(_tac10_w_cols)
+            lw10 = _median_fill_tac(_tac10_l_cols)
+            pw = km.predict(ww)
+            pl = km.predict(lw)
+            pw10 = km.predict(ww10)
+            pl10 = km.predict(lw10)
+            rw = self.style_rank_map[np.asarray(pw, dtype=int)]
+            rl = self.style_rank_map[np.asarray(pl, dtype=int)]
+            rw10 = self.style_rank_map[np.asarray(pw10, dtype=int)]
+            rl10 = self.style_rank_map[np.asarray(pl10, dtype=int)]
+            try:
+                ss = df["surface_speed"].astype(float)
+            except Exception:
+                ss = pd.Series(0.75, index=df.index)
+            surf_slow = df["surface"].astype(str).str.lower().eq("clay").values | (ss.values < 0.68)
+            p1_styles = [STYLE_SEMANTIC_LABELS[int(max(0, min(3, int(r))))] for r in rw]
+            p2_styles = [STYLE_SEMANTIC_LABELS[int(max(0, min(3, int(r))))] for r in rl]
+            # Build historical style-vs-style winrate matrix on this training corpus
+            # with both orientations to avoid directional sparsity.
+            matchup_wins = defaultdict(int)
+            matchup_n = defaultdict(int)
+            for s1, s2, sf, tr in zip(
+                p1_styles,
+                p2_styles,
+                df["surface"].astype(str).values,
+                df["tour"].astype(str).values,
+            ):
+                tr_u = (str(tr).upper() if tr else "ATP")
+                if tr_u not in {"ATP", "WTA"}:
+                    tr_u = "ATP"
+                k_w = f"{tr_u}|{style_interaction_key(s1, s2, sf)}"
+                k_l = f"{tr_u}|{style_interaction_key(s2, s1, sf)}"
+                matchup_wins[k_w] += 1
+                matchup_n[k_w] += 1
+                matchup_n[k_l] += 1
+            self.style_surface_winrate_index = {
+                k: {
+                    "wins": int(matchup_wins.get(k, 0)),
+                    "n": int(matchup_n.get(k, 0)),
+                    "winrate": float(matchup_wins.get(k, 0) / matchup_n[k]) if matchup_n[k] > 0 else 0.5,
+                }
+                for k in matchup_n.keys()
+            }
+            df["style_matchup_bias"] = [
+                self._get_refined_matchup_bias(
+                    p1_style_name=s1,
+                    p2_style_name=s2,
+                    surface=str(sf),
+                    surface_speed=float(sp),
+                    tour_label=str(tr),
+                )["style_matchup_bias"]
+                for s1, s2, sf, sp, tr in zip(
+                    p1_styles,
+                    p2_styles,
+                    df["surface"].astype(str).values,
+                    ss.values,
+                    df["tour"].astype(str).values,
+                )
+            ]
+            df["winner_style_drift_detected"] = (rw != rw10).astype(float)
+            df["loser_style_drift_detected"] = (rl != rl10).astype(float)
+            centers = np.asarray(km.cluster_centers_, dtype=float)
+            d_w = np.linalg.norm(ww - centers[np.asarray(pw, dtype=int)], axis=1)
+            d_l = np.linalg.norm(lw - centers[np.asarray(pl, dtype=int)], axis=1)
+            df["winner_style_cluster_distance"] = np.asarray(d_w, dtype=float)
+            df["loser_style_cluster_distance"] = np.asarray(d_l, dtype=float)
+        else:
+            self.style_kmeans = None
+            self.style_rank_map = np.arange(4, dtype=int)
+            self.style_semantic_calibration = None
+            self.style_surface_winrate_index = {}
+            df["style_matchup_bias"] = 0.0
+            df["winner_style_drift_detected"] = 0.0
+            df["loser_style_drift_detected"] = 0.0
+            df["winner_style_cluster_distance"] = 0.0
+            df["loser_style_cluster_distance"] = 0.0
 
         # Create oriented binary dataset (winner as p1 + loser as p1)
         df1 = pd.DataFrame()
@@ -960,6 +1565,23 @@ class TennisMLModel:
         df1["home_adv_diff"] = df["winner_home"] - df["loser_home"]
         df1["altitude"] = df["altitude"]
         df1["indoor"] = df["indoor"]
+        df1["humidity_impact"] = df["humidity_impact"]
+        df1["temperature_impact"] = df["temperature_impact"]
+        df1["market_sentiment_signal"] = df["market_sentiment_signal"]
+        df1["points_defending_pct"] = df["winner_pts_def_ratio"] - df["loser_pts_def_ratio"]
+        df1["pre_slam_fatigue"] = df["pre_slam_fatigue"]
+        df1["style_drift_detected"] = (
+            (df["winner_style_drift_detected"] > 0.5) | (df["loser_style_drift_detected"] > 0.5)
+        ).astype(float)
+        df1["style_cluster_distance_diff"] = (
+            df["winner_style_cluster_distance"] - df["loser_style_cluster_distance"]
+        )
+        df1["style_matchup_bias"] = df["style_matchup_bias"]
+        df1["travel_fatigue_index"] = df["winner_travel_penalty"] - df["loser_travel_penalty"]
+        df1["style_cross_surface_impact"] = (
+            (df["winner_clutch52"] - df["loser_clutch52"]) * df["surface_speed"].astype(float)
+        )
+        df1["clutch_diff"] = df["winner_clutch52"] - df["loser_clutch52"]
         df1["target"] = 1
 
         df2 = pd.DataFrame()
@@ -1004,6 +1626,23 @@ class TennisMLModel:
         df2["home_adv_diff"] = df["loser_home"] - df["winner_home"]
         df2["altitude"] = df["altitude"]
         df2["indoor"] = df["indoor"]
+        df2["humidity_impact"] = df["humidity_impact"]
+        df2["temperature_impact"] = df["temperature_impact"]
+        df2["market_sentiment_signal"] = df["market_sentiment_signal"]
+        df2["points_defending_pct"] = df["loser_pts_def_ratio"] - df["winner_pts_def_ratio"]
+        df2["pre_slam_fatigue"] = df["pre_slam_fatigue"]
+        df2["style_drift_detected"] = (
+            (df["winner_style_drift_detected"] > 0.5) | (df["loser_style_drift_detected"] > 0.5)
+        ).astype(float)
+        df2["style_cluster_distance_diff"] = (
+            df["loser_style_cluster_distance"] - df["winner_style_cluster_distance"]
+        )
+        df2["style_matchup_bias"] = -df["style_matchup_bias"]
+        df2["travel_fatigue_index"] = df["loser_travel_penalty"] - df["winner_travel_penalty"]
+        df2["style_cross_surface_impact"] = (
+            (df["loser_clutch52"] - df["winner_clutch52"]) * df["surface_speed"].astype(float)
+        )
+        df2["clutch_diff"] = df["loser_clutch52"] - df["winner_clutch52"]
         df2["target"] = 0
 
         dataset = pd.concat([df1, df2]).sort_values("tourney_date").reset_index(drop=True)
@@ -1083,7 +1722,7 @@ class TennisMLModel:
         # The Micro-Elo features now carry stronger point-level signal, so we can
         # afford to calibrate slightly smaller segments (400 instead of 600). Each
         # segment also stores its training-set size so predict_match can adapt the
-        # segment-vs-global blend dynamically (small segment → more global mix).
+        # segment-vs-global blend dynamically (small segment -> more global mix).
         self.model_segments = {}
         self.segment_train_sizes = {}
         seg_defs = [
@@ -1147,6 +1786,40 @@ class TennisMLModel:
         else:
             print("- Aucun segment assez grand pour évaluation dédiée.")
 
+        self.global_test_brier = float(brier_score_loss(y_test, y_prob))
+        self.segment_brier_scores = {}
+        for seg_name, seg_model in self.model_segments.items():
+            try:
+                if seg_name.startswith("WTA_"):
+                    parts = seg_name.split("_", 2)
+                    surf_map = {"Hard": 0.0, "Clay": 1.0, "Grass": 2.0}
+                    surf_code = float(surf_map.get(parts[1], 0.0))
+                    lvl_code = self._encode_tourney_level(parts[2])
+                    mask = (
+                        (X_test["surface_encoded"] == surf_code)
+                        & (X_test["tournament_level_encoded"] == lvl_code)
+                        & (X_test["tour_encoded"] == 1.0)
+                    )
+                else:
+                    srf, lvl = seg_name.split("_", 1)
+                    surf_map = {"Hard": 0.0, "Clay": 1.0, "Grass": 2.0}
+                    surf_code = float(surf_map.get(srf, 0.0))
+                    lvl_code = self._encode_tourney_level(lvl)
+                    mask = (X_test["surface_encoded"] == surf_code) & (
+                        X_test["tournament_level_encoded"] == lvl_code
+                    )
+                if int(mask.sum()) < 50:
+                    continue
+                p_seg = seg_model.predict_proba(X_test[mask])[:, 1]
+                self.segment_brier_scores[seg_name] = float(brier_score_loss(y_test[mask], p_seg))
+            except Exception:
+                continue
+        print(f"\nBrier global (test): {self.global_test_brier:.4f}")
+        if self.segment_brier_scores:
+            print("Brier par segment (test, probas segment):")
+            for k, v in sorted(self.segment_brier_scores.items()):
+                print(f"  - {k}: {v:.4f}")
+
         importances = pd.DataFrame({
             "Feature": self.features,
             "Importance": base_model.feature_importances_,
@@ -1159,12 +1832,14 @@ class TennisMLModel:
         plt.figure(figsize=(10, 6))
         top = importances.head(15).iloc[::-1]
         plt.barh(top["Feature"], top["Importance"])
-        plt.title("Feature Importance - XGBoost Tennis v3.5 (Micro-Elo + Surface Speed)")
+        plt.title("Feature Importance - XGBoost Tennis v4.5 (human factors)")
         plt.xlabel("Importance")
         plt.tight_layout()
         plt.savefig(self.feature_plot_path, dpi=140)
         plt.close()
         print(f"Graphique feature importance sauvegardé: {self.feature_plot_path}")
+
+        self._print_player_style_cluster_report()
 
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         bundle = {
@@ -1195,6 +1870,12 @@ class TennisMLModel:
             "surface_blend_n0": self.surface_blend_n0,
             "segment_blend_weight": self.segment_blend_weight,
             "features": self.features,
+            "segment_brier_scores": self.segment_brier_scores,
+            "global_test_brier": self.global_test_brier,
+            "style_kmeans": self.style_kmeans,
+            "style_rank_map": self.style_rank_map,
+            "style_semantic_calibration": self.style_semantic_calibration,
+            "style_surface_winrate_index": self.style_surface_winrate_index,
         }
         joblib.dump(bundle, self.model_path)
         print(f"\nModèle sauvegardé sous: {self.model_path}")
@@ -1240,9 +1921,89 @@ class TennisMLModel:
             self.surface_blend_n0 = float(loaded.get("surface_blend_n0", 30.0))
             self.segment_blend_weight = float(loaded.get("segment_blend_weight", 0.7))
             self.features = loaded.get("features", self.features)
+            self.segment_brier_scores = loaded.get("segment_brier_scores", {})
+            self.global_test_brier = float(loaded.get("global_test_brier", 0.12))
+            self.style_kmeans = loaded.get("style_kmeans")
+            self.style_rank_map = loaded.get("style_rank_map")
+            self.style_semantic_calibration = loaded.get("style_semantic_calibration")
+            self.style_surface_winrate_index = loaded.get("style_surface_winrate_index", {})
         else:
             self.model = loaded
             self.model_clay = None
+
+    def segment_brier_for_key(self, seg_key: object) -> float:
+        """Brier du segment de calibration (test hold-out) ; repli sur le Brier global."""
+        return resolve_segment_brier_score(self, seg_key)
+
+    @staticmethod
+    def defending_ratio_live(
+        db_path: str,
+        player_id,
+        tourney_name: object,
+        match_date,
+        current_points: float,
+        tour: str,
+    ) -> float:
+        """Ratio (proxy) points à défendre N-1 / points actuels — données strictement avant match."""
+        try:
+            pts = max(1.0, float(current_points))
+            yp = int(pd.Timestamp(match_date).year) - 1
+        except Exception:
+            return 0.0
+        nt = TennisMLModel._normalize_tourney_key(tourney_name)
+        if len(nt) < 3:
+            return 0.0
+        key_tok = nt.split()[0][:12]
+        tour_u = str(tour or "ATP").upper()
+        conn = sqlite3.connect(db_path)
+        df = None
+        try:
+            if tour_u == "WTA":
+                df = pd.read_sql(
+                    "SELECT * FROM wta_matches WHERE CAST(strftime('%Y', tourney_date) AS INTEGER)=?",
+                    conn,
+                    params=(yp,),
+                )
+            else:
+                df = pd.read_sql(
+                    "SELECT * FROM matches_recent WHERE source='tennismylife' "
+                    "AND CAST(strftime('%Y', tourney_date) AS INTEGER)=?",
+                    conn,
+                    params=(yp,),
+                )
+        except Exception:
+            df = None
+        finally:
+            conn.close()
+        if df is None or df.empty:
+            return 0.0
+        df["_tn"] = df["tourney_name"].astype(str).str.lower()
+        sub = df[df["_tn"].str.contains(re.escape(key_tok), regex=False, na=False)]
+        if sub.empty:
+            return 0.0
+        best_rd = 0
+        tw = str(tour_u)
+        raw_pid = str(player_id or "").strip()
+        for _, row in sub.iterrows():
+            if tw == "WTA":
+                try:
+                    wid = int(float(row.get("winner_id")))
+                    lid = int(float(row.get("loser_id")))
+                    p_int = int(float(str(raw_pid).replace("WTA::", "")))
+                except Exception:
+                    continue
+                if p_int not in (wid, lid):
+                    continue
+            else:
+                wk = f"ATP::{row.get('winner_id')}"
+                lk = f"ATP::{row.get('loser_id')}"
+                pk = raw_pid if raw_pid.startswith("ATP::") else f"ATP::{raw_pid}"
+                if pk not in (wk, lk):
+                    continue
+            best_rd = max(best_rd, int(TennisMLModel._round_depth(row.get("round"))))
+        lvl = sub.iloc[0].get("tourney_level")
+        appx = TennisMLModel._approx_defending_points(best_rd, lvl)
+        return float(min(3.0, appx / pts))
 
     def predict_match(
         self,
@@ -1311,6 +2072,25 @@ class TennisMLModel:
         p2_bp_resilience=None,
         tournament_level=None,
         tour=None,
+        humidity_pct=None,
+        temp_c=None,
+        opening_odd_p1=None,
+        current_odd_p1=None,
+        p1_points_def_ratio=None,
+        p2_points_def_ratio=None,
+        p1_tac_ace=None,
+        p1_tac_f1_pct=None,
+        p1_tac_bp_saved_pct=None,
+        p1_tac_hold_pct=None,
+        p2_tac_ace=None,
+        p2_tac_f1_pct=None,
+        p2_tac_bp_saved_pct=None,
+        p2_tac_hold_pct=None,
+        p1_travel_penalty_index=None,
+        p2_travel_penalty_index=None,
+        p1_clutch52=None,
+        p2_clutch52=None,
+        match_date=None,
     ):
         self._load_bundle_if_needed()
 
@@ -1333,8 +2113,8 @@ class TennisMLModel:
             return raw if raw.startswith(("ATP::", "WTA::")) else f"{tour_label}::{raw}"
         p1k = _prefix_id(p1k_raw)
         p2k = _prefix_id(p2k_raw)
-        p1n = self._name_key(p1_name)
-        p2n = self._name_key(p2_name)
+        p1n = self._aligned_index_name_key(p1_name)
+        p2n = self._aligned_index_name_key(p2_name)
         p1n_key = f"{tour_label}::{p1n}" if p1n else None
         p2n_key = f"{tour_label}::{p2n}" if p2n else None
 
@@ -1364,7 +2144,12 @@ class TennisMLModel:
             return base_elo + (rating - base_elo) * factor
 
         def _resolve_elo(pk, pn_key):
-            """Return (global_elo, surface_elo, surface_count, last_seen) after time-decay."""
+            """Return (global_elo, surface_elo_raw, surface_count, last_seen, source).
+
+            ``source`` ∈ {"bundle", "default"} — ``bundle`` when a rating was found in
+            the trained maps (by player id, legacy name dict, or **name key in player_elo**,
+            which is how micro-Elo stores name-only players).
+            """
             ge_raw = se_raw = base_elo
             n_surf = 0
             last_seen_iso = None
@@ -1378,19 +2163,27 @@ class TennisMLModel:
                 se_raw = self.player_name_surface_elo.get((pn_key, surface), ge_raw)
                 n_surf = int(self.player_surface_count_name.get((pn_key, surface), 0))
                 last_seen_iso = self.player_last_seen_name.get(pn_key)
+            elif pn_key and pn_key in self.player_elo:
+                # Name-keyed rows (e.g. WTA::bartunkova k) live in player_elo, not player_name_elo.
+                ge_raw = self.player_elo[pn_key]
+                se_raw = self.player_surface_elo.get((pn_key, surface), ge_raw)
+                n_surf = int(self.player_surface_count.get((pn_key, surface), 0))
+                last_seen_iso = self.player_last_seen.get(pn_key)
             else:
-                return base_elo, base_elo, 0, None
+                return base_elo, base_elo, 0, None, "default"
             ge = _decay_to_now(ge_raw, last_seen_iso)
             se = _decay_to_now(se_raw, last_seen_iso)
-            return ge, se, n_surf, last_seen_iso
+            return ge, se, n_surf, last_seen_iso, "bundle"
 
         def _effective_micro(pk, pn_key):
             """Blended micro service/return Elos for this surface: α = n/(n+30), plus decay."""
             sid = pk if pk and pk in self.player_service_elo else None
             if sid is None and pn_key and pn_key in getattr(self, "player_name_service_elo", {}):
                 sid = pn_key
+            if sid is None and pn_key and pn_key in self.player_service_elo:
+                sid = pn_key
             if sid is None:
-                return base_elo, base_elo, 0.0
+                return base_elo, base_elo, 0.0, "default"
             last_iso = self.player_last_seen.get(sid)
             wg = _decay_to_now(float(self.player_service_elo.get(sid, base_elo)), last_iso)
             wr_g = _decay_to_now(float(self.player_return_elo.get(sid, base_elo)), last_iso)
@@ -1403,16 +2196,29 @@ class TennisMLModel:
             wrs = _decay_to_now(wr_raw, last_iso)
             eff_s = alpha_m * ws + (1.0 - alpha_m) * wg
             eff_r = alpha_m * wrs + (1.0 - alpha_m) * wr_g
-            return eff_s, eff_r, alpha_m
+            return eff_s, eff_r, alpha_m, "bundle"
 
-        p1_global_elo, p1_surface_elo_raw, p1_n_surf, p1_last_seen = _resolve_elo(p1k, p1n_key)
-        p2_global_elo, p2_surface_elo_raw, p2_n_surf, p2_last_seen = _resolve_elo(p2k, p2n_key)
-        p1_service_elo, p1_return_elo, p1_micro_alpha = _effective_micro(p1k, p1n_key)
-        p2_service_elo, p2_return_elo, p2_micro_alpha = _effective_micro(p2k, p2n_key)
+        p1_global_elo, p1_surface_elo_raw, p1_n_surf, p1_last_seen, p1_g_src = _resolve_elo(
+            p1k, p1n_key
+        )
+        p2_global_elo, p2_surface_elo_raw, p2_n_surf, p2_last_seen, p2_g_src = _resolve_elo(
+            p2k, p2n_key
+        )
+        p1_service_elo, p1_return_elo, p1_micro_alpha, p1_m_src = _effective_micro(p1k, p1n_key)
+        p2_service_elo, p2_return_elo, p2_micro_alpha, p2_m_src = _effective_micro(p2k, p2n_key)
+
+        # If global lookup missed but micro found a player, approximate global Elo from micro
+        # (same formula as train-time player_elo snapshot = (serve+return)/2 at bundle build).
+        if p1_g_src == "default" and p1_m_src == "bundle":
+            p1_global_elo = (p1_service_elo + p1_return_elo) / 2.0
+            p1_g_src = "micro_avg"
+        if p2_g_src == "default" and p2_m_src == "bundle":
+            p2_global_elo = (p2_service_elo + p2_return_elo) / 2.0
+            p2_g_src = "micro_avg"
 
         # Surface-Elo confidence blending: a player with many surface matches keeps
-        # their surface Elo intact (alpha→1); a player with few surface matches has
-        # their surface Elo pulled toward their global Elo (alpha→0). This naturally
+        # their surface Elo intact (alpha->1); a player with few surface matches has
+        # their surface Elo pulled toward their global Elo (alpha->0). This naturally
         # damps noisy surface ratings without needing a post-hoc cap.
         alpha_p1 = p1_n_surf / (p1_n_surf + n0) if p1_n_surf > 0 else 0.0
         alpha_p2 = p2_n_surf / (p2_n_surf + n0) if p2_n_surf > 0 else 0.0
@@ -1474,7 +2280,138 @@ class TennisMLModel:
         p1_home = 1.0 if (country_ioc and p1_ioc and p1_ioc == country_ioc) else 0.0
         p2_home = 1.0 if (country_ioc and p2_ioc and p2_ioc == country_ioc) else 0.0
 
-        match_surface_speed = float(lookup_surface_speed(tournament_name, surface))
+        hp = None if humidity_pct is None else float(humidity_pct)
+        tc = None if temp_c is None else float(temp_c)
+        outdoor_m = infer_outdoor("I" if float(indoor) >= 0.5 else None, tournament_name)
+        base_cpi = float(lookup_surface_speed(tournament_name, surface))
+        match_surface_speed = float(effective_surface_speed_cpi(base_cpi, outdoor_m, hp, tc))
+        him, tim = weather_impact_scalars(outdoor_m, hp, tc)
+
+        p1_vec = np.array(
+            [
+                0.08 if p1_tac_ace is None else float(p1_tac_ace),
+                0.62 if p1_tac_f1_pct is None else float(p1_tac_f1_pct),
+                0.58 if p1_tac_bp_saved_pct is None else float(p1_tac_bp_saved_pct),
+                0.75 if p1_tac_hold_pct is None else float(p1_tac_hold_pct),
+            ],
+            dtype=float,
+        )
+        p2_vec = np.array(
+            [
+                0.08 if p2_tac_ace is None else float(p2_tac_ace),
+                0.62 if p2_tac_f1_pct is None else float(p2_tac_f1_pct),
+                0.58 if p2_tac_bp_saved_pct is None else float(p2_tac_bp_saved_pct),
+                0.75 if p2_tac_hold_pct is None else float(p2_tac_hold_pct),
+            ],
+            dtype=float,
+        )
+        km_live = getattr(self, "style_kmeans", None)
+        rk_live = getattr(self, "style_rank_map", None)
+        # `km.predict` donne un id brut sklearn ; `style_rank_map` (persisté bundle) impose le rang sémantique
+        # stable (0 Big Server … 3 CP) avant `style_matchup_bias_from_ranks`.
+        rk_np = (
+            np.asarray(rk_live, dtype=int).ravel()
+            if rk_live is not None
+            else np.array([], dtype=int)
+        )
+        _sy = {
+            "style_prior_value": 0.0,
+            "style_is_slow_surface": bool(str(surface).lower() == "clay" or match_surface_speed < 0.65),
+        }
+        n_k = int(km_live.n_clusters) if km_live is not None else 0
+        if km_live is not None and rk_np.size == n_k > 0:
+            _rp1, p1_style_name = assign_player_style(p1_vec, km_live, rk_np)
+            _rp2, p2_style_name = assign_player_style(p2_vec, km_live, rk_np)
+            p1_recent_vec = np.array(
+                [
+                    0.08 if p1_tac_ace is None else float(p1_tac_ace),
+                    p1_first10,
+                    p1_bp10,
+                    p1_hold_s,
+                ],
+                dtype=float,
+            )
+            p2_recent_vec = np.array(
+                [
+                    0.08 if p2_tac_ace is None else float(p2_tac_ace),
+                    p2_first10,
+                    p2_bp10,
+                    p2_hold_s,
+                ],
+                dtype=float,
+            )
+            p1_cur_cid = int(km_live.predict(p1_recent_vec.reshape(1, -1))[0])
+            p2_cur_cid = int(km_live.predict(p2_recent_vec.reshape(1, -1))[0])
+            p1_cur_rank = int(rk_np[p1_cur_cid])
+            p2_cur_rank = int(rk_np[p2_cur_cid])
+            p1_stable_rank = int(_rp1)
+            p2_stable_rank = int(_rp2)
+            p1_drift = 1.0 if p1_stable_rank != p1_cur_rank else 0.0
+            p2_drift = 1.0 if p2_stable_rank != p2_cur_rank else 0.0
+            style_drift_detected = 1.0 if (p1_drift > 0.5 or p2_drift > 0.5) else 0.0
+            centers = np.asarray(km_live.cluster_centers_, dtype=float)
+            p1_dist = float(np.linalg.norm(p1_vec - centers[int(km_live.predict(p1_vec.reshape(1, -1))[0])]))
+            p2_dist = float(np.linalg.norm(p2_vec - centers[int(km_live.predict(p2_vec.reshape(1, -1))[0])]))
+            style_cluster_distance_diff = float(p1_dist - p2_dist)
+            _sy = self._get_refined_matchup_bias(
+                p1_style_name=p1_style_name,
+                p2_style_name=p2_style_name,
+                surface=str(surface),
+                surface_speed=float(match_surface_speed),
+                tour_label=tour_label,
+            )
+            smb = float(_sy["style_matchup_bias"])
+            if style_drift_detected > 0.5:
+                smb *= 0.8
+            style_key = str(_sy["style_interaction_key"])
+            style_wr = float(_sy["style_surface_winrate"])
+            style_n = int(_sy["style_surface_samples"])
+            p1_d = np.linalg.norm(centers - p1_vec.reshape(1, -1), axis=1)
+            p2_d = np.linalg.norm(centers - p2_vec.reshape(1, -1), axis=1)
+            p1_sim = 1.0 / (1.0 + p1_d)
+            p2_sim = 1.0 / (1.0 + p2_d)
+            p1_mix = (p1_sim / max(1e-12, float(np.sum(p1_sim)))).tolist()
+            p2_mix = (p2_sim / max(1e-12, float(np.sum(p2_sim)))).tolist()
+        else:
+            p1_style_name = "—"
+            p2_style_name = "—"
+            smb = 0.0
+            style_key = ""
+            style_wr = 0.5
+            style_n = 0
+            p1_drift = p2_drift = 0.0
+            style_drift_detected = 0.0
+            style_cluster_distance_diff = 0.0
+            p1_dist = p2_dist = 0.0
+            p1_mix = [0.25, 0.25, 0.25, 0.25]
+            p2_mix = [0.25, 0.25, 0.25, 0.25]
+        tr1 = 0.0 if p1_travel_penalty_index is None else float(p1_travel_penalty_index)
+        tr2 = 0.0 if p2_travel_penalty_index is None else float(p2_travel_penalty_index)
+        travel_diff = float(tr1 - tr2)
+        c52_1 = 0.5 if p1_clutch52 is None else float(p1_clutch52)
+        c52_2 = 0.5 if p2_clutch52 is None else float(p2_clutch52)
+        clutch_diff_feat = float(c52_1 - c52_2)
+        style_cross_surface_impact = float(clutch_diff_feat * match_surface_speed)
+
+        msig = 0.0
+        try:
+            if opening_odd_p1 is not None and current_odd_p1 is not None:
+                msig = float(
+                    ValueDetector.market_sentiment_signal_p1(opening_odd_p1, current_odd_p1)
+                )
+        except Exception:
+            msig = 0.0
+
+        r1 = 0.0 if p1_points_def_ratio is None else float(p1_points_def_ratio)
+        r2 = 0.0 if p2_points_def_ratio is None else float(p2_points_def_ratio)
+        pts_def_diff = r1 - r2
+
+        try:
+            md = match_date if match_date is not None else pd.Timestamp.now()
+            md = pd.Timestamp(md)
+            pre_sl = 1.0 if self._is_pre_slam_fatigue_week(md) else 0.0
+        except Exception:
+            pre_sl = 0.0
         sa1 = 0.0 if p1_speed_affinity is None else float(p1_speed_affinity)
         sa2 = 0.0 if p2_speed_affinity is None else float(p2_speed_affinity)
         sd1 = 0.0 if p1_speed_performance_delta is None else float(p1_speed_performance_delta)
@@ -1543,10 +2480,21 @@ class TennisMLModel:
                 "home_adv_diff": p1_home - p2_home,
                 "altitude": altitude,
                 "indoor": indoor,
+                "humidity_impact": him,
+                "temperature_impact": tim,
+                "market_sentiment_signal": msig,
+                "points_defending_pct": pts_def_diff,
+                "pre_slam_fatigue": pre_sl,
+                "style_drift_detected": style_drift_detected,
+                "style_cluster_distance_diff": style_cluster_distance_diff,
+                "style_matchup_bias": smb,
+                "travel_fatigue_index": travel_diff,
+                "style_cross_surface_impact": style_cross_surface_impact,
+                "clutch_diff": clutch_diff_feat,
             }
         ])
 
-        # Calibration: blend segment (surface×niveau) with global to dampen
+        # Calibration: blend segment (surface×niveau) avec global pour limiter la sur‑ajustement
         # segment overfit on small samples. v3.4 makes the blend *adaptive*: small
         # segments get more global mix, big segments lean fully on the segment.
         #   blend_w = base_w * min(1, n_seg / 1500)
@@ -1560,6 +2508,7 @@ class TennisMLModel:
             wta_seg_key = f"WTA_{surface}_{lvl}"
             if wta_seg_key in self.model_segments:
                 seg_key = wta_seg_key
+        segment_calibration_key = str(seg_key)
         seg_model = self.model_segments.get(seg_key)
         global_probs = self.model.predict_proba(X_new[self.features])[0]
         global_p1 = float(global_probs[1])
@@ -1623,9 +2572,9 @@ class TennisMLModel:
         # surface_elo_diff, while noisy surface Elos are damped toward global Elo.
 
         # Graduated clamp on direction-mismatch with fundamentals:
-        # |fund_score| ≥ 5  → strong fundamentals dominate (cap to 0.30 / 0.70 against fund.)
-        # |fund_score| ≥ 3  → clear fundamentals (cap to 0.40 / 0.60 against fund.)
-        # |fund_score| ≥ 2  → mild fundamentals (cap to 0.35 / 0.65 against fund.)
+        # |fund_score| ≥ 5  -> strong fundamentals dominate (cap to 0.30 / 0.70 against fund.)
+        # |fund_score| ≥ 3  -> clear fundamentals (cap to 0.40 / 0.60 against fund.)
+        # |fund_score| ≥ 2  -> mild fundamentals (cap to 0.35 / 0.65 against fund.)
         if fundamental_score <= -2.0 and p1_prob > 0.50:
             if fundamental_score <= -5.0:
                 p1_prob = min(p1_prob, 0.30)
@@ -1659,6 +2608,12 @@ class TennisMLModel:
             p1_prob = max(0.25, min(0.75, p1_prob))
             caps_applied.append("cap_inactivity_45")
 
+        # Ajustement résilience clutch sur match « serrés » au sens probabilité calibrée brute.
+        if 0.45 <= raw_p1_prob <= 0.55:
+            p1_prob = float(p1_prob) + 0.04 * float(clutch_diff_feat)
+            p1_prob = float(np.clip(p1_prob, 0.02, 0.98))
+            caps_applied.append("post_clutch_tight")
+
         confidence = abs(p1_prob - 0.5) * 2.0
         p2_prob = 1.0 - p1_prob
         top_features = self.explain_local_top_features(X_new, top_k=5)
@@ -1686,6 +2641,9 @@ class TennisMLModel:
                 "p2_days_since_last_match": p2_days,
                 "p1_global_elo": float(p1_global_elo),
                 "p2_global_elo": float(p2_global_elo),
+                # bundle=from trained maps; default=1500; micro_avg=fallback (serve+return)/2
+                "p1_global_elo_tag": p1_g_src,
+                "p2_global_elo_tag": p2_g_src,
                 "p1_surface_elo": float(p1_surface_elo),
                 "p2_surface_elo": float(p2_surface_elo),
                 "p1_surface_elo_raw": float(p1_surface_elo_raw),
@@ -1701,6 +2659,8 @@ class TennisMLModel:
                 "p2_service_elo": float(p2_service_elo),
                 "p1_return_elo": float(p1_return_elo),
                 "p2_return_elo": float(p2_return_elo),
+                "p1_micro_elo_tag": p1_m_src,
+                "p2_micro_elo_tag": p2_m_src,
                 "p1_micro_blend_alpha": float(p1_micro_alpha),
                 "p2_micro_blend_alpha": float(p2_micro_alpha),
                 "surface_speed": float(match_surface_speed),
@@ -1713,7 +2673,34 @@ class TennisMLModel:
                 "wta_break_point_resilience": float(wta_break_point_resilience),
                 "p1_bp_resilience": float(p1_bp_res),
                 "p2_bp_resilience": float(p2_bp_res),
+                "segment_calibration_key": segment_calibration_key,
+                "human_p1_style": p1_style_name,
+                "human_p2_style": p2_style_name,
+                "style_matchup_bias": float(smb),
+                "style_interaction_key": style_key,
+                "style_prior_value": float(_sy.get("style_prior_value", 0.0)),
+                "style_is_slow_surface": bool(_sy.get("style_is_slow_surface", False)),
+                "style_surface_winrate_p1": float(style_wr),
+                "style_surface_winrate_samples": int(style_n),
+                "style_drift_detected": float(style_drift_detected),
+                "p1_style_drift_detected": float(p1_drift),
+                "p2_style_drift_detected": float(p2_drift),
+                "p1_style_cluster_distance": float(p1_dist),
+                "p2_style_cluster_distance": float(p2_dist),
+                "style_cluster_distance_diff": float(style_cluster_distance_diff),
+                "p1_style_mix": [float(x) for x in p1_mix],
+                "p2_style_mix": [float(x) for x in p2_mix],
+                "travel_fatigue_index": float(travel_diff),
+                "p1_jetlag_alert": float(tr1) >= 0.05,
+                "p2_jetlag_alert": float(tr2) >= 0.05,
+                "p1_travel_penalty_index": float(tr1),
+                "p2_travel_penalty_index": float(tr2),
+                "style_cross_surface_impact": float(style_cross_surface_impact),
+                "clutch_diff": float(clutch_diff_feat),
+                "p1_clutch52": float(c52_1),
+                "p2_clutch52": float(c52_2),
             },
+            "segment_calibration_key": segment_calibration_key,
         }
 
     def explain_local_top_features(self, feature_snapshot_df: pd.DataFrame, top_k: int = 5):

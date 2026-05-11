@@ -27,6 +27,17 @@ import numpy as np
 import pandas as pd
 
 from scripts.player_identity import canonical_name, to_lastname_initial
+
+def _canonical_player_index_key(name: str) -> str:
+    """Clé alignée sur les index ATP/WTA (`_build_*_indexes`).
+
+    Les flux peuvent envoyer « Prénom Nom » (Flashscore) ; `to_lastname_initial`
+    ramène au même libellé que les noms Sackmann pour le match WTA/ATP.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    return canonical_name(to_lastname_initial(raw)) or canonical_name(raw)
 from scripts.surface_speed import lookup_surface_speed
 
 
@@ -39,7 +50,12 @@ def _to_int_or_none(x) -> Optional[int]:
     except Exception:
         pass
     try:
-        return int(float(x))
+        s = str(x).strip()
+        if s.upper().startswith("WTA::"):
+            s = s.split("::", 1)[1]
+        elif s.upper().startswith("ATP::"):
+            s = s.split("::", 1)[1]
+        return int(float(s))
     except (TypeError, ValueError):
         return None
 
@@ -50,6 +66,10 @@ def _norm_pid_key(pid) -> Optional[str]:
         return None
     s = str(pid).strip()
     if not s or s.lower() == "nan":
+        return None
+    if s.upper().startswith("ATP::") or s.upper().startswith("WTA::"):
+        s = s.split("::", 1)[1].strip()
+    if not s:
         return None
     return s
 
@@ -276,16 +296,24 @@ class TennisStatsEngine:
             lid_s = _norm_pid_key(lid)
             if wid_s:
                 winner_idx.setdefault(wid_s, []).append(int(pos))
-                if wn:
-                    cn = canonical_name(to_lastname_initial(str(wn)))
-                    if cn and cn not in name_to_id:
-                        name_to_id[cn] = wid_s
             if lid_s:
                 loser_idx.setdefault(lid_s, []).append(int(pos))
-                if ln:
-                    cn = canonical_name(to_lastname_initial(str(ln)))
-                    if cn and cn not in name_to_id:
-                        name_to_id[cn] = lid_s
+
+        for pos in order[::-1]:
+            wid = winner_id_arr[pos]
+            lid = loser_id_arr[pos]
+            wn = winner_name_arr[pos]
+            ln = loser_name_arr[pos]
+            wid_s = _norm_pid_key(wid)
+            lid_s = _norm_pid_key(lid)
+            if wid_s and wn:
+                cn = canonical_name(to_lastname_initial(str(wn)))
+                if cn and cn not in name_to_id:
+                    name_to_id[cn] = wid_s
+            if lid_s and ln:
+                cn = canonical_name(to_lastname_initial(str(ln)))
+                if cn and cn not in name_to_id:
+                    name_to_id[cn] = lid_s
 
         self._atp_winner_idx = winner_idx
         self._atp_loser_idx = loser_idx
@@ -312,16 +340,25 @@ class TennisStatsEngine:
             ln = loser_name_arr[pos]
             if wid is not None:
                 winner_idx.setdefault(wid, []).append(int(pos))
-                if wn:
-                    cn = canonical_name(to_lastname_initial(str(wn)))
-                    if cn and cn not in name_to_id:
-                        name_to_id[cn] = wid
             if lid is not None:
                 loser_idx.setdefault(lid, []).append(int(pos))
-                if ln:
-                    cn = canonical_name(to_lastname_initial(str(ln)))
-                    if cn and cn not in name_to_id:
-                        name_to_id[cn] = lid
+
+        # Homonymes « Nom I. » : en parcourant du **plus récent** au plus ancien,
+        # la première affectation gagne -> plutôt le joueur encore actif (ex. Karolina
+        # vs Kristyna Pliskova, même clé `pliskova k`).
+        for pos in order[::-1]:
+            wid = _to_int_or_none(winner_id_arr[pos])
+            lid = _to_int_or_none(loser_id_arr[pos])
+            wn = winner_name_arr[pos]
+            ln = loser_name_arr[pos]
+            if wid is not None and wn:
+                cn = canonical_name(to_lastname_initial(str(wn)))
+                if cn and cn not in name_to_id:
+                    name_to_id[cn] = wid
+            if lid is not None and ln:
+                cn = canonical_name(to_lastname_initial(str(ln)))
+                if cn and cn not in name_to_id:
+                    name_to_id[cn] = lid
 
         self._wta_winner_idx = winner_idx
         self._wta_loser_idx = loser_idx
@@ -379,7 +416,7 @@ class TennisStatsEngine:
         La source ATP officielle est `matches_recent` (TennisMyLife). La WTA passe
         exclusivement par `wta_matches` (Sackmann).
         """
-        cn = canonical_name(str(player_name or ""))
+        cn = _canonical_player_index_key(str(player_name or ""))
         th = (tour_hint or "").strip().upper()
 
         if cn:
@@ -391,7 +428,7 @@ class TennisStatsEngine:
                 pid = self._wta_name_to_id.get(cn)
                 if pid is not None:
                     return {
-                        "player_id": str(pid),
+                        "player_id": f"WTA::{pid}",
                         "method": "wta_matches_name",
                         "confidence": 0.99,
                         "reason": "match_wta_canonical",
@@ -401,7 +438,7 @@ class TennisStatsEngine:
                 pid = self._atp_name_to_id.get(cn)
                 if pid:
                     return {
-                        "player_id": pid,
+                        "player_id": f"ATP::{pid}",
                         "method": "matches_recent_name",
                         "confidence": 0.99,
                         "reason": "match_atp_canonical",
@@ -412,7 +449,7 @@ class TennisStatsEngine:
                 pid = self._atp_name_to_id.get(cn)
                 if pid:
                     return {
-                        "player_id": pid,
+                        "player_id": f"ATP::{pid}",
                         "method": "matches_recent_name",
                         "confidence": 0.99,
                         "reason": "match_atp_canonical",
@@ -423,7 +460,7 @@ class TennisStatsEngine:
                 pid = self._wta_name_to_id.get(cn)
                 if pid is not None:
                     return {
-                        "player_id": str(pid),
+                        "player_id": f"WTA::{pid}",
                         "method": "wta_matches_name",
                         "confidence": 0.99,
                         "reason": "match_wta_canonical",
@@ -1046,6 +1083,173 @@ class TennisStatsEngine:
             "adjusted_hold_prob": combined,
             "true_odd": 1 / combined if combined > 0 else 0,
         }
+
+
+def _safe_ratio_hf(num, den, default=np.nan):
+    try:
+        n = float(num)
+        d = float(den)
+        if d <= 0:
+            return default
+        return n / d
+    except (TypeError, ValueError):
+        return default
+
+
+def _tb_wins_played_from_score(score_text: object, player_is_winner: bool) -> Tuple[float, float]:
+    if not isinstance(score_text, str):
+        return 0.0, 0.0
+    cleaned = score_text.split("RET")[0].split("W/O")[0].split("DEF")[0]
+    sets = re.findall(r"(\d+)\s*-\s*(\d+)", cleaned)
+    won = played = 0.0
+    for a, b in sets:
+        try:
+            sa, sb = int(a), int(b)
+        except ValueError:
+            continue
+        if (sa == 7 and sb == 6) or (sa == 6 and sb == 7):
+            played += 1.0
+            if (player_is_winner and sa == 7) or ((not player_is_winner) and sb == 7):
+                won += 1.0
+    return float(won), float(played)
+
+
+def tactical_vector_52weeks(rows: pd.DataFrame, name_key: str, ref_dt: pd.Timestamp, min_pts: int = 5):
+    """Moyenne 52 sem glissantes (ace%, 1er%, BP sauvés%, hold jeu de service %) — lignes hors `score` simplifiées."""
+    if rows is None or rows.empty or not name_key:
+        return 0.08, 0.62, 0.58, 0.75
+    try:
+        ref = pd.Timestamp(ref_dt).normalize()
+    except Exception:
+        ref = pd.Timestamp.now().normalize()
+    cutoff = ref - pd.Timedelta(days=365)
+    r = rows[rows["tourney_date"] < ref]
+    r = r[r["tourney_date"] >= cutoff]
+    if len(r) < min_pts:
+        return 0.08, 0.62, 0.58, 0.75
+
+    ace_l, f1_l, bp_l, hold_l, w_l = [], [], [], [], []
+    for x in r.itertuples(index=False):
+        is_w = getattr(x, "w_key", None) == name_key
+        try:
+            dtd = pd.Timestamp(getattr(x, "tourney_date"))
+            days_diff = max(0.0, float((ref - dtd).days))
+            wt = float(np.exp(-days_diff / 180.0))
+            if is_w:
+                ace_l.append(_safe_ratio_hf(x.w_ace, x.w_svpt, 0.06))
+                f1_l.append(_safe_ratio_hf(x.w_1stWon, x.w_1stIn, 0.62))
+                bp_l.append(_safe_ratio_hf(x.w_bpSaved, x.w_bpFaced, np.nan))
+                sv = float(x.w_SvGms) if pd.notna(getattr(x, "w_SvGms", np.nan)) else 0.0
+                bpf = float(x.w_bpFaced) if pd.notna(getattr(x, "w_bpFaced", np.nan)) else 0.0
+                bsv = float(x.w_bpSaved) if pd.notna(getattr(x, "w_bpSaved", np.nan)) else 0.0
+                l_sv = float(x.l_SvGms) if pd.notna(getattr(x, "l_SvGms", np.nan)) else 0.0
+            else:
+                ace_l.append(_safe_ratio_hf(x.l_ace, x.l_svpt, 0.06))
+                f1_l.append(_safe_ratio_hf(x.l_1stWon, x.l_1stIn, 0.62))
+                bp_l.append(_safe_ratio_hf(x.l_bpSaved, x.l_bpFaced, np.nan))
+                sv = float(x.l_SvGms) if pd.notna(getattr(x, "l_SvGms", np.nan)) else 0.0
+                bpf = float(x.l_bpFaced) if pd.notna(getattr(x, "l_bpFaced", np.nan)) else 0.0
+                bsv = float(x.l_bpSaved) if pd.notna(getattr(x, "l_bpSaved", np.nan)) else 0.0
+                l_sv = float(x.w_SvGms) if pd.notna(getattr(x, "w_SvGms", np.nan)) else 0.0
+            breaks_suf = max(0.0, bpf - bsv)
+            hold = (sv - breaks_suf) / sv if sv > 0 else 0.75
+            hold_l.append(max(0.0, min(1.0, hold)))
+            w_l.append(wt)
+        except Exception:
+            continue
+    if len(ace_l) < min_pts:
+        return 0.08, 0.62, 0.58, 0.75
+
+    def _m(vals, wts, d):
+        vw = [
+            (float(v), float(w))
+            for v, w in zip(vals, wts)
+            if not (isinstance(v, float) and np.isnan(v))
+        ]
+        if not vw:
+            return d
+        arr_v = np.asarray([x[0] for x in vw], dtype=float)
+        arr_w = np.asarray([x[1] for x in vw], dtype=float)
+        sw = float(np.sum(arr_w))
+        if sw <= 1e-12:
+            return float(np.mean(arr_v))
+        return float(np.sum(arr_v * arr_w) / sw)
+
+    return (
+        _m(ace_l, w_l, 0.08),
+        _m(f1_l, w_l, 0.62),
+        _m(bp_l, w_l, 0.58),
+        float(np.clip(_m(hold_l, w_l, 0.75), 0, 1)),
+    )
+
+
+def clutch_score_52weeks(rows: pd.DataFrame, name_key: str, ref_dt: pd.Timestamp, min_pts: int = 3):
+    """(BP_Saved% + BP_Converted% + TieBreak Win%) / 3 sur fenêtre ~52 semaines."""
+    if rows is None or rows.empty or not name_key:
+        return 0.5
+    try:
+        ref = pd.Timestamp(ref_dt).normalize()
+    except Exception:
+        ref = pd.Timestamp.now().normalize()
+    cutoff = ref - pd.Timedelta(days=365)
+    r = rows[rows["tourney_date"] < ref]
+    r = r[r["tourney_date"] >= cutoff]
+    if len(r) < min_pts:
+        return 0.5
+    bp_sv, bp_cnv = [], []
+    tb_w, tb_p = 0.0, 0.0
+    for x in r.itertuples(index=False):
+        is_w = getattr(x, "w_key", None) == name_key
+        score = getattr(x, "score", "")
+        if is_w:
+            bp_sv.append(_safe_ratio_hf(x.w_bpSaved, x.w_bpFaced, np.nan))
+            opp_b = max(0.0, float(x.l_bpFaced or 0) - float(x.l_bpSaved or 0))
+            bp_cnv.append(_safe_ratio_hf(opp_b, x.l_bpFaced, np.nan))
+        else:
+            bp_sv.append(_safe_ratio_hf(x.l_bpSaved, x.l_bpFaced, np.nan))
+            opp_b = max(0.0, float(x.w_bpFaced or 0) - float(x.w_bpSaved or 0))
+            bp_cnv.append(_safe_ratio_hf(opp_b, x.w_bpFaced, np.nan))
+        wn, pl = _tb_wins_played_from_score(score, is_w)
+        tb_w += wn
+        tb_p += pl
+    m1 = float(np.nanmean([v for v in bp_sv if not pd.isna(v)])) if any(not pd.isna(v) for v in bp_sv) else 0.5
+    m2 = float(np.nanmean([v for v in bp_cnv if not pd.isna(v)])) if any(not pd.isna(v) for v in bp_cnv) else 0.5
+    m3 = (tb_w / tb_p) if tb_p > 0 else 0.5
+    return float(np.clip((m1 + m2 + m3) / 3.0, 0.0, 1.0))
+
+
+def travel_fatigue_index_from_history(
+    rows: pd.DataFrame,
+    name_key: str,
+    current_tournament: object,
+    ref_dt: pd.Timestamp,
+) -> float:
+    """0 ou 0.05 : malus si saut long-courrier / fuseau et repos < 4 jours (inféré sur l’historique)."""
+    try:
+        from scripts.tournament_geo import haversine_km, tournament_site_lon_lat_tz
+    except ImportError:
+        from tournament_geo import haversine_km, tournament_site_lon_lat_tz  # type: ignore
+    if rows is None or rows.empty or not name_key:
+        return 0.0
+    try:
+        ref = pd.Timestamp(ref_dt).normalize()
+    except Exception:
+        ref = pd.Timestamp.now().normalize()
+    prev_all = rows[rows["tourney_date"] < ref]
+    if prev_all.empty:
+        return 0.0
+    last = prev_all.iloc[-1]
+    prev_name = getattr(last, "tourney_name", None) if hasattr(last, "tourney_name") else last["tourney_name"]
+    ld = pd.Timestamp(last["tourney_date"])
+    rest = max(0, int((ref - ld).days))
+    if rest >= 4:
+        return 0.0
+    cur_lat, cur_lon, cur_tz = tournament_site_lon_lat_tz(current_tournament)
+    plat, plon, ptz = tournament_site_lon_lat_tz(prev_name)
+    dist_km = haversine_km(float(plat), float(plon), float(cur_lat), float(cur_lon))
+    if dist_km > 4000.0 or abs(int(cur_tz) - int(ptz)) > 4:
+        return 0.05
+    return 0.0
 
 
 if __name__ == "__main__":

@@ -3,13 +3,33 @@
 Higher = faster court (more serve dominance). Used for Micro-Elo K-weighting and
 ML interaction features. Defaults to 0.75 when unknown.
 
+Outdoor matches can adjust CPI using humidity / temperature when those values are
+known before play (forecast or official conditions).
+
 References (approximate TA CPI-derived indices): Rome clay slow (~0.57), Madrid
 altitude clay faster (~0.89).
 """
 
 import re
+from typing import Optional, Tuple
 
 SURFACE_DEFAULT = 0.75
+
+CPI_CLIP_MIN = 0.35
+CPI_CLIP_MAX = 0.98
+
+# Overlap with ml_model._infer_tournament_context indoor keywords (outdoor = not these).
+_INDOOR_TOURNAMENT_KEYWORDS = (
+    "indoor",
+    "atp finals",
+    "next gen",
+    "metz",
+    "basel",
+    "paris bercy",
+    "vienna",
+    "st petersburg",
+    "rotterdam",
+)
 
 _HARD_DEFAULT = 0.82
 _CLAY_DEFAULT = 0.62
@@ -63,6 +83,69 @@ _TOURNAMENT_SURFACE_SPEED = {
     "charleston": 0.58,
     "guadalajara": 0.81,
 }
+
+
+def infer_outdoor(indoor_field: object, tournament_name: object) -> bool:
+    """True if the match is played outdoor (O / not explicitly indoor).
+
+    Uses ATP/WTA ``indoor`` column when present (I=indoor, O=outdoor), else name heuristics.
+    """
+    s = str(indoor_field or "").strip().upper()
+    if s in ("I", "INDOOR"):
+        return False
+    if s in ("O", "OUTDOOR"):
+        return True
+    n = str(tournament_name or "").lower()
+    return not any(k in n for k in _INDOOR_TOURNAMENT_KEYWORDS)
+
+
+def weather_impact_scalars(
+    outdoor: bool,
+    humidity_pct: Optional[float],
+    temp_c: Optional[float],
+) -> Tuple[float, float]:
+    """Leak-safe scalars: humidity >70% → -0.10 on speed; temp >28°C → +0.05 (outdoor only)."""
+    h_imp = 0.0
+    t_imp = 0.0
+    if not outdoor:
+        return h_imp, t_imp
+    try:
+        if humidity_pct is not None and float(humidity_pct) > 70.0:
+            h_imp = -0.10
+    except (TypeError, ValueError):
+        pass
+    try:
+        if temp_c is not None and float(temp_c) > 28.0:
+            t_imp = 0.05
+    except (TypeError, ValueError):
+        pass
+    return h_imp, t_imp
+
+
+def effective_surface_speed_cpi(
+    base_cpi: float,
+    outdoor: bool,
+    humidity_pct: Optional[float],
+    temp_c: Optional[float],
+) -> float:
+    """Apply outdoor humidity/temperature adjustments to CPI (clipped)."""
+    try:
+        x = float(base_cpi)
+    except (TypeError, ValueError):
+        x = SURFACE_DEFAULT
+    mult = 1.0
+    if outdoor:
+        try:
+            if humidity_pct is not None and float(humidity_pct) > 70.0:
+                mult *= 0.90
+        except (TypeError, ValueError):
+            pass
+        try:
+            if temp_c is not None and float(temp_c) > 28.0:
+                mult *= 1.05
+        except (TypeError, ValueError):
+            pass
+    return float(max(CPI_CLIP_MIN, min(CPI_CLIP_MAX, x * mult)))
 
 
 def lookup_surface_speed(tournament_name: object, surface: object) -> float:

@@ -42,8 +42,8 @@ python scripts/sync_tml_recent.py
 #    Pré-requis : data/raw/tennis_wta/wta_matches_*.csv + wta_rankings_current.csv
 python scripts/pipeline_quality.py
 
-# 3. (optionnel) re-train du modèle ML ATP
-python scripts/update_model_tml.py --min-year 2010
+# 3. Re-train / export du bundle ML (sync ATP+WTA incluse dans le script)
+python scripts/update_model_tml.py
 ```
 
 Pour purger les anciennes tables Sackmann ATP héritées (`matches`, `players`, `rankings_atp_current`) :
@@ -58,6 +58,8 @@ python scripts/purge_sackmann_atp.py
 streamlit run app/dashboard.py
 ```
 
+Au premier lancement, le dashboard peut en arrière-plan **re-synchroniser la base** (`scripts/sync_tours_daily.py`) et, sur un intervalle long, **réentraîner le modèle** (`scripts/update_model_tml.py`). Désactivation possible via variables d’environnement (voir `docs/ARCHITECTURE.md`).
+
 Scrapers :
 
 ```bash
@@ -65,20 +67,28 @@ python scripts/scraper_prematch.py    # cotes prematch Flashscore
 python scripts/scraper_live.py        # score live (placeholder)
 ```
 
-## Structure du projet
+## Documentation
 
-- `app/dashboard.py` — interface Streamlit
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — architecture du dépôt, flux de données, automatisation, limites.
+- **[`docs/PREDICTION_ET_MISE.md`](docs/PREDICTION_ET_MISE.md)** — prédiction ML, features, Kelly adaptatif (Brier), backtest, KPI.
+
+## Structure du projet (résumé)
+
+- `app/dashboard.py` — interface Streamlit (live, portefeuille, diagnostics, backtest CSV, human factors).
 - `scripts/`
   - `stats_engine.py` — moteur de stats par tour (ATP TML / WTA Sackmann)
-  - `ml_model.py` — modèle Random Forest entraîné sur TML
-  - `sync_tml_recent.py` — sync ATP TennisMyLife
+  - `ml_model.py` — **XGBoost** calibré, features v4.x, bundle `joblib`
+  - `sync_tours_daily.py` — sync **ATP + WTA** (TML + Sackmann / pipeline associé)
+  - `sync_tml_recent.py` — utilitaire sync ATP TennisMyLife ciblé
   - `ingest_sackmann_wta.py` — ingestion WTA Sackmann
   - `ingest_rankings_current.py` — ingestion classement WTA courant
   - `pipeline_quality.py` — orchestration ingest + index SQLite
   - `apply_sqlite_indexes.py` — index sur matches_recent / wta_matches
-  - `update_model_tml.py` — sync TML + retraining ML
+  - `update_model_tml.py` — sync tours + entraînement + export `models/*.pkl`
   - `evaluate_data_coverage.py` — vérif des volumes en base
   - `purge_sackmann_atp.py` — DROP des tables Sackmann ATP héritées
   - `scraper_prematch.py`, `scraper_profiles.py` — scraping Playwright
   - `value_detector.py` — comparaison cote / true odd (EV %)
   - `player_identity.py` — utilitaires de normalisation de noms
+
+Détail des chemins et du flux : **`docs/ARCHITECTURE.md`**.

@@ -17,8 +17,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 from datetime import datetime
 from typing import Iterable, Optional
+
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 DB_PATH_DEFAULT = os.path.join("data", "bettinghud.db")
 
@@ -29,13 +34,18 @@ DB_PATH_DEFAULT = os.path.join("data", "bettinghud.db")
 
 # columns we want to guarantee on user_bets. (col_name, sql_type, default_sql)
 _USER_BETS_TARGET_COLUMNS: tuple[tuple[str, str, Optional[str]], ...] = (
+    ("match_date", "TEXT", None),
     ("tour", "TEXT", None),
     ("surface", "TEXT", None),
     ("tournament", "TEXT", None),
     ("match_id", "TEXT", None),
+    ("segment_key", "TEXT", None),
     ("p_model", "REAL", None),
     ("p_implicit", "REAL", None),
     ("ev_at_bet", "REAL", None),
+    ("closing_odd", "REAL", None),
+    ("clv_score", "REAL", None),
+    ("clv_updated_ts", "TEXT", None),
     ("bookmaker_source", "TEXT", None),
     ("placed_ts", "TEXT", None),
     ("settled_ts", "TEXT", None),
@@ -53,7 +63,29 @@ META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
 META_LAST_ML_TRAIN_TS = "last_ml_train_ts"
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ML_MODEL_BUNDLE_REL = os.path.join("models", "xgb_model_tml_v1.pkl")
+
+
+def normalize_schedule_date(raw: Optional[object]) -> Optional[str]:
+    """Return ``YYYY-MM-DD`` from prematch/date cell, or ``None``.
+
+    Handles ISO strings and pandas-compatible datetimes embedded in strings.
+    """
+    if raw is None:
+        return None
+    if hasattr(raw, "strftime"):
+        try:
+            return raw.strftime("%Y-%m-%d")  # type: ignore[union-attr]
+        except Exception:
+            pass
+    s = str(raw).strip()
+    if not s:
+        return None
+    if " " in s:
+        s = s.split()[0]
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return None
+ML_MODEL_BUNDLE_REL = os.path.join("models", "xgb_model_tml_v45.pkl")
 
 
 def get_ml_bundle_abspath() -> str:
@@ -496,10 +528,12 @@ def save_bet_enriched(
     odds: float,
     stake: float,
     db_path: str = DB_PATH_DEFAULT,
+    match_date: Optional[str] = None,
     tour: Optional[str] = None,
     surface: Optional[str] = None,
     tournament: Optional[str] = None,
     match_id: Optional[str] = None,
+    segment_key: Optional[str] = None,
     p_model: Optional[float] = None,
     p_implicit: Optional[float] = None,
     ev_at_bet: Optional[float] = None,
@@ -507,7 +541,12 @@ def save_bet_enriched(
     notes: Optional[str] = None,
     tracker_source: Optional[str] = None,
 ) -> int:
-    """Insert a bet with full decision context. Returns the new bet id."""
+    """Insert a bet with full decision context. Returns the new bet id.
+
+    ``match_date`` (YYYY-MM-DD): scheduled match day from the fixture. The ``date``
+    column stays as SQLite ``date('now')`` (day the ticket was recorded). Result
+    resolution uses ``match_date`` when present, otherwise ``date``.
+    """
     conn = sqlite3.connect(db_path)
     try:
         ensure_user_bets_schema(conn)
@@ -518,25 +557,30 @@ def save_bet_enriched(
                 p_implicit = 1.0 / float(odds)
             except Exception:
                 p_implicit = None
+        sched = normalize_schedule_date(match_date)
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO user_bets (
                 date, match_name, bet_on, odds, stake, status, profit,
+                match_date,
                 tour, surface, tournament, match_id,
+                segment_key,
                 p_model, p_implicit, ev_at_bet,
                 bookmaker_source, placed_ts, notes, tracker_source
-            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 match_name,
                 bet_on,
                 float(odds),
                 float(stake),
+                sched,
                 tour,
                 surface,
                 tournament,
                 match_id,
+                segment_key,
                 None if p_model is None else float(p_model),
                 None if p_implicit is None else float(p_implicit),
                 None if ev_at_bet is None else float(ev_at_bet),
@@ -609,6 +653,12 @@ def init_all(db_path: str = DB_PATH_DEFAULT) -> dict:
         ensure_bets_meta(conn)
         ensure_live_tracker_start_br(conn)
         ensure_reconciliation_log(conn)
+        try:
+            from weather_open_meteo import ensure_weather_schema
+
+            ensure_weather_schema(conn)
+        except Exception:
+            pass
         return {"user_bets_added_columns": added_cols}
     finally:
         conn.close()

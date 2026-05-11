@@ -45,6 +45,94 @@ def _stat(row, camel, lower):
     return v
 
 
+def _to_float(v):
+    try:
+        if v is None or pd.isna(v):
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _build_surface_imputation(matches_df: pd.DataFrame) -> tuple[dict, dict]:
+    """
+    Build per-surface fallback stats from rows with reliable serve volume.
+    Used when serve won components are missing, to keep global Elo updates alive.
+    """
+    acc: dict = {}
+    g = {
+        "n": 0,
+        "sum_w_svpt": 0.0,
+        "sum_l_svpt": 0.0,
+        "sum_w_rate": 0.0,
+        "sum_l_rate": 0.0,
+    }
+
+    for row in matches_df.itertuples(index=False):
+        surface = str(getattr(row, "surface", "") or "")
+        w_svpt = _to_float(_stat(row, "w_svpt", "w_svpt"))
+        l_svpt = _to_float(_stat(row, "l_svpt", "l_svpt"))
+        w_1stwon = _to_float(_stat(row, "w_1stWon", "w_1stwon"))
+        w_2ndwon = _to_float(_stat(row, "w_2ndWon", "w_2ndwon"))
+        l_1stwon = _to_float(_stat(row, "l_1stWon", "l_1stwon"))
+        l_2ndwon = _to_float(_stat(row, "l_2ndWon", "l_2ndwon"))
+
+        if (
+            w_svpt is None
+            or l_svpt is None
+            or w_svpt < 15.0
+            or l_svpt < 15.0
+            or w_1stwon is None
+            or w_2ndwon is None
+            or l_1stwon is None
+            or l_2ndwon is None
+        ):
+            continue
+
+        w_rate = (w_1stwon + w_2ndwon) / max(1.0, w_svpt)
+        l_rate = (l_1stwon + l_2ndwon) / max(1.0, l_svpt)
+        w_rate = float(np.clip(w_rate, 0.0, 1.0))
+        l_rate = float(np.clip(l_rate, 0.0, 1.0))
+
+        d = acc.setdefault(
+            surface,
+            {
+                "n": 0,
+                "sum_w_svpt": 0.0,
+                "sum_l_svpt": 0.0,
+                "sum_w_rate": 0.0,
+                "sum_l_rate": 0.0,
+            },
+        )
+        d["n"] += 1
+        d["sum_w_svpt"] += w_svpt
+        d["sum_l_svpt"] += l_svpt
+        d["sum_w_rate"] += w_rate
+        d["sum_l_rate"] += l_rate
+        g["n"] += 1
+        g["sum_w_svpt"] += w_svpt
+        g["sum_l_svpt"] += l_svpt
+        g["sum_w_rate"] += w_rate
+        g["sum_l_rate"] += l_rate
+
+    def _to_mean(dct):
+        n = max(1, int(dct["n"]))
+        return {
+            "w_svpt": float(dct["sum_w_svpt"] / n),
+            "l_svpt": float(dct["sum_l_svpt"] / n),
+            "w_rate": float(dct["sum_w_rate"] / n),
+            "l_rate": float(dct["sum_l_rate"] / n),
+        }
+
+    by_surface = {k: _to_mean(v) for k, v in acc.items()}
+    global_mean = (
+        _to_mean(g)
+        if int(g["n"]) > 0
+        else {"w_svpt": 62.0, "l_svpt": 62.0, "w_rate": 0.64, "l_rate": 0.60}
+    )
+    return by_surface, global_mean
+
+
 def run_micro_elo_scan(
     matches_df: pd.DataFrame,
     name_key_fn,
@@ -66,6 +154,8 @@ def run_micro_elo_scan(
     w_sv, w_rt, l_sv, l_rt = [], [], [], []
 
     n_ok = 0
+    n_imputed = 0
+    by_surface_imp, global_imp = _build_surface_imputation(matches_df)
     for row in matches_df.itertuples(index=False):
         wid = _pid(getattr(row, "winner_id", None))
         lid = _pid(getattr(row, "loser_id", None))
@@ -140,23 +230,10 @@ def run_micro_elo_scan(
         l_sv.append(eff_l_sv)
         l_rt.append(eff_l_rt)
 
-        w_svpt = _stat(row, "w_svpt", "w_svpt")
-        w_1stwon = _stat(row, "w_1stWon", "w_1stwon")
-        w_2ndwon = _stat(row, "w_2ndWon", "w_2ndwon")
-        l_svpt = _stat(row, "l_svpt", "l_svpt")
-        l_1stwon = _stat(row, "l_1stWon", "l_1stwon")
-        l_2ndwon = _stat(row, "l_2ndWon", "l_2ndwon")
-
-        stats_ok = (
-            w_svpt is not None and not pd.isna(w_svpt) and float(w_svpt) > 5
-            and w_1stwon is not None and not pd.isna(w_1stwon)
-            and w_2ndwon is not None and not pd.isna(w_2ndwon)
-            and l_svpt is not None and not pd.isna(l_svpt) and float(l_svpt) > 5
-            and l_1stwon is not None and not pd.isna(l_1stwon)
-            and l_2ndwon is not None and not pd.isna(l_2ndwon)
-        )
-
-        if not stats_ok:
+        w_svpt = _to_float(_stat(row, "w_svpt", "w_svpt"))
+        l_svpt = _to_float(_stat(row, "l_svpt", "l_svpt"))
+        # Matchs tronqués / abandons précoces: ignorer totalement l'update micro-Elo.
+        if w_svpt is None or l_svpt is None or w_svpt < 15.0 or l_svpt < 15.0:
             for pid in [wid, lid]:
                 if pid:
                     last_seen[pid] = dt
@@ -164,6 +241,25 @@ def run_micro_elo_scan(
                 if nk:
                     last_seen[nk] = dt
             continue
+
+        w_1stwon = _to_float(_stat(row, "w_1stWon", "w_1stwon"))
+        w_2ndwon = _to_float(_stat(row, "w_2ndWon", "w_2ndwon"))
+        l_1stwon = _to_float(_stat(row, "l_1stWon", "l_1stwon"))
+        l_2ndwon = _to_float(_stat(row, "l_2ndWon", "l_2ndwon"))
+        imp = by_surface_imp.get(surface, global_imp)
+
+        if w_1stwon is not None and w_2ndwon is not None:
+            actual_w = float(w_1stwon + w_2ndwon)
+        else:
+            actual_w = float(imp["w_rate"] * w_svpt)
+            n_imputed += 1
+        if l_1stwon is not None and l_2ndwon is not None:
+            actual_l = float(l_1stwon + l_2ndwon)
+        else:
+            actual_l = float(imp["l_rate"] * l_svpt)
+            n_imputed += 1
+        actual_w = float(np.clip(actual_w, 0.0, w_svpt))
+        actual_l = float(np.clip(actual_l, 0.0, l_svpt))
 
         n_ok += 1
         slow_pen = max(0.0, speed_baseline - speed)
@@ -181,8 +277,7 @@ def run_micro_elo_scan(
 
         # --- Step 1: winner serves ---
         ew_pct = _expected_pt(ws_g, lr_g, micro_elo_scale)
-        ew_count = ew_pct * float(w_svpt)
-        actual_w = float(w_1stwon) + float(w_2ndwon)
+        ew_count = ew_pct * w_svpt
         diff_w = actual_w - ew_count
         k_eff_w = micro_elo_k_serve * k_level * (slow_amp_loss if diff_w < 0 else slow_amp_gain)
         delta_w = k_eff_w * diff_w
@@ -197,8 +292,7 @@ def run_micro_elo_scan(
 
         # --- Step 2: loser serves (uses WR global before loser-step = wr_g, not yet updated) ---
         el_pct = _expected_pt(ls_g, wr_g, micro_elo_scale)
-        el_count = el_pct * float(l_svpt)
-        actual_l = float(l_1stwon) + float(l_2ndwon)
+        el_count = el_pct * l_svpt
         diff_l = actual_l - el_count
         k_eff_l = micro_elo_k_serve * k_level * (slow_amp_loss if diff_l < 0 else slow_amp_gain)
         delta_l = k_eff_l * diff_l
@@ -241,4 +335,5 @@ def run_micro_elo_scan(
         "n_sf": n_sf,
         "last_seen": last_seen,
         "matches_with_stats": n_ok,
+        "matches_with_imputed_stats": n_imputed,
     }

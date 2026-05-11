@@ -333,7 +333,23 @@ def build_dataset_with_identity(ml: TennisMLModel):
 
     df1 = make_oriented(swap=False, target=1)
     df2 = make_oriented(swap=True, target=0)
+    # Garantit les colonnes attendues par ml.features pour les deux vues orientées.
+    for _feat in list(getattr(ml, "features", []) or []):
+        if _feat not in df1.columns:
+            df1[_feat] = 0.0
+        if _feat not in df2.columns:
+            df2[_feat] = 0.0
+        df1[_feat] = pd.to_numeric(df1[_feat], errors="coerce").fillna(0.0)
+        df2[_feat] = pd.to_numeric(df2[_feat], errors="coerce").fillna(0.0)
     dataset = pd.concat([df1, df2]).sort_values("tourney_date").reset_index(drop=True)
+    # Compat v4.6+: certains signaux live n'existent pas dans l'historique backtest.
+    # On force les colonnes manquantes à 0.0 pour conserver un pipeline stable.
+    for feat in list(getattr(ml, "features", []) or []):
+        if feat not in dataset.columns:
+            dataset[feat] = 0.0
+    for feat in list(getattr(ml, "features", []) or []):
+        if feat in dataset.columns:
+            dataset[feat] = pd.to_numeric(dataset[feat], errors="coerce").fillna(0.0)
     dataset = dataset.dropna(subset=ml.features)
 
     # Identity is only needed for df1 (target=1, "winner-as-p1"); we'll pair them at predict time.
@@ -342,6 +358,7 @@ def build_dataset_with_identity(ml: TennisMLModel):
         "loser_name": df["loser_name"].values,
         "tour": df["tour"].values,
         "surface": df["surface"].values,
+        "tourney_name": df["tourney_name"].values if "tourney_name" in df.columns else pd.Series([""] * len(df)),
         "tourney_date": df["tourney_date"].values,
         "tourney_level": df["tourney_level"].values,
         "winner_rank_points": df["winner_rank_points"].values,
@@ -525,7 +542,7 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
     for i, row in id_test.iterrows():
         wkey = _surname_initial(row["winner_name"])
         lkey = _surname_initial(row["loser_name"])
-        date_iso = pd.Timestamp(row["tourney_date"]).strftime("%Y-%m-%d")
+        tourney_start_iso = pd.Timestamp(row["tourney_date"]).strftime("%Y-%m-%d")
         odds_book = odds_atp if row["tour"] == "ATP" else odds_wta
 
         # Sackmann/TML use tourney_date = tournament START date for ALL matches in
@@ -534,17 +551,20 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
         # widen the window to a forward-only 14-day search (matches always happen
         # ON or AFTER the tournament start).
         triplet = None
+        odds_date_iso: str | None = None
         # Forward search 0..+14 days, then a small backward window for safety
         deltas = list(range(0, 15)) + [-1, -2, -3]
         for delta in deltas:
             d = (pd.Timestamp(row["tourney_date"]) + pd.Timedelta(days=delta)).strftime("%Y-%m-%d")
             triplet = odds_book.get((d, wkey, lkey))
             if triplet:
+                odds_date_iso = d
                 break
             # Try with names swapped (in case bookmaker recorded match in opposite orientation)
             triplet_swap = odds_book.get((d, lkey, wkey))
             if triplet_swap:
                 triplet = (triplet_swap[1], triplet_swap[0], triplet_swap[2])
+                odds_date_iso = d
                 break
         if triplet is None:
             n_no_odds += 1
@@ -577,9 +597,13 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
         bet_side, bet_ev, bet_odd, bet_p_model, bet_p_implied, bet_won = candidates[0]
 
         ret = (bet_odd - 1.0) if bet_won else -1.0
+        # `date` = jour calendaire côté tennis-data (clé de lookup), pour un groupement
+        # Kelly/journalier cohérent (sinon tout un Grand Chelem partage tourney_start).
+        bet_calendar_date = odds_date_iso or tourney_start_iso
         bets.append({
             "tour": row["tour"],
-            "date": date_iso,
+            "date": bet_calendar_date,
+            "tournament": row.get("tourney_name", ""),
             "surface": row["surface"],
             "tourney_level": row["tourney_level"],
             "winner_name": row["winner_name"],
