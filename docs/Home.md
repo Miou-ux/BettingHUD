@@ -21,6 +21,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 |------|---------|
 | [[ARCHITECTURE_ACTUELLE_ET_MISES]] | Architecture courante, Live Tracker, modèle v47, mises |
 | [[CHANGELOG_RECENT]] | Évolutions récentes (mai 2026) |
+| [[DEPLOY_SERVEUR]] | **Hébergement Ubuntu** (systemd, nginx, SSH, git pull) |
 | [[PREDICTION_ET_MISE]] | Probabilités, EV, Kelly, backtest |
 | [[BACKTEST_TOP10_PROBA_SIMULATIONS]] | Simulations top 10 / **top 15** proba/jour (2024–2026, Kelly, comparatif) |
 
@@ -33,6 +34,8 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[UI_THEME_QUANT]] | Charte graphique dashboard (thème terminal quant) |
 | [[DAILY_TOP_PROBA_REPLAY]] | Stockage top 15 ATP/WTA/jour pour replay réel |
 | [[CHART_TOP_PROBAS_JOUR]] | Top 15 probas jour + toggle EV favori (partagé Live Tracker) |
+
+**Onglet Paris du jour** (dashboard) : top 5 probas · cote réelle · Kelly · pari direct · lien Live Tracker — détail dans [[CHANGELOG_RECENT]] § 0.14.
 
 ---
 
@@ -56,6 +59,9 @@ py -3 scripts/rebuild_live_projection.py
 
 # Pipeline matin
 py -3 scripts/morning_live_pipeline.py
+
+# Mise à jour serveur (après git push)
+ssh bettinghud "cd /opt/bettinghud && git pull && sudo systemctl restart bettinghud-dashboard bettinghud-daemon"
 
 # Audit modèle vs book
 py -3 scripts/audit_projection_day.py --gap-pp 25

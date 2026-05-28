@@ -1,6 +1,6 @@
 # BettingHUD (Tennis)
 
-BettingHUD est un outil local d'aide à la décision pour le pari tennis :
+BettingHUD est un outil d'aide à la décision pour le pari tennis (local ou serveur dédié) :
 
 - ingestion ATP/WTA vers SQLite,
 - scraping prematch / profils,
@@ -31,7 +31,9 @@ venv\Scripts\activate
 source venv/bin/activate
 
 pip install -r requirements.txt
+pip install streamlit-autorefresh
 playwright install
+playwright install-deps   # Linux uniquement
 ```
 
 ## Pipeline de base
@@ -60,11 +62,29 @@ streamlit run app/dashboard.py
 
 Le dashboard lance des tâches en arrière-plan (daemon live, sync tours, retrain périodique), configurables via `BETTINGHUD_*` — voir `docs/CHANGELOG_RECENT.md`.
 
-Onglets principaux : **Live Tracker**, **Top probas jour** (top 15 probas modèle du jour, graphique Altair + tableau, favori en surbrillance, toggle **EV favori 15–100 %** — voir `docs/CHART_TOP_PROBAS_JOUR.md`), **Pari Live**, portefeuille, backtest, diagnostics, Human Factors.
+Onglets principaux (ordre gauche → droite) :
 
-**Live Tracker + toggle EV actif** : filtre matchs sur EV favori 15–100 %, affiche jusqu’à **15 tuiles** value bets triées par proba favori modèle (côté favori), même ordre logique que l’onglet Top probas.
+1. **Paris du jour** — top 5 probas favori, cote réelle, mise Kelly, lien vers Live Tracker
+2. **Mon Portefeuille** — paris réels, stats, CLV
+3. **Live Tracker** — value bets, filtres jour/circuit/joueur
+4. **Top probas jour** — top 15 + graphique (toggle **EV favori 15–100 %** — `docs/CHART_TOP_PROBAS_JOUR.md`)
+5. **Backtest Kelly (CSV)**, **Diagnostics modèle**, **Tracking modèle (réel)**
+6. **Paramètres** — fraîcheur données, sync/scrape manuel, entraînement ML
+
+Onglets masqués : Pari Live, Human Factors.
+
+**Live Tracker + toggle EV actif** : filtre matchs sur EV favori 15–100 %, affiche jusqu’à **15 tuiles** value bets triées par proba favori modèle (côté favori).
 
 Charte graphique (thème sombre type terminal quant) : **`docs/UI_THEME_QUANT.md`**.
+
+### Hébergement serveur (Ubuntu)
+
+Déploiement production documenté dans **`docs/DEPLOY_SERVEUR.md`** (systemd, nginx, cron matin, `git pull`).
+
+```bash
+# Sur le serveur après clone + copie data/models
+bash deploy/install_ubuntu.sh
+```
 
 ### Sync portefeuille (résultats des paris)
 
@@ -120,4 +140,6 @@ Bundle exporté par défaut :
 - `docs/PREDICTION_ET_MISE.md` : détails ML, features, calibration, EV, Kelly, filtres live, backtest.
 - `docs/CHART_TOP_PROBAS_JOUR.md` : onglet Top probas jour (top 15, chart Altair, toggle EV favori partagé avec Live Tracker).
 - `docs/BACKTEST_TOP10_PROBA_SIMULATIONS.md` : campagne backtest top 10 / **top 15** probas/jour (2024–2026, Kelly séquentiel intraday, comparatif €).
+- `docs/DAILY_TOP_PROBA_REPLAY.md` : stockage top 15 ATP/WTA/jour (replay réel).
+- `docs/DEPLOY_SERVEUR.md` : installation Ubuntu, systemd, nginx, mise à jour GitHub.
 - `docs/MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` : historique v45 / métriques snapshot d’époque.

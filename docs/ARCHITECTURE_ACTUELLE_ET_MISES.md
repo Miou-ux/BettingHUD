@@ -1,6 +1,6 @@
 # Architecture actuelle, modèle et mises
 
-Dernière mise à jour : 27 mai 2026.
+Dernière mise à jour : 28 mai 2026.
 
 Ce document décrit l'état courant du système après les changements récents sur le Live Tracker, le modèle v47, les ELO, le Report Opportunités et la logique de mise. Les pages historiques restent utiles, mais celle-ci sert de référence opérationnelle.
 
@@ -22,7 +22,7 @@ Le principe important : le Live Tracker ne recalcule pas tout à chaque rerun St
 
 `app/dashboard.py`
 
-- UI Streamlit : Live Tracker, **Top probas jour** (top 15 + chart Altair modèle vs book, toggle EV favori 15–100 % partagé — spec `docs/CHART_TOP_PROBAS_JOUR.md`), Pari Live, Portefeuille, Backtest, Diagnostics, Tracking modèle, Human Factors.
+- UI Streamlit (ordre onglets) : **Paris du jour** (top 5 action), **Mon Portefeuille**, **Live Tracker**, **Top probas jour** (top 15 + chart — `docs/CHART_TOP_PROBAS_JOUR.md`), Backtest Kelly, Diagnostics, Tracking modèle, **Paramètres** (ex-sidebar). Masqués : Pari Live, Human Factors.
 - Orchestration du build live, des filtres, des value bets, des mises et du Report Opportunités.
 - Calcul du bankroll disponible, saisie de la cote réelle, enregistrement des paris.
 - Affichage des infos joueur : rang/points, ELO, forme, fatigue, style, signaux avancés.
@@ -446,3 +446,18 @@ python -m streamlit run app/dashboard.py --server.port 8502 --server.address 127
 - Un snapshot incrémental peut conserver d'anciens flags. Pour une vraie remise à plat, forcer un build `full`.
 - Le Brier segment doit être lu comme qualité de calibration historique, pas comme certitude sur un match isolé.
 - Le score composite doit rester prioritaire sur l'EV brute pour ordonner les mises théoriques.
+
+## 12. Déploiement serveur (production)
+
+Référence complète : **`docs/DEPLOY_SERVEUR.md`**.
+
+| Composant | Emplacement / commande |
+|-----------|-------------------------|
+| Code | `/opt/bettinghud` (clone `https://github.com/Miou-ux/BettingHUD`) |
+| Dashboard | `systemctl` → `bettinghud-dashboard` (Streamlit `:8501` localhost) |
+| Daemon | `systemctl` → `bettinghud-daemon` (`portfolio_results_daemon`) |
+| Web public | nginx port **80** → proxy vers Streamlit |
+| Pipeline matin | cron **05:00 UTC** → `morning_live_pipeline.py` |
+| Mise à jour code | `git pull` + `systemctl restart bettinghud-dashboard bettinghud-daemon` |
+
+Les données runtime (`data/bettinghud.db`, `models/*.pkl`, caches) restent sur le serveur et ne sont pas versionnées dans Git.

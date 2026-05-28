@@ -6,6 +6,37 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 28 mai 2026 — Paris du jour, UI, déploiement serveur
+
+### 0.14 Dashboard — onglet Paris du jour & navigation (28 mai)
+
+**Fichiers** : `app/dashboard.py`
+
+| Élément | Détail |
+|---------|--------|
+| **Paris du jour** | 1er onglet : top **5** probas favori (EV 15–100 %), cote réelle éditable, mise Kelly/Brier, enregistrement portefeuille, surbrillance verte si pari posé |
+| **Lien Live Tracker** | Bouton « Ouvrir ce match dans Live Tracker » : pré-filtre joueur + circuit, bascule auto vers l’onglet Live Tracker |
+| **Mon Portefeuille** | 2e onglet (après Paris du jour) |
+| **Paramètres** | Ancienne sidebar : fraîcheur ATP/WTA, scrape/sync, entraînement ML |
+| **Masqués** | Onglets Pari Live, Human Factors ; section « Report journalier algo » dans Portefeuille |
+
+### 0.15 Déploiement serveur Ubuntu + GitHub (28 mai)
+
+**Doc** : **`docs/DEPLOY_SERVEUR.md`**
+
+| Élément | Détail |
+|---------|--------|
+| **Production** | VPS Ubuntu 24.04 — app via **nginx** → Streamlit `127.0.0.1:8501` |
+| **Services** | `deploy/systemd/bettinghud-dashboard.service`, `bettinghud-daemon.service` |
+| **Install** | `deploy/install_ubuntu.sh` |
+| **Cron** | `deploy/cron/morning-pipeline` — pipeline matin 05:00 UTC |
+| **Données** | `data/` et `models/` hors Git — copie `scp` depuis le PC de dev |
+| **Dépôt** | Push `main` GitHub — `git pull` sur `/opt/bettinghud` pour mettre à jour le code |
+
+**Correctifs ops** : ingest WTA nécessite `sqlalchemy` ; `portfolio_results_daemon` lancé via chemin script + `PYTHONPATH` (pas `-m scripts` sans package).
+
+---
+
 ## 0. Mise à jour 27 mai 2026 — Top 15 probas, filtre EV partagé Live / Top probas
 
 ### 0.12 Backtest top 15 probas · 2024–2026 (27 mai)
