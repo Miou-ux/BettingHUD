@@ -1,0 +1,19 @@
+[Unit]
+Description=BettingHUD Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/bettinghud
+Environment=HOME=/home/ubuntu
+Environment=BETTINGHUD_HEADLESS=1
+Environment=BETTINGHUD_LIVE_DATA_DAEMON=1
+Environment=BETTINGHUD_AUTO_SYNC_TOURS=1
+ExecStart=/opt/bettinghud/venv/bin/streamlit run app/dashboard.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

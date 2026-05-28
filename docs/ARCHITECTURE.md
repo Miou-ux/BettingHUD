@@ -1,138 +1,80 @@
-# Architecture BettingHUD — vue d’ensemble
+# Architecture BettingHUD
 
-Ce document décrit **l’organisation du dépôt**, les **flux de données** et la **logique d’exécution** (y compris l’automatisation). Le détail mathématique prédiction / Kelly / features est dans [`PREDICTION_ET_MISE.md`](PREDICTION_ET_MISE.md).
+Cette page décrit l’organisation technique du projet (flux data, composants, automatisation).  
+Le détail mathématique du modèle et des mises est dans `docs/PREDICTION_ET_MISE.md`.  
+La référence opérationnelle actuelle (architecture Live, ELO, Report Opportunités, mises Kelly/BR) est dans `docs/ARCHITECTURE_ACTUELLE_ET_MISES.md`.  
+La **synthèse des changements récents** (v47, calibration duale, météo, value, backtest, backup) : **`docs/CHANGELOG_RECENT.md`**.  
+Le **changelog ML v45** (correctif causal `last_round_reached_diff`, métriques Brier snapshot de l’époque) reste dans `docs/MODELE_V45_CHANGELOG_ET_PERFORMANCE.md`.
 
----
+## 1) Vue système
 
-## 1. Rôle du système
+BettingHUD est une app locale Streamlit qui :
 
-BettingHUD est une application **locale** (principalement **Streamlit**) qui :
+1. synchronise des historiques ATP/WTA dans SQLite ;
+2. scrape des matchs/cotes prematch et profils joueurs ;
+3. charge ou entraîne un bundle ML (`joblib`) ;
+4. estime proba/cote juste, EV, mise recommandée ;
+5. suit les paris et diagnostics.
 
-1. ingère l’historique tennis **ATP** (TennisMyLife) et **WTA** (Sackmann / Tennis Abstract) dans **SQLite** ;
-2. scrape des **cotes prematch** et profils pour alimenter le **live** ;
-3. entraîne ou charge un **modèle XGBoost calibré** (bundle `joblib`) ;
-4. calcule des **probabilités**, de la **value (EV)** et une **reco de mise** (Kelly adaptatif Brier + plafonds) ;
-5. suit un **portefeuille** et des **diagnostics** (Brier, ROI, CLV, etc.).
+## 2) Sources et persistance
 
-Aucun pari réel n’est passé automatiquement : l’outil **recommande** et **enregistre** ce que l’utilisateur valide.
+- Sources ATP : TennisMyLife → table `matches_recent`
+- Sources WTA : Sackmann/TennisAbstract → `wta_matches` (main + qual/ITF, **≥ 2010** comme l’ATP), `rankings_wta_current`
+- Scraping prematch/profils : fichiers `data/scraped/*.csv` + cache `data/cache/*.json`
+- Base principale : `data/bettinghud.db`
+- Modèle : `models/xgb_model_tml_v47.pkl` (importance : `models/feature_importance_tml_v47.png`)
 
----
+## 3) Composants principaux
 
-## 2. Schéma logique (flux)
+- `app/dashboard.py`
+  - UI Live Tracker, Top probas jour, Pari Live, Backtest CSV, Portefeuille, Diagnostics, Human Factors
+  - orchestration du flux live et des jobs auto
+- `scripts/ml_model.py`
+  - préparation dataset, features, entraînement, calibration, prédiction
+  - sérialisation bundle modèle
+- `scripts/stats_engine.py`
+  - résolution identité, stats joueur, H2H, signaux historiques
+- `scripts/update_model_tml.py`
+  - pipeline complet sync ATP/WTA + train + export modèle
+- `scripts/sync_tours_daily.py`
+  - sync périodique des bases ATP/WTA
+- `scripts/surface_speed.py`
+  - indices de vitesse de court (CPI) ; ajustements humidité / température / outdoor pour `surface_speed` en entraînement
+- `scripts/value_detector.py`
+  - EV, drift de ligne, sentiment marché, CLV, pénalisations de confiance
+- `scripts/backtest_2026.py`
+  - backtest annuel no-leak (ré-entraînement avant cutoff, cotes tennis-data)
+- `scripts/create_full_project_backup.py`
+  - archive ZIP quasi complète + `RESTAURATION.md`
+- `scripts/scraper_prematch.py`, `scripts/scraper_profiles.py`, `scripts/scraper_results.py`
+  - cotes prematch, enrichissement profils (`force_refresh` pour MAJ manuelle), résultats / résolution de paris
+- `scripts/live_snapshot.py`
+  - snapshot joblib des matchs live analysés (signature CSV + modèle) ; lock anti-build concurrent
+- `scripts/priority_scoring.py`
+  - score composite `(Sharpe / Brier_segment) × qualité calibration` pour tri Value Bets et backtest
+- `scripts/refresh_elo_maps_fast.py`
+  - refresh ciblé des cartes ELO du bundle sans réentraîner XGBoost : alias nom micro-Elo + ELO match winner/loser
 
-```mermaid
-flowchart LR
-  subgraph sources [Sources externes]
-    TML[TennisMyLife ATP]
-    WTA[Sackmann WTA CSV]
-    TE[Tennis Explorer / Flashscore scrape]
-    TD[Tennis-data xlsx backtest cotes]
-  end
-  subgraph store [Persistance]
-    DB[(SQLite bettinghud.db)]
-    CSV[data/scraped prematch CSV]
-    PKL[models/xgb_model_tml_v45.pkl]
-  end
-  subgraph core [Code métier]
-    SE[stats_engine]
-    ML[ml_model]
-    VD[value_detector]
-  end
-  subgraph ui [Interface]
-    ST[app/dashboard.py Streamlit]
-  end
-  TML --> DB
-  WTA --> DB
-  TE --> CSV
-  DB --> SE
-  DB --> ML
-  CSV --> ST
-  PKL --> ML
-  SE --> ML
-  ML --> VD
-  VD --> ST
-  ST --> DB
-```
+## 4) Pipeline ML (résumé architecture)
 
----
+1. `prepare_data()` fusionne ATP/WTA, construit les features orientées P1/P2 (dont ELO match réel, micro-Elo service/return, charge 7j, TB 52 sem., météo sur CPI, style KMeans, voyage, défense de points, etc. — voir `CHANGELOG_RECENT.md` et `ARCHITECTURE_ACTUELLE_ET_MISES.md`).
+2. Colonnes catégorielles encodées (`surface_encoded`, `tour_encoded`, `tournament_level_encoded`) converties en `category`.
+3. Entraînement `XGBClassifier` avec `enable_categorical=True`, contraintes monotones, `objective="reg:squarederror"`.
+4. **Calibration duale isotonique** : un calibrateur entraîné sur les matchs **BO3** et un sur les matchs **BO5** (détection via `bo5_mask_from_features` + `ROUTING_COLS_BO5`) ; à l’inférence, `predict_proba_calibrated_routed` route chaque ligne.
+5. Export du bundle joblib (`calibrator_bo3`, `calibrator_bo5`, `model`, `features`, Elo maps, objets style, `segment_brier_scores`, etc.).
 
-## 3. Arborescence utile
+## 5) Automatisation dans le dashboard
 
-| Chemin | Rôle |
-|--------|------|
-| `app/dashboard.py` | UI Streamlit : live, backtest Kelly, portefeuille, diagnostics, human factors ; lance en arrière-plan **sync DB** et **train ML** périodiques (voir §6). |
-| `scripts/stats_engine.py` | Stats joueur, identité, tactique 52 semaines, fatigue voyage, etc. |
-| `scripts/ml_model.py` | Features, `prepare_data`, entraînement, `predict_match`, style KMeans, synergy tactique, persistance bundle. |
-| `scripts/micro_elo_engine.py` | Micro-Elo service / retour (scan historique). |
-| `scripts/sync_tours_daily.py` | Sync orchestrée **ATP + WTA** (appelée aussi depuis `update_model_tml.py`). |
-| `scripts/sync_tml_recent.py` | Sync ciblée TML (utilitaire / historique). |
-| `scripts/update_model_tml.py` | Pipeline : sync tours → entraînement → export `models/*.pkl`. |
-| `scripts/backtest_2026.py` | Backtest no-leak, export CSV paris + colonnes `tournament`, `date` alignée tennis-data. |
-| `scripts/backtest_staking_sim.py` | Simulation bankroll intra-jour (Kelly, cap, budget jour). |
-| `scripts/bets_db.py` / `reconcile_bets.py` | Persistance paris, résultats, CLV. |
-| `scripts/scraper_prematch.py` | Scrape cotes / liste matchs → `data/scraped/`. |
-| `scripts/value_detector.py` | EV et pénalités confiance. |
-| `scripts/surface_speed.py` / `weather_open_meteo.py` / `tournament_geo.py` | Vitesse surface, météo, géoloc tournois. |
-| `docs/PREDICTION_ET_MISE.md` | Spécification prédiction + Kelly + limites. |
-| `docs/ARCHITECTURE.md` | Ce fichier. |
+Au runtime, `dashboard.py` peut lancer en tâche de fond :
 
-Les dossiers `data/` et `models/` (gros binaires, CSV, DB) sont en principe **hors Git** (voir `.gitignore`) : chaque machine reconstruit via scripts + sauvegardes.
+- sync tours (`sync_tours_daily.py`) selon intervalle configuré ;
+- retrain périodique (`update_model_tml.py`) ;
+- **daemon live** (`start_live_data_daemon`) : prematch TE, prewarm profils TE, rebuild snapshot → `data/cache/live_matches_snapshot.joblib` (voir `CHANGELOG_RECENT.md` § 7).
 
----
+Paramétrage via variables d’environnement (`BETTINGHUD_*`).
 
-## 4. Base SQLite (conceptuel)
+## 6) Invariants de maintenance
 
-Les tables exactes évoluent avec le schéma ; typiquement :
-
-- **Matchs** : `matches_recent` (ATP TML), `wta_matches` (WTA) ;
-- **Paris / tracking** : tables dédiées (voir `bets_db.py`, migrations implicites dans le code) ;
-- **Caches** : météo, cache joueurs live (`live_player_cache`), etc.
-
-Le chemin par défaut du DB est partagé entre scripts (`ml_model.db_path`, etc.).
-
----
-
-## 5. Bundle modèle ML
-
-Fichier attendu en production : `models/xgb_model_tml_v45.pkl` (nom peut varier ; le dashboard teste plusieurs noms).
-
-Le bundle contient notamment : estimateur(s) calibré(s), `features`, Elo et micro-Elo, `segment_brier_scores`, `global_test_brier`, objets **style** (KMeans, cartes), matrice **style×surface** si entraînée, etc.
-
-**Invariant** : toute modification de liste ou d’ordre de `features` impose un **réentraînement** compatible.
-
----
-
-## 6. Automatisation dans `dashboard.py`
-
-Au démarrage du process Streamlit (threads daemon) :
-
-| Mécanisme | Défaut | Variables d’environnement |
-|-----------|--------|-----------------------------|
-| Sync ATP+WTA `sync_tours_daily.py` | Actif ; 1er passage après ~120 s, puis **24 h** | `BETTINGHUD_AUTO_SYNC_TOURS`, `BETTINGHUD_AUTO_SYNC_INITIAL_DELAY_SEC`, `BETTINGHUD_AUTO_SYNC_INTERVAL_SEC` |
-| Train `update_model_tml.py` | Actif ; 1er passage après **2 h**, puis **7 j** | `BETTINGHUD_AUTO_ML_TRAIN_WEEKLY`, `BETTINGHUD_AUTO_ML_TRAIN_INTERVAL_SEC`, `BETTINGHUD_AUTO_ML_TRAIN_INITIAL_DELAY_SEC` |
-| Rafraîchissement prematch (subprocess scraper) | Actif si CSV trop vieux | `BETTINGHUD_PREMATCH_AUTO_REFRESH`, `BETTINGHUD_PREMATCH_TTL_MIN`, … |
-
-**Limites** : si l’app n’est pas lancée, rien ne s’exécute ; les scrapers et sites tiers peuvent casser sans alerte native.
-
----
-
-## 7. Dépendances externes
-
-- **Réseau** : TennisMyLife, dépôts / fichiers WTA, sites de cotes, Open-Meteo (météo), etc.
-- **Fichiers optionnels mais requis pour certains outils** : exports **tennis-data** (`data/raw/tennis_data/*.xlsx`, `data/raw/tennis_data_wta/*.xlsx`) pour le backtest bookmaker ; absence d’un fichier année → partie du backtest vide (ex. WTA sans cotes).
-
----
-
-## 8. Sauvegardes
-
-Le dépôt inclut `create_backup.py` (ZIP du projet, exclusions `venv`, `.git`, etc.). Des sauvegardes datées peuvent être placées sous `backups/` (dossier ignoré par Git). **La DB et les modèles** doivent être sauvegardés séparément si tu veux une restauration complète sur une autre machine.
-
----
-
-## 9. Évolution recommandée (hors code)
-
-Pour une autonomie longue durée : service OS (toujours actif), surveillance (alertes scraper/train), rotation des logs, sauvegardes DB planifiées — voir discussion produit dans les échanges récents du projet.
-
----
-
-*Document à tenir à jour lors d’ajouts majeurs (nouveaux scripts, nouvelles tables, changement de pipeline d’entraînement).*
+- Toute modification de `self.features` dans `ml_model.py` impose un retrain complet.
+- Le bundle et le code doivent rester synchrones (ordre et présence des features).
+- Les docs doivent être mises à jour après changement du pipeline ML ou des règles de mise — en priorité **`docs/CHANGELOG_RECENT.md`**.

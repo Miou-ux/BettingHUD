@@ -1,6 +1,28 @@
 class ValueDetector:
-    def __init__(self, min_value_threshold=0.05):
+    def __init__(self, min_value_threshold=0.15):
         self.min_value_threshold = min_value_threshold
+
+    @staticmethod
+    def bet_sharpe_ratio(true_prob, bookmaker_odd):
+        """Rapport de Sharpe unitaire : EV / écart-type du gain sur 1 unité misée.
+
+        Pour un pari binaire à cote O et proba modèle p :
+          EV = p*(O-1) - (1-p)
+          Var = p*(O-1)² + (1-p) - EV²
+        """
+        try:
+            p = float(true_prob)
+            o = float(bookmaker_odd)
+        except (TypeError, ValueError):
+            return 0.0
+        if p <= 0.0 or p >= 1.0 or o <= 1.0:
+            return 0.0
+        ev = p * (o - 1.0) - (1.0 - p)
+        er2 = p * (o - 1.0) ** 2 + (1.0 - p)
+        var = er2 - ev * ev
+        if var <= 1e-12:
+            return 0.0
+        return float(ev / (var ** 0.5))
 
     @staticmethod
     def calculate_line_drift(opening_odd, current_odd):
@@ -73,7 +95,7 @@ class ValueDetector:
         quand la ligne s'éloigne de notre proba (ex.: cote qui monte alors qu'on soutient ce joueur).
         """
         if not bookmaker_odd or not true_odd or bookmaker_odd <= 1.0 or true_odd <= 1.0:
-            return {"is_value": False, "value_pct": 0, "expected_yield": 0}
+            return {"is_value": False, "value_pct": 0, "expected_yield": 0, "sharpe_ratio": 0.0}
 
         true_prob = 1 / true_odd
 
@@ -108,10 +130,12 @@ class ValueDetector:
             threshold = self.min_value_threshold * (1.0 + 0.5 * confidence_penalty)
 
         is_value = expected_yield >= threshold
+        sharpe_ratio = ValueDetector.bet_sharpe_ratio(true_prob, bookmaker_odd)
 
         return {
             "is_value": is_value,
             "value_pct": expected_yield * 100,
+            "sharpe_ratio": sharpe_ratio,
             "bookmaker_odd": bookmaker_odd,
             "true_odd": true_odd,
             "true_prob": true_prob * 100,

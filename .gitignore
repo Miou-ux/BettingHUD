@@ -165,6 +165,13 @@ cython_debug/
 # MacOS
 .DS_Store
 
+# Obsidian (coffre docs/) — état UI local, pas la doc
+docs/.obsidian/workspace.json
+docs/.obsidian/workspace-mobile.json
+docs/.obsidian/hotkeys.json
+docs/.obsidian/community-plugins.json
+docs/.obsidian/plugins/
+
 # --- SPECIFIQUE A BETTINGHUD ---
 data/
 !data/.keep

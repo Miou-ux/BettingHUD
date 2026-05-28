@@ -45,7 +45,7 @@ def compute_monthly_diagnostics(
     ml = TennisMLModel(db_path=db_path)
     ml._load_bundle_if_needed()
     rng = random.Random(int(seed))
-    detector = ValueDetector(min_value_threshold=0.05)
+    detector = ValueDetector(min_value_threshold=0.15)
 
     rows = []
     for month, mdf in df.groupby("month", sort=True):

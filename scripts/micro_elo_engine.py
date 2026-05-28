@@ -6,6 +6,7 @@ pre-match effective ratings blend surface tracks with α = n/(n+30).
 
 from __future__ import annotations
 
+import heapq
 import os
 import sys
 
@@ -142,6 +143,7 @@ def run_micro_elo_scan(
     micro_elo_k_serve: float = 0.45,
     speed_baseline: float = 0.75,
     speed_alpha: float = 0.35,
+    data_lag_days: int = 0,
 ) -> dict:
     serve_g: dict = {}
     ret_g: dict = {}
@@ -152,11 +154,143 @@ def run_micro_elo_scan(
 
     w_elo, l_elo, w_surf, l_surf = [], [], [], []
     w_sv, w_rt, l_sv, l_rt = [], [], [], []
+    # Tracks « surface seule » pour features diff (cold-start : 70 % global + 30 % base).
+    w_svc_tr, w_rt_tr, l_svc_tr, l_rt_tr = [], [], [], []
 
     n_ok = 0
     n_imputed = 0
+    lag_td = pd.Timedelta(days=int(max(0, data_lag_days)))
+    pending_updates: list[tuple] = []  # (visible_at, seq, row) min-heap
+    pending_seq = 0
+
+    def _flush_pending(visible_through: pd.Timestamp) -> None:
+        nonlocal pending_seq
+        while pending_updates and pending_updates[0][0] <= visible_through:
+            _, _, prow = heapq.heappop(pending_updates)
+            _apply_match_update(prow)
+
+    def _apply_match_update(row) -> None:
+        nonlocal n_ok, n_imputed
+        wid = _pid(getattr(row, "winner_id", None))
+        lid = _pid(getattr(row, "loser_id", None))
+        wname = name_key_fn(getattr(row, "winner_name", None))
+        lname = name_key_fn(getattr(row, "loser_name", None))
+        tour = str(getattr(row, "tour", "ATP"))
+        wname_key = f"{tour}::{wname}" if wname else None
+        lname_key = f"{tour}::{lname}" if lname else None
+        surface = str(getattr(row, "surface", "") or "")
+        dt_u = getattr(row, "tourney_date")
+
+        spd_raw = getattr(row, "surface_speed", None)
+        if spd_raw is None or (isinstance(spd_raw, float) and np.isnan(spd_raw)):
+            speed = lookup_surface_speed(getattr(row, "tourney_name", None), surface)
+        else:
+            speed = float(spd_raw)
+
+        if (not wid or not lid) and not (wname_key and lname_key):
+            return
+
+        def rg(pid, nk, use_id):
+            sg = serve_g.get(pid, serve_g.get(nk, base_elo)) if use_id else serve_g.get(nk, base_elo)
+            rg_ = ret_g.get(pid, ret_g.get(nk, base_elo)) if use_id else ret_g.get(nk, base_elo)
+            return sg, rg_
+
+        def rsf(pid, nk, use_id):
+            key = (pid if use_id else nk, surface)
+            return serve_sf.get(key, base_elo), ret_sf.get(key, base_elo), n_sf.get(key, 0)
+
+        wg_sg, wg_rg = rg(wid, wname_key, bool(wid))
+        lg_sg, lg_rg = rg(lid, lname_key, bool(lid))
+        w_ss, w_rs, w_n = rsf(wid, wname_key, bool(wid))
+        l_ss, l_rs, l_n = rsf(lid, lname_key, bool(lid))
+
+        w_svpt = _to_float(_stat(row, "w_svpt", "w_svpt"))
+        l_svpt = _to_float(_stat(row, "l_svpt", "l_svpt"))
+        if w_svpt is None or l_svpt is None or w_svpt < 15.0 or l_svpt < 15.0:
+            for pid in [wid, lid]:
+                if pid:
+                    last_seen[pid] = dt_u
+            for nk in [wname_key, lname_key]:
+                if nk:
+                    last_seen[nk] = dt_u
+            return
+
+        w_1stwon = _to_float(_stat(row, "w_1stWon", "w_1stwon"))
+        w_2ndwon = _to_float(_stat(row, "w_2ndWon", "w_2ndwon"))
+        l_1stwon = _to_float(_stat(row, "l_1stWon", "l_1stwon"))
+        l_2ndwon = _to_float(_stat(row, "l_2ndWon", "l_2ndwon"))
+        imp = by_surface_imp.get(surface, global_imp)
+
+        if w_1stwon is not None and w_2ndwon is not None:
+            actual_w = float(w_1stwon + w_2ndwon)
+        else:
+            actual_w = float(imp["w_rate"] * w_svpt)
+            n_imputed += 1
+        if l_1stwon is not None and l_2ndwon is not None:
+            actual_l = float(l_1stwon + l_2ndwon)
+        else:
+            actual_l = float(imp["l_rate"] * l_svpt)
+            n_imputed += 1
+        actual_w = float(np.clip(actual_w, 0.0, w_svpt))
+        actual_l = float(np.clip(actual_l, 0.0, l_svpt))
+        n_ok += 1
+
+        slow_pen = max(0.0, speed_baseline - speed)
+        slow_amp_loss = 1.0 + speed_alpha * slow_pen
+        slow_amp_gain = 1.0 + 0.5 * speed_alpha * slow_pen
+        level = str(getattr(row, "tourney_level", "A"))
+        k_level = 1.30 if level == "G" else 1.15 if level == "M" else 1.0 if level == "A" else 0.85
+        if tour == "WTA" and level == "M":
+            k_level *= 1.15
+
+        ws_g, wr_g = wg_sg, wg_rg
+        ls_g, lr_g = lg_sg, lg_rg
+        ew_pct = _expected_pt(ws_g, lr_g, micro_elo_scale)
+        ew_count = ew_pct * w_svpt
+        diff_w = actual_w - ew_count
+        k_eff_w = micro_elo_k_serve * k_level * (slow_amp_loss if diff_w < 0 else slow_amp_gain)
+        delta_w = k_eff_w * diff_w
+        ws_g_1 = ws_g + delta_w
+        lr_g_1 = lr_g - delta_w
+        w_ss0, w_rs0 = w_ss, w_rs
+        l_ss0, l_rs0 = l_ss, l_rs
+        w_ss_1 = w_ss0 + delta_w
+        l_rs_1 = l_rs0 - delta_w
+        el_pct = _expected_pt(ls_g, wr_g, micro_elo_scale)
+        el_count = el_pct * l_svpt
+        diff_l = actual_l - el_count
+        k_eff_l = micro_elo_k_serve * k_level * (slow_amp_loss if diff_l < 0 else slow_amp_gain)
+        delta_l = k_eff_l * diff_l
+        ls_g_2 = ls_g + delta_l
+        wr_g_2 = wr_g - delta_l
+        l_ss_2 = l_ss0 + delta_l
+        w_rs_2 = w_rs0 - delta_l
+
+        def put_one(key, sg, rg, ss, rs):
+            if not key:
+                return
+            serve_g[key] = sg
+            ret_g[key] = rg
+            k = (key, surface)
+            serve_sf[k] = ss
+            ret_sf[k] = rs
+            n_sf[k] = n_sf.get(k, 0) + 1
+            last_seen[key] = dt_u
+
+        w_key = wid if wid else wname_key
+        l_key = lid if lid else lname_key
+        put_one(w_key, ws_g_1, wr_g_2, w_ss_1, w_rs_2)
+        put_one(l_key, ls_g_2, lr_g_1, l_ss_2, l_rs_1)
+        if wid and wname_key and wname_key != wid:
+            put_one(wname_key, ws_g_1, wr_g_2, w_ss_1, w_rs_2)
+        if lid and lname_key and lname_key != lid:
+            put_one(lname_key, ls_g_2, lr_g_1, l_ss_2, l_rs_1)
+
     by_surface_imp, global_imp = _build_surface_imputation(matches_df)
     for row in matches_df.itertuples(index=False):
+        dt = getattr(row, "tourney_date")
+        if lag_td > pd.Timedelta(0):
+            _flush_pending(dt)
         wid = _pid(getattr(row, "winner_id", None))
         lid = _pid(getattr(row, "loser_id", None))
         wname = name_key_fn(getattr(row, "winner_name", None))
@@ -177,6 +311,8 @@ def run_micro_elo_scan(
             for lst in (w_elo, l_elo, w_surf, l_surf):
                 lst.append(base_elo)
             for lst in (w_sv, w_rt, l_sv, l_rt):
+                lst.append(base_elo)
+            for lst in (w_svc_tr, w_rt_tr, l_svc_tr, l_rt_tr):
                 lst.append(base_elo)
             continue
 
@@ -221,6 +357,15 @@ def run_micro_elo_scan(
         eff_l_sv = al * l_ss + (1.0 - al) * lg_sg
         eff_l_rt = al * l_rs + (1.0 - al) * lg_rg
 
+        cold_ws = 0.7 * wg_sg + 0.3 * base_elo
+        cold_wr = 0.7 * wg_rg + 0.3 * base_elo
+        cold_ls = 0.7 * lg_sg + 0.3 * base_elo
+        cold_lr = 0.7 * lg_rg + 0.3 * base_elo
+        w_svc_tr.append(float(w_ss) if w_n > 0 else float(cold_ws))
+        w_rt_tr.append(float(w_rs) if w_n > 0 else float(cold_wr))
+        l_svc_tr.append(float(l_ss) if l_n > 0 else float(cold_ls))
+        l_rt_tr.append(float(l_rs) if l_n > 0 else float(cold_lr))
+
         w_elo.append((wg_sg + wg_rg) / 2.0)
         l_elo.append((lg_sg + lg_rg) / 2.0)
         w_surf.append((eff_w_sv + eff_w_rt) / 2.0)
@@ -229,6 +374,11 @@ def run_micro_elo_scan(
         w_rt.append(eff_w_rt)
         l_sv.append(eff_l_sv)
         l_rt.append(eff_l_rt)
+
+        if lag_td > pd.Timedelta(0):
+            heapq.heappush(pending_updates, (dt + lag_td, pending_seq, row))
+            pending_seq += 1
+            continue
 
         w_svpt = _to_float(_stat(row, "w_svpt", "w_svpt"))
         l_svpt = _to_float(_stat(row, "l_svpt", "l_svpt"))
@@ -316,8 +466,12 @@ def run_micro_elo_scan(
 
         w_key = wid if wid else wname_key
         l_key = lid if lid else lname_key
-        put_one(w_key, ws_g_1, wr_g_2, w_ss_1, w_rs_2)
-        put_one(l_key, ls_g_2, lr_g_1, l_ss_2, l_rs_1)
+        _apply_match_update(row)
+
+    if lag_td > pd.Timedelta(0):
+        while pending_updates:
+            _, _, prow = heapq.heappop(pending_updates)
+            _apply_match_update(prow)
 
     return {
         "winner_elo_pre": pd.Series(w_elo),
@@ -328,6 +482,10 @@ def run_micro_elo_scan(
         "winner_return_elo_pre": pd.Series(w_rt),
         "loser_service_elo_pre": pd.Series(l_sv),
         "loser_return_elo_pre": pd.Series(l_rt),
+        "winner_surface_track_svc_pre": pd.Series(w_svc_tr),
+        "winner_surface_track_rt_pre": pd.Series(w_rt_tr),
+        "loser_surface_track_svc_pre": pd.Series(l_svc_tr),
+        "loser_surface_track_rt_pre": pd.Series(l_rt_tr),
         "serve_g": serve_g,
         "ret_g": ret_g,
         "serve_sf": serve_sf,

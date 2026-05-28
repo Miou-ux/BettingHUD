@@ -1,16 +1,18 @@
 import json
+import math
 import os
 import glob
 import re
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.request import urlopen
 
 import pandas as pd
 
 _scripts_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.dirname(_scripts_dir)
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
 from surface_speed import (  # noqa: E402
@@ -122,11 +124,30 @@ def _norm_name(s: object) -> str:
     return t
 
 
+def _resolve_data_path(rel: str) -> str:
+    """Chemin absolu : cwd d'abord, puis racine du dépôt (évite cwd=scripts/ sous Streamlit)."""
+    if os.path.isabs(rel):
+        return rel
+    cand = os.path.abspath(rel)
+    if os.path.isfile(cand) or os.path.isdir(cand):
+        return cand
+    alt = os.path.abspath(os.path.join(_repo_root, rel))
+    return alt
+
+
+def _safe_mtime(path: str) -> float:
+    try:
+        return float(os.path.getmtime(path))
+    except OSError:
+        return 0.0
+
+
 def _latest_prematch_csv_path(scraped_dir: str = "data/scraped") -> str | None:
-    files = glob.glob(os.path.join(scraped_dir, "prematch_odds_*.csv"))
+    scraped_abs = _resolve_data_path(scraped_dir)
+    files = glob.glob(os.path.join(scraped_abs, "prematch_odds_*.csv"))
     if not files:
         return None
-    files = sorted(files, key=lambda p: os.path.getmtime(p), reverse=True)
+    files = sorted(files, key=_safe_mtime, reverse=True)
     return files[0]
 
 
@@ -145,7 +166,14 @@ def update_closing_odds(
         print("[clv] skip: no prematch csv found", flush=True)
         return 0
     try:
-        df = pd.read_csv(csv_path)
+        try:
+            df = pd.read_csv(csv_path)
+        except OSError as oe:
+            # Windows: Errno 22 sur certains fichiers (cloud, encodage, moteur C) — repli moteur Python.
+            if getattr(oe, "errno", None) == 22 or "Invalid argument" in str(oe):
+                df = pd.read_csv(csv_path, engine="python", encoding="utf-8", encoding_errors="replace")
+            else:
+                raise
     except Exception as e:
         print(f"[clv] skip: cannot read {csv_path} ({e})", flush=True)
         return 0
@@ -173,9 +201,10 @@ def update_closing_odds(
         if mid:
             idx_mid[mid] = (o1f, o2f)
 
-    conn = sqlite3.connect(db_path)
-    now_iso = datetime.utcnow().isoformat(timespec="seconds")
-    today_iso = datetime.utcnow().date().isoformat()
+    db_abs = _resolve_data_path(db_path)
+    conn = sqlite3.connect(db_abs)
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    today_iso = datetime.now(timezone.utc).date().isoformat()
     n_upd = 0
     try:
         # started/finished: match_date <= today OR status déjà clos
@@ -217,13 +246,16 @@ def update_closing_odds(
                 # alt markets or unmatched labels: skip CLV assignment
                 continue
             clv = ValueDetector.calculate_clv_score(odd_taken, close)
+            clv_db = None if clv is None else float(clv)
+            if clv_db is not None and not math.isfinite(clv_db):
+                clv_db = None
             conn.execute(
                 """
                 UPDATE user_bets
                 SET closing_odd = ?, clv_score = ?, clv_updated_ts = ?
                 WHERE id = ?
                 """,
-                (float(close), None if clv is None else float(clv), now_iso, int(bet_id)),
+                (float(close), clv_db, now_iso, int(bet_id)),
             )
             n_upd += 1
         if n_upd:

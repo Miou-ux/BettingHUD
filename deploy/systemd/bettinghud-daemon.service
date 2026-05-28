@@ -1,0 +1,17 @@
+[Unit]
+Description=BettingHUD Portfolio Results Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/bettinghud
+Environment=HOME=/home/ubuntu
+Environment=PYTHONPATH=/opt/bettinghud
+ExecStart=/opt/bettinghud/venv/bin/python /opt/bettinghud/scripts/portfolio_results_daemon.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

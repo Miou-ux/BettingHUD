@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 import argparse
 import os
 import sqlite3
@@ -25,18 +25,23 @@ def _log(msg: str) -> None:
     print(f"[{_ts()}] {msg}", flush=True)
 
 
-def update_model(min_year=2010):
+def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None):
     t_pipeline = time.perf_counter()
     current_year = datetime.utcnow().year
     _log(f"=== Pipeline TML + ML | min_year={min_year} max_year={current_year} ===")
 
     t0 = time.perf_counter()
-    _log("Début synchronisation ATP+WTA (TML + Sackmann/TA) ...")
-    rc_sync = run_sync_bundle()
-    if rc_sync != 0:
-        _log(f"[WARN] Sync ATP+WTA incomplète (rc={rc_sync}). L'entraînement continue avec les données disponibles.")
-    dt_sync = time.perf_counter() - t0
-    _log(f"Fin sync ATP+WTA — durée {dt_sync:.1f}s ({dt_sync/60:.1f} min)")
+    if skip_sync:
+        _log("Synchronisation réseau ignorée (--skip-sync).")
+        rc_sync = 0
+        dt_sync = 0.0
+    else:
+        _log("Début synchronisation ATP+WTA (TML + Sackmann/TA) ...")
+        rc_sync = run_sync_bundle()
+        if rc_sync != 0:
+            _log(f"[WARN] Sync ATP+WTA incomplète (rc={rc_sync}). L'entraînement continue avec les données disponibles.")
+        dt_sync = time.perf_counter() - t0
+        _log(f"Fin sync ATP+WTA — durée {dt_sync:.1f}s ({dt_sync/60:.1f} min)")
 
     t1 = time.perf_counter()
     _log("Début chargement modèle + entraînement ...")
@@ -45,7 +50,11 @@ def update_model(min_year=2010):
     _log(f"Instance TennisMLModel créée en {t_load:.2f}s")
 
     t2 = time.perf_counter()
-    ml.train()
+    ml.train(
+        min_year=min_year,
+        model_path=output_pkl,
+        feature_plot_path=feature_plot_path,
+    )
     dt_train = time.perf_counter() - t2
     _log(f"Fin entraînement ML — durée {dt_train:.1f}s ({dt_train/60:.1f} min)")
     _log("Clusters « Player style » : consulter le bloc stdout « --- Player style clusters --- » (tri Ace%, random_state=42).")
@@ -73,6 +82,28 @@ def update_model(min_year=2010):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sync TennisMyLife matches_recent + retrain ML model.")
-    parser.add_argument("--min-year", type=int, default=2010, help="Première année à synchroniser (TML).")
+    parser.add_argument("--min-year", type=int, default=2010, help="Première année (sync + filtre SQL entraînement ATP/WTA).")
+    parser.add_argument(
+        "--skip-sync",
+        action="store_true",
+        help="Ne pas appeler run_sync_bundle() (entraînement plus rapide sur DB locale).",
+    )
+    parser.add_argument(
+        "--output-pkl",
+        type=str,
+        default=None,
+        help="Chemin du bundle joblib à écrire (défaut : model_path du TennisMLModel).",
+    )
+    parser.add_argument(
+        "--feature-plot",
+        type=str,
+        default=None,
+        help="Chemin du PNG d'importance des features (défaut : dérivé de --output-pkl).",
+    )
     args = parser.parse_args()
-    update_model(min_year=args.min_year)
+    update_model(
+        min_year=args.min_year,
+        skip_sync=args.skip_sync,
+        output_pkl=args.output_pkl,
+        feature_plot_path=args.feature_plot,
+    )

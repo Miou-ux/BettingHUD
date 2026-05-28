@@ -8,7 +8,8 @@ Exécution :
   python scripts/pipeline_quality.py --with-tml-train --min-year 2010
 
 Prérequis WTA optionnels :
-  data/raw/tennis_wta/wta_matches_*.csv  (git clone ou scripts/fetch_wta_sackmann_raw.py)
+  data/raw/tennis_wta/wta_matches_*.csv et wta_matches_qual_itf_*.csv
+  (git clone ou scripts/fetch_wta_sackmann_raw.py)
   data/raw/tennis_wta/wta_rankings_current.csv
 """
 import argparse

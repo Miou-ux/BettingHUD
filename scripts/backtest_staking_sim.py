@@ -48,6 +48,21 @@ def _bool_won(v) -> bool:
     return s in {"1", "true", "yes"}
 
 
+def _expand_tourney_levels_for_tour_codes(levels: set[str]) -> set[str]:
+    """Map dashboard ATP-style levels to tennis-data WTA level codes.
+
+    ATP files use G/M/500/250, while WTA files in tennis-data commonly use
+    G/PM/P/I. The dashboard label "A" covers ATP 250/500 and regular WTA tour
+    events, so include the equivalent raw codes.
+    """
+    expanded = set(levels)
+    if "M" in levels:
+        expanded.update({"PM", "P"})
+    if "A" in levels:
+        expanded.update({"500", "250", "I"})
+    return expanded
+
+
 def load_and_filter_bets_csv(
     csv_path: str,
     *,
@@ -68,7 +83,14 @@ def load_and_filter_bets_csv(
     df = df.dropna(subset=["date"])
     df = df.reset_index(drop=True)
     df["_row"] = np.arange(len(df), dtype=int)
-    df = df.sort_values(["date", "_row"], kind="mergesort").drop(columns=["_row"])
+    if "priority_score" in df.columns:
+        df = df.sort_values(
+            ["date", "priority_score", "_row"],
+            ascending=[True, False, True],
+            kind="mergesort",
+        ).drop(columns=["_row"])
+    else:
+        df = df.sort_values(["date", "_row"], kind="mergesort").drop(columns=["_row"])
     if year is not None:
         y = int(year)
         df = df[df["date"].dt.year == y]
@@ -86,7 +108,9 @@ def load_and_filter_bets_csv(
     if allowed_tourney_levels:
         if "tourney_level" not in df.columns:
             raise ValueError("Filtre niveau tournoi demandé mais colonne 'tourney_level' absente du CSV.")
-        _lvls = {str(x).strip().upper() for x in allowed_tourney_levels if str(x).strip()}
+        _lvls = _expand_tourney_levels_for_tour_codes(
+            {str(x).strip().upper() for x in allowed_tourney_levels if str(x).strip()}
+        )
         if _lvls:
             _lvl_ser = df["tourney_level"].astype(str).str.strip().str.upper()
             _keep_lvl = _lvl_ser.isin(_lvls)
@@ -127,6 +151,36 @@ def resolve_backtest_csv(repo_root: str, year: int) -> Optional[str]:
     return None
 
 
+_BACKTEST_REQUIRED_COLS = frozenset({"p_model", "odd", "won", "date"})
+
+
+def is_backtest_csv_valid(csv_path: str) -> bool:
+    """True si le fichier existe, contient au moins une ligne de données et les colonnes requises."""
+    if not csv_path or not os.path.isfile(csv_path):
+        return False
+    try:
+        if os.path.getsize(csv_path) < 32:
+            return False
+        df = pd.read_csv(csv_path, nrows=2)
+        if df.empty or not _BACKTEST_REQUIRED_COLS.issubset(set(df.columns)):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def list_backtest_years_with_valid_csv(
+    repo_root: str, *, y_min: int = 2010, y_max: int = 2035
+) -> list[int]:
+    """Années pour lesquelles un CSV backtest résolvable existe et est exploitable par le dashboard."""
+    out: list[int] = []
+    for y in range(int(y_min), int(y_max) + 1):
+        p = resolve_backtest_csv(repo_root, y)
+        if p and is_backtest_csv_valid(p):
+            out.append(y)
+    return out
+
+
 def simulate_sequential_intraday(
     df: pd.DataFrame,
     bankroll_start: float,
@@ -141,6 +195,8 @@ def simulate_sequential_intraday(
     segment_brier_scores: Optional[dict[str, float]] = None,
     global_brier_score: float = 0.12,
     return_history: bool = False,
+    stake_cap_basis: str = "morning",
+    track_stake_cap_hits: bool = False,
 ) -> dict:
     """
     Kelly * kelly_multiplier sur le **liquide** restant ; plafond `max_stake_pct` = % de **BR du matin** par pari.
@@ -156,6 +212,14 @@ def simulate_sequential_intraday(
     avec fallback sur Brier global si segment introuvable.
     Si `use_fixed_stake_pct=True`, ignore Kelly et engage `fixed_stake_pct`% de la
     BR du matin par pari (borné par cap par pari, budget jour et liquide restant).
+
+    `stake_cap_basis`:
+      - ``"morning"`` (défaut) : plafond = ``max_stake_pct`` % × **BR du matin** (comportement historique).
+      - ``"liquid"`` : plafond = ``max_stake_pct`` % × **liquidité disponible** avant la mise
+        (trésorerie intraday restante — interprétation « bankroll actuelle » mobilisable).
+
+    Si ``track_stake_cap_hits=True``, ajoute ``n_stake_cap_hits`` : nombre de paris où la mise Kelly
+    brute dépasse le plafond (le ``min`` impose alors le cap).
     """
     if df.empty:
         out = {
@@ -208,6 +272,8 @@ def simulate_sequential_intraday(
     fixed_frac = max(0.0, float(fixed_stake_pct) / 100.0)
     seg_brier = segment_brier_scores or {}
     global_brier = float(global_brier_score)
+    cap_basis = str(stake_cap_basis or "morning").strip().lower()
+    n_cap_hits = 0
 
     for _day, day_df in work.groupby("date", sort=True):
         day_df = day_df.reset_index(drop=True)
@@ -240,10 +306,15 @@ def simulate_sequential_intraday(
                 raw = liquid * stake_frac
             else:
                 raw = liquid * k_mult * kf
-            # Plafond : % de la BR **du matin** par pari (pas % du liquide restant).
-            cap_lim = b0 * cap_frac
+            # Plafond par pari : % BR matin (historique) ou % liquidité disponible (« BR actuelle » mobilisable).
+            if cap_basis == "liquid":
+                cap_lim = max(0.0, float(liquid)) * cap_frac
+            else:
+                cap_lim = float(b0) * cap_frac
             remaining_day_budget = max(0.0, day_deploy_cap - day_deploy_used)
             stake = max(0.0, min(raw, cap_lim, liquid, remaining_day_budget))
+            if track_stake_cap_hits and raw > cap_lim + 1e-9:
+                n_cap_hits += 1
             if stake <= 0.0:
                 continue
             liquid -= stake
@@ -316,6 +387,8 @@ def simulate_sequential_intraday(
         "profit_factor": float(pf) if pf != float("inf") else None,
         "n_trading_days": len(dpn),
     }
+    if track_stake_cap_hits:
+        out["n_stake_cap_hits"] = int(n_cap_hits)
     if return_history:
         out["history"] = history
         out["daily_pnls"] = daily_pnls

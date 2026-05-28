@@ -28,6 +28,9 @@ import pandas as pd
 
 from scripts.player_identity import canonical_name, to_lastname_initial
 
+# Aligné sur TML / ml_model.prepare_data(min_year=2010) et ingest_sackmann_wta.
+WTA_MATCHES_MIN_YEAR = int(os.getenv("BETTINGHUD_WTA_SACKMANN_MIN_YEAR", "2010"))
+
 def _canonical_player_index_key(name: str) -> str:
     """Clé alignée sur les index ATP/WTA (`_build_*_indexes`).
 
@@ -60,6 +63,26 @@ def _to_int_or_none(x) -> Optional[int]:
         return None
 
 
+def _norm_tourney_id_filter(val: Any) -> Optional[str]:
+    """Chaîne normalisée pour comparer / filtrer tourney_id (None si absent ou invalide)."""
+    if val is None:
+        return None
+    try:
+        if isinstance(val, float) and pd.isna(val):
+            return None
+    except Exception:
+        pass
+    try:
+        if val is pd.NA:  # type: ignore[comparison-overlap]
+            return None
+    except Exception:
+        pass
+    s = str(val).strip()
+    if not s or s.lower() in {"nan", "none", "<na>"}:
+        return None
+    return s
+
+
 def _norm_pid_key(pid) -> Optional[str]:
     """Normalise un player_id pour usage en clé : str sans espace."""
     if pid is None:
@@ -72,6 +95,25 @@ def _norm_pid_key(pid) -> Optional[str]:
     if not s:
         return None
     return s
+
+
+def _parse_yyyymmdd_int(val: Any) -> Optional[str]:
+    """Sackmann CSV/SQLite : `20260105` (int) — ne pas passer à pd.to_datetime brut (→ epoch ns)."""
+    try:
+        if isinstance(val, float) and pd.isna(val):
+            return None
+        n = int(float(val))
+    except (TypeError, ValueError):
+        return None
+    if n < 19000101 or n > 21001231:
+        return None
+    y, mo, d = n // 10000, (n // 100) % 100, n % 100
+    if not (1900 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    try:
+        return pd.Timestamp(year=y, month=mo, day=d).strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 
 def _normalize_date_display(val: Any) -> Optional[str]:
@@ -88,9 +130,16 @@ def _normalize_date_display(val: Any) -> Optional[str]:
             return None
     except Exception:
         pass
+    ymd = _parse_yyyymmdd_int(val)
+    if ymd:
+        return ymd
     s = str(val).strip()
     if not s or s.lower() in {"nan", "nat", "<na>"}:
         return None
+    if s.isdigit() and len(s) == 8:
+        ymd = _parse_yyyymmdd_int(s)
+        if ymd:
+            return ymd
     if isinstance(val, datetime):
         return val.strftime("%Y-%m-%d")
     ts = pd.to_datetime(val, errors="coerce")
@@ -133,7 +182,7 @@ def _stats_reference_date_from_row(row: Any) -> Optional[str]:
     return _normalize_date_display(td)
 
 
-_STATS_CACHE_SHAPE_VER = 2
+_STATS_CACHE_SHAPE_VER = 5  # bump: parse ranking_date Sackmann YYYYMMDD (int)
 
 
 def _strip_stats_cache_meta(out: Dict[str, Any]) -> Dict[str, Any]:
@@ -212,7 +261,9 @@ class TennisStatsEngine:
                 self.matches_atp_df["tourney_date"], errors="coerce"
             )
             self.matches_atp_df = (
-                self.matches_atp_df.dropna(subset=["tourney_date"]).reset_index(drop=True)
+                self.matches_atp_df.dropna(subset=["tourney_date"])
+                .sort_values("tourney_date", kind="mergesort")
+                .reset_index(drop=True)
             )
 
     def _wta_table_exists(self) -> bool:
@@ -257,14 +308,23 @@ class TennisStatsEngine:
                 return self.matches_wta_df
             conn = self._connect()
             try:
-                df = pd.read_sql("SELECT * FROM wta_matches", conn)
+                df = pd.read_sql(
+                    "SELECT * FROM wta_matches "
+                    "WHERE CAST(strftime('%Y', tourney_date) AS INTEGER) >= ?",
+                    conn,
+                    params=(WTA_MATCHES_MIN_YEAR,),
+                )
             except Exception:
                 df = pd.DataFrame()
             finally:
                 conn.close()
             if not df.empty:
                 df["tourney_date"] = pd.to_datetime(df["tourney_date"], errors="coerce")
-                df = df.dropna(subset=["tourney_date"]).reset_index(drop=True)
+                df = (
+                    df.dropna(subset=["tourney_date"])
+                    .sort_values("tourney_date", kind="mergesort")
+                    .reset_index(drop=True)
+                )
             self.matches_wta_df = df
             self._build_wta_indexes()
             return self.matches_wta_df
@@ -486,8 +546,26 @@ class TennisStatsEngine:
         idxs = self._atp_winner_idx.get(pid, []) + self._atp_loser_idx.get(pid, [])
         if not idxs:
             return None, None
-        last_pos = max(idxs)
-        row = self.matches_atp_df.iloc[last_pos]
+        df = self.matches_atp_df
+        # Ne pas utiliser max(idxs) : ce sont des positions iloc, pas l'ordre chronologique
+        # si le DataFrame n'était pas trié par date (désormais trié au load, mais on garde
+        # le choix explicite par tourney_date pour robustesse).
+        best_pos: Optional[int] = None
+        best_ts = pd.Timestamp.min
+        for pos in idxs:
+            try:
+                td = df.iloc[int(pos)]["tourney_date"]
+            except Exception:
+                continue
+            if pd.isna(td):
+                continue
+            ts = pd.Timestamp(td)
+            if best_pos is None or ts >= best_ts:
+                best_ts = ts
+                best_pos = int(pos)
+        if best_pos is None:
+            return None, None
+        row = df.iloc[best_pos]
         is_winner = str(row.get("winner_id") or "").strip() == pid
         return row, is_winner
 
@@ -498,8 +576,22 @@ class TennisStatsEngine:
         idxs = self._wta_winner_idx.get(pid_int, []) + self._wta_loser_idx.get(pid_int, [])
         if not idxs:
             return None, None
-        last_pos = max(idxs)
-        row = df.iloc[last_pos]
+        best_pos: Optional[int] = None
+        best_ts = pd.Timestamp.min
+        for pos in idxs:
+            try:
+                td = df.iloc[int(pos)]["tourney_date"]
+            except Exception:
+                continue
+            if pd.isna(td):
+                continue
+            ts = pd.Timestamp(td)
+            if best_pos is None or ts >= best_ts:
+                best_ts = ts
+                best_pos = int(pos)
+        if best_pos is None:
+            return None, None
+        row = df.iloc[best_pos]
         is_winner = _to_int_or_none(row.get("winner_id")) == pid_int
         return row, is_winner
 
@@ -536,7 +628,7 @@ class TennisStatsEngine:
         }
 
     def _wta_rankings_current_meta(self, pid_int: int) -> Optional[tuple[int, float, Optional[str]]]:
-        """Rank, points et date de ligne classement WTA courant (si colonne présente)."""
+        """Rank, points et date de la dernière ligne classement WTA courant (Sackmann)."""
         if not self._rankings_wta_current_exists():
             return None
         conn = self._connect()
@@ -545,7 +637,7 @@ class TennisStatsEngine:
             if "ranking_date" in cols:
                 row = conn.execute(
                     "SELECT ranking, points, ranking_date FROM rankings_wta_current "
-                    "WHERE player_id = ? LIMIT 1",
+                    "WHERE player_id = ? ORDER BY ranking_date DESC LIMIT 1",
                     (int(pid_int),),
                 ).fetchone()
             else:
@@ -619,6 +711,7 @@ class TennisStatsEngine:
                 if row is not None:
                     out = self._stats_from_match_row(row, bool(is_w), "wta_matches")
                     out["stats_reference_date"] = _stats_reference_date_from_row(row)
+                    out = self._overlay_wta_current_rankings(out, pid_int)
                     self._cache_stats_result(cache_key, out)
                     return _strip_stats_cache_meta(out)
 
@@ -645,6 +738,7 @@ class TennisStatsEngine:
                 if row is not None:
                     out = self._stats_from_match_row(row, bool(is_w), "wta_matches")
                     out["stats_reference_date"] = _stats_reference_date_from_row(row)
+                    out = self._overlay_wta_current_rankings(out, pid_int)
                     self._cache_stats_result(cache_key, out)
                     return _strip_stats_cache_meta(out)
                 out = self._wta_rankings_stats_dict(
@@ -726,7 +820,48 @@ class TennisStatsEngine:
         nc = pd.to_numeric(df["loser_id"], errors="coerce")
         return nc == float(pid_int)
 
-    def get_recent_form(self, player_id, days: int = 90, tour_hint: Optional[str] = None):
+    @staticmethod
+    def _anchor_date(df: pd.DataFrame, ref_date: Optional[str] = None) -> pd.Timestamp:
+        """Date de référence pour fenêtres glissantes (match live, pas fin d'historique DB)."""
+        if ref_date:
+            try:
+                anchor = pd.Timestamp(str(ref_date)[:10]).normalize()
+            except Exception:
+                anchor = None
+        else:
+            anchor = None
+        if anchor is None or pd.isna(anchor):
+            if df is None or df.empty:
+                return pd.Timestamp.now().normalize()
+            return pd.Timestamp(df["tourney_date"].max()).normalize()
+        return anchor
+
+    def _overlay_wta_current_rankings(self, out: Dict[str, Any], pid_int: int) -> Dict[str, Any]:
+        """Priorise le classement WTA courant (Sackmann) sur le dernier match historique."""
+        meta = self._wta_rankings_current_meta(pid_int)
+        if not meta:
+            return out
+        rnk, pts, rdate = meta
+        merged = dict(out)
+        merged["rank"] = rnk
+        merged["pts"] = pts
+        if rdate:
+            merged["stats_reference_date"] = rdate
+        prev = str(merged.get("stats_source") or "")
+        if prev in ("wta_matches", "no_ranking_source"):
+            merged["stats_source"] = "rankings_wta_current"
+            merged["stats_source_detail"] = (
+                "Rang/points depuis rankings_wta_current (prioritaire en live)."
+            )
+        return merged
+
+    def get_recent_form(
+        self,
+        player_id,
+        days: int = 90,
+        tour_hint: Optional[str] = None,
+        ref_date: Optional[str] = None,
+    ):
         if not player_id:
             return {"win_pct": 50.0, "matches": 0}
         tour = (tour_hint or "").strip().upper()
@@ -735,15 +870,24 @@ class TennisStatsEngine:
         df = self._player_subframe(player_id, tour)
         if df is None or df.empty:
             return {"win_pct": 50.0, "matches": 0}
-        max_date = df["tourney_date"].max()
-        recent = df[df["tourney_date"] >= max_date - pd.Timedelta(days=days)]
+        anchor = self._anchor_date(df, ref_date)
+        hist = df[df["tourney_date"] <= anchor]
+        if hist.empty:
+            return {"win_pct": 50.0, "matches": 0}
+        recent = hist[hist["tourney_date"] >= anchor - pd.Timedelta(days=days)]
         wins = int(self._winner_mask(recent, player_id, tour).sum())
         losses = int(self._loser_mask(recent, player_id, tour).sum())
         total = wins + losses
         win_pct = (wins / total * 100) if total > 0 else 50.0
         return {"win_pct": win_pct, "matches": total, "wins": wins, "losses": losses}
 
-    def get_recent_fatigue(self, player_id, days: int = 14, tour_hint: Optional[str] = None):
+    def get_recent_fatigue(
+        self,
+        player_id,
+        days: int = 14,
+        tour_hint: Optional[str] = None,
+        ref_date: Optional[str] = None,
+    ):
         if not player_id:
             return {"minutes_played": 0, "matches": 0}
         tour = (tour_hint or "").strip().upper()
@@ -752,8 +896,11 @@ class TennisStatsEngine:
         df = self._player_subframe(player_id, tour)
         if df is None or df.empty:
             return {"minutes_played": 0, "matches": 0}
-        max_date = df["tourney_date"].max()
-        recent = df[df["tourney_date"] >= max_date - pd.Timedelta(days=days)]
+        anchor = self._anchor_date(df, ref_date)
+        hist = df[df["tourney_date"] <= anchor]
+        if hist.empty:
+            return {"minutes_played": 0, "matches": 0}
+        recent = hist[hist["tourney_date"] >= anchor - pd.Timedelta(days=days)]
         wins_df = recent[self._winner_mask(recent, player_id, tour)]
         losses_df = recent[self._loser_mask(recent, player_id, tour)]
         total_matches = len(wins_df) + len(losses_df)
@@ -765,11 +912,23 @@ class TennisStatsEngine:
             "matches": total_matches,
         }
 
-    def get_recent_match_quality(self, player_id, tour_hint: Optional[str] = None):
+    def get_recent_match_quality(
+        self,
+        player_id,
+        tour_hint: Optional[str] = None,
+        exclude_tourney_id=None,
+        ref_date: Optional[str] = None,
+    ):
         """Compute the *causal* recent-activity signals used by the v2 ML model.
 
         These replace the raw "minutes/sets played in last 7d" features that fooled
         the v1 model into thinking "less time on court = top player".
+
+        Args:
+            exclude_tourney_id: si fourni, les lignes de ce tournoi sont ignorées pour
+                `last_round_reached` uniquement (évite la fuite quand le dernier bloc
+                du tri date est l'épreuve en cours). wins_last7d / three_setters restent
+                sur l'historique complet.
 
         Returns dict with:
             wins_last7d (int): victories in the past 7 days. Positive correlates with form.
@@ -786,18 +945,20 @@ class TennisStatsEngine:
         if df is None or df.empty:
             return empty
 
-        max_date = df["tourney_date"].max()
-        wmask = self._winner_mask(df, player_id, tour)
+        anchor = self._anchor_date(df, ref_date)
+        hist = df[df["tourney_date"] <= anchor]
+        if hist.empty:
+            return empty
 
-        # Wins in last 7 days
-        cutoff7 = max_date - pd.Timedelta(days=7)
-        recent7 = df[df["tourney_date"] >= cutoff7]
+        # Wins in last 7 days (relatifs à la date du match live)
+        cutoff7 = anchor - pd.Timedelta(days=7)
+        recent7 = hist[hist["tourney_date"] >= cutoff7]
         wmask7 = self._winner_mask(recent7, player_id, tour)
         wins7 = int(wmask7.sum())
 
         # 3+/4+ setter matches in last 14 days
-        cutoff14 = max_date - pd.Timedelta(days=14)
-        recent14 = df[df["tourney_date"] >= cutoff14]
+        cutoff14 = anchor - pd.Timedelta(days=14)
+        recent14 = hist[hist["tourney_date"] >= cutoff14]
         three_count = 0
         if "score" in recent14.columns:
             for _, row in recent14.iterrows():
@@ -824,20 +985,26 @@ class TennisStatsEngine:
         }
         last_round = 0
         if "tourney_id" in df.columns and "round" in df.columns:
-            latest = df.dropna(subset=["tourney_date"]).sort_values("tourney_date").tail(20)
-            if not latest.empty:
-                last_tid = latest["tourney_id"].iloc[-1]
-                last_tourney_rows = latest[latest["tourney_id"] == last_tid]
-                # If player won the title, the deepest 'round' was 'F' AND they won it
-                # — promote to depth 8. Else use the deepest reached round depth.
-                depths = [round_map.get(str(r).upper(), 0) for r in last_tourney_rows["round"].tolist()]
-                last_round = max(depths) if depths else 0
-                # Did they win a Final? (means they won the title)
-                final_rows = last_tourney_rows[last_tourney_rows["round"].astype(str).str.upper() == "F"]
-                if not final_rows.empty:
-                    final_won = self._winner_mask(final_rows, player_id, tour).any()
-                    if final_won:
-                        last_round = 8
+            excl = _norm_tourney_id_filter(exclude_tourney_id)
+            df_lr = hist
+            if excl is not None:
+                tid_norm = hist["tourney_id"].map(_norm_tourney_id_filter)
+                df_lr = hist[tid_norm != excl]
+            if not df_lr.empty:
+                latest = df_lr.dropna(subset=["tourney_date"]).sort_values("tourney_date").tail(20)
+                if not latest.empty:
+                    last_tid = latest["tourney_id"].iloc[-1]
+                    last_tourney_rows = latest[latest["tourney_id"] == last_tid]
+                    # If player won the title, the deepest 'round' was 'F' AND they won it
+                    # — promote to depth 8. Else use the deepest reached round depth.
+                    depths = [round_map.get(str(r).upper(), 0) for r in last_tourney_rows["round"].tolist()]
+                    last_round = max(depths) if depths else 0
+                    # Did they win a Final? (means they won the title)
+                    final_rows = last_tourney_rows[last_tourney_rows["round"].astype(str).str.upper() == "F"]
+                    if not final_rows.empty:
+                        final_won = self._winner_mask(final_rows, player_id, tour).any()
+                        if final_won:
+                            last_round = 8
 
         return {
             "wins_last7d": wins7,

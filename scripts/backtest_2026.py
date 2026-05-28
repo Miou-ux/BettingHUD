@@ -34,8 +34,10 @@ from sklearn.model_selection import TimeSeriesSplit
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from scripts.ml_model import TennisMLModel  # noqa: E402
+from scripts.ml_model import TennisMLModel, resolve_segment_brier_score  # noqa: E402
+from scripts.priority_scoring import priority_score_composite, sharpe_per_brier  # noqa: E402
 from scripts.surface_speed import lookup_surface_speed  # noqa: E402
+from scripts.value_detector import ValueDetector  # noqa: E402
 
 # Force UTF-8 stdout on Windows
 try:
@@ -158,7 +160,7 @@ def load_bookmaker_odds_year(tour: str = "ATP", year: int = 2026):
 
 # ---------- prepare_data variant that keeps identity columns ----------
 
-def build_dataset_with_identity(ml: TennisMLModel):
+def build_dataset_with_identity(ml: TennisMLModel, *, data_lag_days: int = 0):
     """Same logic as ml.prepare_data() but also returns winner_name/loser_name/tour
     aligned with df1 (target=1) rows so we can join with bookmaker odds.
 
@@ -226,7 +228,11 @@ def build_dataset_with_identity(ml: TennisMLModel):
         w_ret,
         l_serv,
         l_ret,
-    ) = ml._build_elo_features(df)
+        w_svc_tr,
+        w_rt_tr,
+        l_svc_tr,
+        l_rt_tr,
+    ) = ml._build_elo_features(df, data_lag_days=int(data_lag_days))
     df["winner_elo_pre"] = w_elo
     df["loser_elo_pre"] = l_elo
     df["winner_surf_elo_pre"] = w_s_elo
@@ -235,7 +241,13 @@ def build_dataset_with_identity(ml: TennisMLModel):
     df["winner_return_elo_pre"] = w_ret
     df["loser_service_elo_pre"] = l_serv
     df["loser_return_elo_pre"] = l_ret
-    temporal = ml._build_temporal_features(df)
+    df["winner_surface_track_svc_pre"] = w_svc_tr
+    df["winner_surface_track_rt_pre"] = w_rt_tr
+    df["loser_surface_track_svc_pre"] = l_svc_tr
+    df["loser_surface_track_rt_pre"] = l_rt_tr
+    temporal = ml._build_temporal_features(df, data_lag_days=int(data_lag_days))
+    if int(data_lag_days) > 0:
+        print(f"  Features avec délai publication données: {int(data_lag_days)} jours (TML/Sackmann)")
     for k, v in temporal.items():
         df[k] = v
 
@@ -247,6 +259,15 @@ def build_dataset_with_identity(ml: TennisMLModel):
         out["tourney_date"] = df["tourney_date"]
         out["tournament_level_encoded"] = df["tourney_level"].fillna("A").map(ml._encode_tourney_level)
         out["tour_encoded"] = (df["tour"] == "WTA").astype(float)
+        _yd_bt = pd.to_datetime(df["tourney_date"], errors="coerce").dt.year
+        out["match_year"] = _yd_bt.fillna(-1).astype(int).values
+        out["tourney_level_raw"] = df["tourney_level"].fillna("A").astype(str).str.strip().str.upper().values
+        out["tourney_name_lc"] = df["tourney_name"].astype(str).str.lower().values
+        out["round_raw"] = (
+            df["round"].astype(str).str.strip().str.upper().values
+            if "round" in df.columns
+            else np.array([""] * len(df), dtype=object)
+        )
         if not swap:
             out["rank_diff"] = df["winner_rank"] - df["loser_rank"]
             out["age_diff"] = df["winner_age"] - df["loser_age"]
@@ -254,6 +275,10 @@ def build_dataset_with_identity(ml: TennisMLModel):
             out["points_diff"] = df["winner_rank_points"] - df["loser_rank_points"]
             out["service_elo_diff"] = df["winner_service_elo_pre"] - df["loser_service_elo_pre"]
             out["return_elo_diff"] = df["winner_return_elo_pre"] - df["loser_return_elo_pre"]
+            out["surface_service_elo_diff"] = df["winner_surface_track_svc_pre"] - df["loser_surface_track_svc_pre"]
+            out["surface_return_elo_diff"] = df["winner_surface_track_rt_pre"] - df["loser_surface_track_rt_pre"]
+            out["minutes_played_last7d_diff"] = df["winner_minutes_last7d"] - df["loser_minutes_last7d"]
+            out["tb_win_pct_52w_diff"] = df["winner_tb_win_pct_52w"] - df["loser_tb_win_pct_52w"]
             out["speed_affinity"] = df["winner_speed_affinity"] - df["loser_speed_affinity"]
             out["speed_performance_delta"] = df["winner_speed_perf_delta"] - df["loser_speed_perf_delta"]
             out["serve_speed_interaction"] = out["service_elo_diff"] * df["surface_speed"].astype(float)
@@ -293,6 +318,10 @@ def build_dataset_with_identity(ml: TennisMLModel):
             out["points_diff"] = df["loser_rank_points"] - df["winner_rank_points"]
             out["service_elo_diff"] = df["loser_service_elo_pre"] - df["winner_service_elo_pre"]
             out["return_elo_diff"] = df["loser_return_elo_pre"] - df["winner_return_elo_pre"]
+            out["surface_service_elo_diff"] = df["loser_surface_track_svc_pre"] - df["winner_surface_track_svc_pre"]
+            out["surface_return_elo_diff"] = df["loser_surface_track_rt_pre"] - df["winner_surface_track_rt_pre"]
+            out["minutes_played_last7d_diff"] = df["loser_minutes_last7d"] - df["winner_minutes_last7d"]
+            out["tb_win_pct_52w_diff"] = df["loser_tb_win_pct_52w"] - df["winner_tb_win_pct_52w"]
             out["speed_affinity"] = df["loser_speed_affinity"] - df["winner_speed_affinity"]
             out["speed_performance_delta"] = df["loser_speed_perf_delta"] - df["winner_speed_perf_delta"]
             out["serve_speed_interaction"] = out["service_elo_diff"] * df["surface_speed"].astype(float)
@@ -451,7 +480,13 @@ def _predict_p1_prob(ml: TennisMLModel, X_row: pd.DataFrame) -> float:
     lvl_label = {3.0: "G", 2.0: "M", 1.0: "A"}.get(lvl_code)
     seg_key = f"{surf_label}_{lvl_label}" if surf_label and lvl_label else None
     seg_model = ml.model_segments.get(seg_key)
-    global_p1 = float(ml.model.predict_proba(X_row[ml.features])[0][1])
+    rc = list(TennisMLModel.ROUTING_COLS_BO5)
+    routing_row = X_row.loc[:, rc] if all(c in X_row.columns for c in rc) else None
+    global_p1 = float(
+        ml.predict_proba_calibrated_routed(X_row[ml.features], routing=routing_row).ravel()[0]
+        if hasattr(ml, "predict_proba_calibrated_routed")
+        else ml.model.predict_proba(X_row[ml.features])[0][1]
+    )
     if seg_model is not None:
         seg_p1 = float(seg_model.predict_proba(X_row[ml.features])[0][1])
         w = float(getattr(ml, "segment_blend_weight", 0.7))
@@ -499,7 +534,13 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
     # For speed we batch global + segments separately.
     Xfeat = df1_test[ml.features]
     print("\nPrédictions...")
-    global_proba = ml.model.predict_proba(Xfeat)[:, 1]
+    rc = list(TennisMLModel.ROUTING_COLS_BO5)
+    routing_bt = df1_test.loc[:, rc] if all(c in df1_test.columns for c in rc) else None
+    global_proba = (
+        ml.predict_proba_calibrated_routed(Xfeat, routing=routing_bt)
+        if hasattr(ml, "predict_proba_calibrated_routed")
+        else ml.model.predict_proba(Xfeat)[:, 1]
+    )
     seg_proba_cache = {}
     for seg_key, seg_model in ml.model_segments.items():
         seg_proba_cache[seg_key] = seg_model.predict_proba(Xfeat)[:, 1]
@@ -584,17 +625,63 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
         bet_p_implied = None
         bet_ev = None
 
-        # Pick the side with strictly higher EV inside [ev_min, ev_max].
+        seg_key = str(row.get("seg_used") or "Global")
+        seg_brier = resolve_segment_brier_score(
+            ml, seg_key if seg_key != "Global" else ""
+        )
+
+        def _side_metrics(p_model: float, odd: float, ev: float):
+            sr = ValueDetector.bet_sharpe_ratio(p_model, odd)
+            spb = sharpe_per_brier(sr, seg_brier)
+            ps = priority_score_composite(sr, seg_brier)
+            return sr, spb, ps
+
+        # Côtés qualifiés (EV band) ; en cas de double value, priorité composite V47.
         candidates = []
         if ev_min <= ev_winner <= ev_max:
-            candidates.append(("WINNER", ev_winner, odd_winner, p_winner, 1.0 / odd_winner, True))
+            sr_w, spb_w, ps_w = _side_metrics(p_winner, odd_winner, ev_winner)
+            candidates.append(
+                (
+                    "WINNER",
+                    ev_winner,
+                    odd_winner,
+                    p_winner,
+                    1.0 / odd_winner,
+                    True,
+                    sr_w,
+                    spb_w,
+                    ps_w,
+                )
+            )
         if ev_min <= ev_loser <= ev_max:
-            candidates.append(("LOSER", ev_loser, odd_loser, p_loser, 1.0 / odd_loser, False))
+            sr_l, spb_l, ps_l = _side_metrics(p_loser, odd_loser, ev_loser)
+            candidates.append(
+                (
+                    "LOSER",
+                    ev_loser,
+                    odd_loser,
+                    p_loser,
+                    1.0 / odd_loser,
+                    False,
+                    sr_l,
+                    spb_l,
+                    ps_l,
+                )
+            )
         if not candidates:
             continue
-        # If both sides qualify (rare), keep the higher EV
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        bet_side, bet_ev, bet_odd, bet_p_model, bet_p_implied, bet_won = candidates[0]
+        candidates.sort(key=lambda x: x[8], reverse=True)
+        (
+            bet_side,
+            bet_ev,
+            bet_odd,
+            bet_p_model,
+            bet_p_implied,
+            bet_won,
+            bet_sharpe,
+            bet_sharpe_per_brier,
+            bet_priority,
+        ) = candidates[0]
 
         ret = (bet_odd - 1.0) if bet_won else -1.0
         # `date` = jour calendaire côté tennis-data (clé de lookup), pour un groupement
@@ -617,6 +704,11 @@ def run_backtest(ml: TennisMLModel, dataset: pd.DataFrame, df1: pd.DataFrame, id
             "won": bet_won,
             "ret": ret,
             "global_p1_prob": global_proba[i],
+            "segment_key": seg_key,
+            "segment_brier": float(seg_brier),
+            "sharpe_ratio": float(bet_sharpe),
+            "sharpe_per_brier": float(bet_sharpe_per_brier),
+            "priority_score": float(bet_priority),
         })
 
     print(f"\nMatchs sans cote bookmaker (skipped): {n_no_odds}")
@@ -726,6 +818,12 @@ def main():
     parser.add_argument("--ev-max", type=float, default=1.00)
     parser.add_argument("--cutoff", type=str, default=None, help="Training cutoff (default = year-01-01).")
     parser.add_argument("--out", type=str, default=None, help="Output CSV path.")
+    parser.add_argument(
+        "--data-lag-days",
+        type=int,
+        default=0,
+        help="Délai publication TML/Sackmann simulé (ex. 21 = résultats visibles 3 semaines plus tard).",
+    )
     args = parser.parse_args()
 
     target_year = int(args.year)
@@ -736,15 +834,19 @@ def main():
     print(f"BACKTEST {target_year} — sans leakage")
     print(f"  cutoff entraînement: {cutoff.date()}  (modèle ne voit AUCUN match >= cutoff)")
     print(f"  filtre EV:            [{args.ev_min*100:.0f}%, {args.ev_max*100:.0f}%]")
+    if int(args.data_lag_days) > 0:
+        print(f"  délai données:        {int(args.data_lag_days)} jours (micro-Elo différé + fenêtres forme à ref_dt)")
     print("=" * 78)
 
     ml = TennisMLModel()
+    # Production V47 (53 features + dual calibration) : ``TennisMLModel.model_path`` → v47.pkl
+    assert "xgb_model_tml_v47.pkl" in str(ml.model_path).replace("\\", "/")
     # Mirror production tunables
     ml.elo_decay_tau_days = 365.0
     ml.surface_blend_n0 = 30.0
     ml.segment_blend_weight = 0.7
 
-    dataset, df1, identity = build_dataset_with_identity(ml)
+    dataset, df1, identity = build_dataset_with_identity(ml, data_lag_days=int(args.data_lag_days))
     train_mask, test_mask = train_no_leak(ml, dataset, cutoff)
 
     bets_df, id_test = run_backtest(
@@ -753,9 +855,15 @@ def main():
     )
 
     if not bets_df.empty:
+        if "priority_score" in bets_df.columns:
+            bets_df = bets_df.sort_values(
+                ["date", "priority_score"],
+                ascending=[True, False],
+                kind="mergesort",
+            ).reset_index(drop=True)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         bets_df.to_csv(out_path, index=False)
-        print(f"\nDétail sauvegardé: {out_path}")
+        print(f"\nDétail sauvegardé: {out_path} (tri jour + priority_score desc)")
 
     # Global accuracy on target year (info only — not value-filtered)
     feat_complete = id_test["p1_prob"].notna()

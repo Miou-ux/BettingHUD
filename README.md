@@ -1,94 +1,123 @@
 # BettingHUD (Tennis)
 
-Système d'analyse de paris sportifs pour le tennis : scraping live + cotes prematch,
-moteur statistique et modèle ML pour détecter les Value Bets.
+BettingHUD est un outil local d'aide à la décision pour le pari tennis :
 
-## Architecture des données (par tour)
+- ingestion ATP/WTA vers SQLite,
+- scraping prematch / profils,
+- estimation de probabilité via modèle ML,
+- détection de value (EV),
+- recommandation de mise (Kelly adaptatif),
+- suivi portefeuille / diagnostics.
 
-| Tour | Source primaire | Tables SQLite |
-|------|----------------|---------------|
-| **ATP** | [TennisMyLife](https://stats.tennismylife.org/) | `matches_recent` (`source='tennismylife'`) |
-| **WTA** | [Tennis Abstract / Sackmann](https://github.com/JeffSackmann/tennis_wta) | `wta_matches`, `rankings_wta_current` |
+## Sources de données
 
-Aucune cross-fallback : un joueur ATP introuvable dans TML ne retombe pas sur Sackmann ATP
-(et inversement). Cela garantit que la source affichée dans l'UI correspond bien à celle
-qui a alimenté les stats.
+- **ATP** : TennisMyLife (`matches_recent`, `source='tennismylife'`)
+- **WTA** : Sackmann / Tennis Abstract (`wta_matches`, `rankings_wta_current`)
+
+Le système reste strict par tour : pas de fallback ATP<->WTA pour rang/points.
 
 ## Pré-requis
 
 - Python 3.9+
-- Playwright (pour les scrapers)
+- Playwright installé pour les scrapers
 
 ## Installation
 
 ```bash
 python -m venv venv
-# Windows :
+# Windows
 venv\Scripts\activate
-# macOS/Linux :
+# macOS/Linux
 source venv/bin/activate
 
 pip install -r requirements.txt
 playwright install
 ```
 
-## Initialisation des données
+## Pipeline de base
 
 ```bash
-# 1. ATP -> sync TennisMyLife (~30s pour 2010-2026)
+# Sync ATP + WTA, puis entraînement complet et export bundle ML
+python scripts/update_model_tml.py --min-year 2010
+```
+
+Utilitaires séparés si besoin :
+
+```bash
+# Sync ATP TennisMyLife uniquement
 python scripts/sync_tml_recent.py
 
-# 2. WTA -> ingestion Sackmann (matches + rankings)
-#    Pré-requis : data/raw/tennis_wta/wta_matches_*.csv + wta_rankings_current.csv
-python scripts/pipeline_quality.py
-
-# 3. Re-train / export du bundle ML (sync ATP+WTA incluse dans le script)
-python scripts/update_model_tml.py
+# Ingest WTA (si run manuel)
+python scripts/ingest_sackmann_wta.py
+python scripts/ingest_rankings_current.py
 ```
 
-Pour purger les anciennes tables Sackmann ATP héritées (`matches`, `players`, `rankings_atp_current`) :
-
-```bash
-python scripts/purge_sackmann_atp.py
-```
-
-## Utilisation
+## Lancer l'application
 
 ```bash
 streamlit run app/dashboard.py
 ```
 
-Au premier lancement, le dashboard peut en arrière-plan **re-synchroniser la base** (`scripts/sync_tours_daily.py`) et, sur un intervalle long, **réentraîner le modèle** (`scripts/update_model_tml.py`). Désactivation possible via variables d’environnement (voir `docs/ARCHITECTURE.md`).
+Le dashboard lance des tâches en arrière-plan (daemon live, sync tours, retrain périodique), configurables via `BETTINGHUD_*` — voir `docs/CHANGELOG_RECENT.md`.
 
-Scrapers :
+Onglets principaux : **Live Tracker**, **Top probas jour** (top 15 probas modèle du jour, graphique Altair + tableau, favori en surbrillance, toggle **EV favori 15–100 %** — voir `docs/CHART_TOP_PROBAS_JOUR.md`), **Pari Live**, portefeuille, backtest, diagnostics, Human Factors.
+
+**Live Tracker + toggle EV actif** : filtre matchs sur EV favori 15–100 %, affiche jusqu’à **15 tuiles** value bets triées par proba favori modèle (côté favori), même ordre logique que l’onglet Top probas.
+
+Charte graphique (thème sombre type terminal quant) : **`docs/UI_THEME_QUANT.md`**.
+
+### Sync portefeuille (résultats des paris)
+
+Daemon dédié — résolution TE/Sackmann toutes les **10 minutes** (même Streamlit fermé).  
+En parallèle, **capture automatique** du top 15 probas ATP/WTA/jour depuis le snapshot live (SQLite + JSONL) — voir `docs/DAILY_TOP_PROBA_REPLAY.md`.
 
 ```bash
-python scripts/scraper_prematch.py    # cotes prematch Flashscore
-python scripts/scraper_live.py        # score live (placeholder)
+py -3 -m scripts.portfolio_results_daemon
+# ou Windows : scripts\run_portfolio_daemon.bat
 ```
+
+Variables : `BETTINGHUD_PORTFOLIO_DAEMON_INTERVAL_SEC` (défaut `600`), `BETTINGHUD_PORTFOLIO_SCRAPE_LOCK_MAX_SEC` (défaut `1200`). Une passe unique : `--once`.
+
+### Projection live du jour (snapshot)
+
+```bash
+# Pipeline matin (scrape + rankings WTA + snapshot full)
+py -3 scripts/morning_live_pipeline.py
+
+# Rebuild forcé après changement code / modèle / CSV
+py -3 scripts/rebuild_live_projection.py
+
+# Audit qualité modèle vs book
+py -3 scripts/audit_projection_day.py --gap-pp 25 --deep
+```
+
+Seuil EV par défaut **15 %** (`BETTINGHUD_LIVE_EV_THRESHOLD_PCT`). Garde-fou UI si proba modèle incompatible avec le classement affiché. Écarts modèle/book : audit via `audit_projection_day.py` (non bloquants). Voir `docs/CHANGELOG_RECENT.md` §0.
+
+## Modèle ML (état actuel)
+
+Le modèle dans `scripts/ml_model.py` est un XGBoost calibré :
+
+- `XGBClassifier(..., enable_categorical=True)`
+- colonnes `surface_encoded`, `tour_encoded`, `tournament_level_encoded` en type `category`
+- calibration isotonic avec `CalibratedClassifierCV` (`TimeSeriesSplit(n_splits=5)`)
+- contraintes monotones natives V2 :
+  - `points_diff`: +1
+  - `service_elo_diff`: +1
+  - `rank_diff`: -1
+- plus de hard caps post-prédiction dans `predict_match`
+
+Bundle exporté par défaut :
+
+- `models/xgb_model_tml_v47.pkl`
+- `models/feature_importance_tml_v47.png`
 
 ## Documentation
 
-- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — architecture du dépôt, flux de données, automatisation, limites.
-- **[`docs/PREDICTION_ET_MISE.md`](docs/PREDICTION_ET_MISE.md)** — prédiction ML, features, Kelly adaptatif (Brier), backtest, KPI.
-
-## Structure du projet (résumé)
-
-- `app/dashboard.py` — interface Streamlit (live, portefeuille, diagnostics, backtest CSV, human factors).
-- `scripts/`
-  - `stats_engine.py` — moteur de stats par tour (ATP TML / WTA Sackmann)
-  - `ml_model.py` — **XGBoost** calibré, features v4.x, bundle `joblib`
-  - `sync_tours_daily.py` — sync **ATP + WTA** (TML + Sackmann / pipeline associé)
-  - `sync_tml_recent.py` — utilitaire sync ATP TennisMyLife ciblé
-  - `ingest_sackmann_wta.py` — ingestion WTA Sackmann
-  - `ingest_rankings_current.py` — ingestion classement WTA courant
-  - `pipeline_quality.py` — orchestration ingest + index SQLite
-  - `apply_sqlite_indexes.py` — index sur matches_recent / wta_matches
-  - `update_model_tml.py` — sync tours + entraînement + export `models/*.pkl`
-  - `evaluate_data_coverage.py` — vérif des volumes en base
-  - `purge_sackmann_atp.py` — DROP des tables Sackmann ATP héritées
-  - `scraper_prematch.py`, `scraper_profiles.py` — scraping Playwright
-  - `value_detector.py` — comparaison cote / true odd (EV %)
-  - `player_identity.py` — utilitaires de normalisation de noms
-
-Détail des chemins et du flux : **`docs/ARCHITECTURE.md`**.
+- `docs/Home.md` : **index Obsidian** du coffre documentation (liens vers toutes les notes ci-dessous).
+- `docs/GUIDE_OBSIDIAN.md` : utilisation du coffre Obsidian + **convention : tout documenter dans `docs/`**.
+- `docs/CHANGELOG_RECENT.md` : **journal des évolutions récentes** (live, snapshot, Brier segment, alertes, env).
+- `docs/ARCHITECTURE.md` : structure du projet, flux de données, automation.
+- `docs/PREDICTION_ET_MISE.md` : détails ML, features, calibration, EV, Kelly, filtres live, backtest.
+- `docs/CHART_TOP_PROBAS_JOUR.md` : onglet Top probas jour (top 15, chart Altair, toggle EV favori partagé avec Live Tracker).
+- `docs/BACKTEST_TOP10_PROBA_SIMULATIONS.md` : campagne backtest top 10 / **top 15** probas/jour (2024–2026, Kelly séquentiel intraday, comparatif €).
+- `docs/MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` : historique v45 / métriques snapshot d’époque.

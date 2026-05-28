@@ -48,10 +48,19 @@ class TestV45FeatureSchema(unittest.TestCase):
     def test_features_contains_v45_columns(self):
         m = TennisMLModel(db_path=str(_ROOT / "data" / "bettinghud.db"))
         names = list(m.features)
-        self.assertGreaterEqual(len(names), 43, "liste de features doit couvrir v4.5")
-        self.assertEqual(names[-3], "style_matchup_bias")
-        self.assertEqual(names[-2], "travel_fatigue_index")
+        self.assertGreaterEqual(len(names), 47, "liste de features doit couvrir v4.5+")
+        self.assertEqual(
+            names[names.index("return_elo_diff") + 1 : names.index("return_elo_diff") + 5],
+            [
+                "surface_service_elo_diff",
+                "surface_return_elo_diff",
+                "minutes_played_last7d_diff",
+                "tb_win_pct_52w_diff",
+            ],
+        )
         self.assertEqual(names[-1], "clutch_diff")
+        self.assertIn("style_matchup_bias", names)
+        self.assertIn("travel_fatigue_index", names)
 
     def test_model_path_targets_v45(self):
         m = TennisMLModel()

@@ -3,6 +3,7 @@
 écrit sous ``data/raw/tennis_wta`` :
   - ``wta_rankings_current.csv``
   - ``wta_matches_YYYY.csv`` pour chaque année de ``min_year`` à l’année UTC courante
+  - ``wta_matches_qual_itf_YYYY.csv`` (qualifs / ITF / challengers WTA) pour la même plage
 
 Source : ``https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/``
 
@@ -12,7 +13,7 @@ Usage ::
 
     python scripts/fetch_wta_sackmann_raw.py
 
-Env optionnel : ``BETTINGHUD_WTA_SACKMANN_MIN_YEAR`` (déf. 1968),
+Env optionnel : ``BETTINGHUD_WTA_SACKMANN_MIN_YEAR`` (déf. **2010**, aligné ATP/TML),
 ``BETTINGHUD_WTA_FETCH_TIMEOUT_SEC`` (déf. 120).
 """
 from __future__ import annotations
@@ -59,17 +60,22 @@ def fetch_wta_raw(
     min_year: int,
     max_year: int,
     timeout: int,
-) -> tuple[bool, int]:
-    """Télécharge classement + matchs. Retourne (rankings_ok, nb_fichiers_matchs)."""
+) -> tuple[bool, int, int]:
+    """Télécharge classement + matchs. Retourne (rankings_ok, nb_main, nb_qual_itf)."""
     rankings_path = os.path.join(raw_dir, "wta_rankings_current.csv")
     rankings_ok = _download(f"{BASE}/wta_rankings_current.csv", rankings_path, timeout=timeout)
-    n_matches = 0
+    n_main = 0
+    n_qual = 0
     for year in range(min_year, max_year + 1):
         name = f"wta_matches_{year}.csv"
         dest = os.path.join(raw_dir, name)
         if _download(f"{BASE}/{name}", dest, timeout=timeout):
-            n_matches += 1
-    return rankings_ok, n_matches
+            n_main += 1
+        name_qual = f"wta_matches_qual_itf_{year}.csv"
+        dest_qual = os.path.join(raw_dir, name_qual)
+        if _download(f"{BASE}/{name_qual}", dest_qual, timeout=timeout):
+            n_qual += 1
+    return rankings_ok, n_main, n_qual
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--min-year",
         type=int,
-        default=int(os.getenv("BETTINGHUD_WTA_SACKMANN_MIN_YEAR", "1968")),
+        default=int(os.getenv("BETTINGHUD_WTA_SACKMANN_MIN_YEAR", "2010")),
         help="Première année wta_matches_YYYY.csv à récupérer",
     )
     p.add_argument(
@@ -101,14 +107,15 @@ def main(argv: list[str] | None = None) -> int:
 
     timeout = int(os.getenv("BETTINGHUD_WTA_FETCH_TIMEOUT_SEC", "120"))
     raw_dir = os.path.abspath(args.raw_dir)
-    rk_ok, n_m = fetch_wta_raw(
+    rk_ok, n_main, n_qual = fetch_wta_raw(
         raw_dir, min_year=args.min_year, max_year=max_year, timeout=max(10, timeout)
     )
     print(
         f"fetch_wta_sackmann_raw : dossier={raw_dir} "
-        f"rankings={'OK' if rk_ok else 'absent/404'} match_years={n_m}"
+        f"rankings={'OK' if rk_ok else 'absent/404'} "
+        f"main_years={n_main} qual_itf_years={n_qual}"
     )
-    if n_m == 0:
+    if n_main == 0:
         print("erreur : aucun wta_matches_YYYY.csv téléchargé", file=sys.stderr)
         return 1
     return 0

@@ -61,6 +61,9 @@ LIVE_TRACKER_DEFAULT_START_BR = "55"
 LIVE_TRACKER_META_MANUAL_ADJUST = "live_br_manual_adjust_eur"
 META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
 META_LAST_ML_TRAIN_TS = "last_ml_train_ts"
+ALGO_OPP_KELLY_BASE_FRAC = 0.5
+ALGO_OPP_KELLY_MAX_STAKE_FRAC = 0.15
+ALGO_OPP_BRIER_CAP = 0.25
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -85,7 +88,7 @@ def normalize_schedule_date(raw: Optional[object]) -> Optional[str]:
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
         return s[:10]
     return None
-ML_MODEL_BUNDLE_REL = os.path.join("models", "xgb_model_tml_v45.pkl")
+ML_MODEL_BUNDLE_REL = os.path.join("models", "xgb_model_tml_v47.pkl")
 
 
 def get_ml_bundle_abspath() -> str:
@@ -397,6 +400,74 @@ def ensure_reconciliation_log(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_algo_opportunities_schema(conn: sqlite3.Connection) -> None:
+    """Persist every live value opportunity so past days remain auditable."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS algo_opportunities (
+            opportunity_key TEXT PRIMARY KEY,
+            detected_date TEXT NOT NULL,
+            detected_ts TEXT,
+            match_date TEXT,
+            match_id TEXT,
+            match_name TEXT NOT NULL,
+            player1 TEXT,
+            player2 TEXT,
+            bet_on TEXT NOT NULL,
+            side INTEGER,
+            tour TEXT,
+            surface TEXT,
+            tournament TEXT,
+            odd_book REAL,
+            true_odd REAL,
+            p_model REAL,
+            p_implicit REAL,
+            ev REAL,
+            confidence REAL,
+            segment_key TEXT,
+            segment_brier REAL,
+            sharpe_ratio REAL,
+            sharpe_per_brier REAL,
+            priority_score REAL,
+            snapshot_tier TEXT,
+            status TEXT DEFAULT 'En cours',
+            theoretical_stake_frac REAL DEFAULT 0.0,
+            theoretical_profit REAL DEFAULT 0.0,
+            result_source TEXT,
+            settled_ts TEXT,
+            score_final TEXT,
+            linked_bet_id INTEGER,
+            real_odd REAL,
+            real_stake REAL,
+            real_profit REAL,
+            updated_at TEXT
+        )
+        """
+    )
+    have = _existing_columns(conn, "algo_opportunities")
+    if "real_odd" not in have:
+        cur.execute("ALTER TABLE algo_opportunities ADD COLUMN real_odd REAL")
+    if "theoretical_stake_frac" not in have:
+        cur.execute("ALTER TABLE algo_opportunities ADD COLUMN theoretical_stake_frac REAL DEFAULT 0.0")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_algo_opp_detected_date ON algo_opportunities(detected_date)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_algo_opp_match_date ON algo_opportunities(match_date)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_algo_opp_status ON algo_opportunities(status)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_algo_opp_match_id ON algo_opportunities(match_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_algo_opp_match_name_bet ON algo_opportunities(match_name, bet_on)"
+    )
+    conn.commit()
+
+
 def ensure_match_results_cache(conn: sqlite3.Connection) -> None:
     """Create the cache table for resolved matches if missing."""
     cur = conn.cursor()
@@ -445,6 +516,13 @@ def read_cached_results(
                score, retired, walkover, source, scraped_at, tour
         FROM match_results
         WHERE match_date IN ({placeholders})
+        ORDER BY
+            CASE
+                WHEN winner_canonical IS NOT NULL OR walkover = 1 THEN 2
+                WHEN COALESCE(score, '') <> '' THEN 1
+                ELSE 0
+            END ASC,
+            COALESCE(scraped_at, '') ASC
         """,
         dates_list,
     )
@@ -639,6 +717,938 @@ def settle_bet(
 
 
 # ---------------------------------------------------------------------------
+# Algo opportunities journal
+# ---------------------------------------------------------------------------
+
+
+def _none_if_blank(value):
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
+
+
+def _float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _algo_kelly_stake_frac(
+    p_model: object,
+    odd: object,
+    segment_brier: object,
+) -> float:
+    """Live staking policy: 1/2 Kelly, Brier indexed, capped at 15% bankroll."""
+    try:
+        p = max(0.0, min(1.0, float(p_model)))
+        o = float(odd)
+    except (TypeError, ValueError):
+        return 0.0
+    if o <= 1.0 or p <= 0.0 or p >= 1.0:
+        return 0.0
+    b = max(0.01, o - 1.0)
+    kelly_full = max(0.0, (b * p - (1.0 - p)) / b)
+    try:
+        brier = float(segment_brier)
+    except (TypeError, ValueError):
+        brier = 0.25
+    brier_factor = max(0.0, 1.0 - (brier / ALGO_OPP_BRIER_CAP))
+    stake_frac = ALGO_OPP_KELLY_BASE_FRAC * kelly_full * brier_factor
+    return float(max(0.0, min(stake_frac, ALGO_OPP_KELLY_MAX_STAKE_FRAC)))
+
+
+def _algo_profit_for_status(status: str, odd: object, stake_frac: object) -> float:
+    try:
+        stake = float(stake_frac or 0.0)
+        o = float(odd or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if status == "Gagné":
+        return stake * max(0.0, o - 1.0)
+    if status == "Perdu":
+        return -stake
+    return 0.0
+
+
+def _apply_composite_ordered_theoretical_staking(
+    rows: list[dict],
+    *,
+    starting_bankroll: float = 1.0,
+) -> list[dict]:
+    """Apply daily liquidity and carry each closing bankroll into the next day."""
+    out = [dict(r) for r in rows]
+    by_day: dict[str, list[dict]] = {}
+    for r in out:
+        day = str(r.get("detected_date") or r.get("match_date") or "")
+        by_day.setdefault(day, []).append(r)
+        r["theoretical_stake_used_frac"] = 0.0
+        r["theoretical_profit_ordered"] = 0.0
+        r["theoretical_bankroll_start"] = None
+        r["theoretical_bankroll_end"] = None
+        r["theoretical_stake_used_eur"] = 0.0
+        r["theoretical_profit_eur"] = 0.0
+    bankroll = max(0.0, float(starting_bankroll or 0.0))
+    for _day in sorted(by_day):
+        day_rows = by_day[_day]
+        day_start = bankroll
+        liquid = day_start
+        day_profit = 0.0
+        ordered = sorted(
+            day_rows,
+            key=lambda r: (
+                float(r.get("priority_score") or 0.0),
+                float(r.get("ev") or 0.0),
+            ),
+            reverse=True,
+        )
+        for r in ordered:
+            r["theoretical_bankroll_start"] = day_start
+            if r.get("status") not in ("Gagné", "Perdu", "Annulé"):
+                continue
+            if r.get("status") == "Annulé":
+                continue
+            recommended = max(0.0, float(r.get("theoretical_stake_frac") or 0.0))
+            recommended_eur = day_start * recommended
+            stake_eur = min(recommended_eur, max(0.0, liquid))
+            stake_used_frac = (stake_eur / day_start) if day_start > 0 else 0.0
+            profit_eur = _algo_profit_for_status(
+                str(r.get("status") or ""),
+                r.get("odd_book"),
+                stake_eur,
+            )
+            r["theoretical_stake_used_frac"] = stake_used_frac
+            r["theoretical_stake_used_eur"] = stake_eur
+            r["theoretical_profit_ordered"] = profit_eur
+            r["theoretical_profit_eur"] = profit_eur
+            day_profit += profit_eur
+            liquid = max(0.0, liquid - stake_eur)
+            if liquid <= 1e-12:
+                liquid = 0.0
+        bankroll = max(0.0, day_start + day_profit)
+        for r in day_rows:
+            r["theoretical_bankroll_start"] = day_start
+            r["theoretical_bankroll_end"] = bankroll
+    return out
+
+
+def upsert_algo_opportunities(
+    rows: Iterable[dict],
+    db_path: str = DB_PATH_DEFAULT,
+) -> int:
+    """Insert/update detected live opportunities without losing resolved status."""
+    rows_list = list(rows or [])
+    if not rows_list:
+        return 0
+    conn = sqlite3.connect(db_path)
+    try:
+        ensure_algo_opportunities_schema(conn)
+        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+        cur = conn.cursor()
+        n = 0
+        for r in rows_list:
+            key = _none_if_blank(r.get("opportunity_key"))
+            match_name = _none_if_blank(r.get("match_name"))
+            bet_on = _none_if_blank(r.get("bet_on"))
+            detected_date = _none_if_blank(r.get("detected_date"))
+            if not key or not match_name or not bet_on or not detected_date:
+                continue
+            stake_frac = _algo_kelly_stake_frac(
+                r.get("p_model"),
+                r.get("odd_book"),
+                r.get("segment_brier"),
+            )
+            cur.execute(
+                """
+                INSERT INTO algo_opportunities (
+                    opportunity_key, detected_date, detected_ts, match_date, match_id,
+                    match_name, player1, player2, bet_on, side, tour, surface, tournament,
+                    odd_book, true_odd, p_model, p_implicit, ev, confidence,
+                    segment_key, segment_brier, sharpe_ratio, sharpe_per_brier,
+                    priority_score, snapshot_tier, theoretical_stake_frac, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(opportunity_key) DO UPDATE SET
+                    detected_ts=excluded.detected_ts,
+                    match_date=COALESCE(excluded.match_date, algo_opportunities.match_date),
+                    match_id=COALESCE(excluded.match_id, algo_opportunities.match_id),
+                    match_name=excluded.match_name,
+                    player1=excluded.player1,
+                    player2=excluded.player2,
+                    bet_on=excluded.bet_on,
+                    side=excluded.side,
+                    tour=excluded.tour,
+                    surface=excluded.surface,
+                    tournament=excluded.tournament,
+                    odd_book=excluded.odd_book,
+                    true_odd=excluded.true_odd,
+                    p_model=excluded.p_model,
+                    p_implicit=excluded.p_implicit,
+                    ev=excluded.ev,
+                    confidence=excluded.confidence,
+                    segment_key=excluded.segment_key,
+                    segment_brier=excluded.segment_brier,
+                    sharpe_ratio=excluded.sharpe_ratio,
+                    sharpe_per_brier=excluded.sharpe_per_brier,
+                    priority_score=excluded.priority_score,
+                    snapshot_tier=excluded.snapshot_tier,
+                    theoretical_stake_frac=excluded.theoretical_stake_frac,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    key,
+                    detected_date,
+                    _none_if_blank(r.get("detected_ts")) or now_iso,
+                    normalize_schedule_date(r.get("match_date")),
+                    _none_if_blank(r.get("match_id")),
+                    match_name,
+                    _none_if_blank(r.get("player1")),
+                    _none_if_blank(r.get("player2")),
+                    bet_on,
+                    int(r.get("side") or 0) if r.get("side") is not None else None,
+                    _none_if_blank(r.get("tour")),
+                    _none_if_blank(r.get("surface")),
+                    _none_if_blank(r.get("tournament")),
+                    _float_or_none(r.get("odd_book")),
+                    _float_or_none(r.get("true_odd")),
+                    _float_or_none(r.get("p_model")),
+                    _float_or_none(r.get("p_implicit")),
+                    _float_or_none(r.get("ev")),
+                    _float_or_none(r.get("confidence")),
+                    _none_if_blank(r.get("segment_key")),
+                    _float_or_none(r.get("segment_brier")),
+                    _float_or_none(r.get("sharpe_ratio")),
+                    _float_or_none(r.get("sharpe_per_brier")),
+                    _float_or_none(r.get("priority_score")),
+                    _none_if_blank(r.get("snapshot_tier")),
+                    stake_frac,
+                    now_iso,
+                ),
+            )
+            n += 1
+        conn.commit()
+        dedupe_algo_opportunities(conn)
+        sync_algo_opportunities_from_bets(conn)
+        sync_algo_opportunities_from_results(conn)
+        return n
+    finally:
+        conn.close()
+
+
+def dedupe_algo_opportunities(conn: sqlite3.Connection) -> int:
+    """Remove duplicate daily opportunities caused by unstable snapshot match IDs."""
+    ensure_algo_opportunities_schema(conn)
+    dup_groups = conn.execute(
+        """
+        SELECT detected_date, lower(trim(match_name)) AS match_key, lower(trim(bet_on)) AS bet_key
+        FROM algo_opportunities
+        WHERE detected_date IS NOT NULL
+          AND match_name IS NOT NULL
+          AND bet_on IS NOT NULL
+        GROUP BY detected_date, match_key, bet_key
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    n_deleted = 0
+    for detected_date, match_key, bet_key in dup_groups:
+        rows = conn.execute(
+            """
+            SELECT rowid, opportunity_key
+            FROM algo_opportunities
+            WHERE detected_date = ?
+              AND lower(trim(match_name)) = ?
+              AND lower(trim(bet_on)) = ?
+            ORDER BY
+              CASE WHEN linked_bet_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+              CASE WHEN COALESCE(status, 'En cours') <> 'En cours' THEN 1 ELSE 0 END DESC,
+              COALESCE(priority_score, 0) DESC,
+              COALESCE(ev, 0) DESC,
+              COALESCE(updated_at, detected_ts, '') DESC,
+              rowid DESC
+            """,
+            (detected_date, match_key, bet_key),
+        ).fetchall()
+        if len(rows) <= 1:
+            continue
+        keep_rowid = int(rows[0][0])
+        delete_rowids = [int(r[0]) for r in rows[1:] if int(r[0]) != keep_rowid]
+        if not delete_rowids:
+            continue
+        placeholders = ",".join("?" for _ in delete_rowids)
+        conn.execute(
+            f"DELETE FROM algo_opportunities WHERE rowid IN ({placeholders})",
+            delete_rowids,
+        )
+        n_deleted += len(delete_rowids)
+    if n_deleted:
+        conn.commit()
+    return n_deleted
+
+
+def sync_algo_opportunities_from_bets(conn: sqlite3.Connection) -> int:
+    """Attach real portfolio bets to detected opportunities when possible."""
+    ensure_algo_opportunities_schema(conn)
+    ensure_user_bets_schema(conn)
+    opps = conn.execute(
+        """
+        SELECT opportunity_key, match_id, match_date, match_name, bet_on
+        FROM algo_opportunities
+        """
+    ).fetchall()
+    n = 0
+    for key, match_id, match_date, match_name, bet_on in opps:
+        bet = None
+        if match_id:
+            bet = conn.execute(
+                """
+                SELECT id, odds, stake, profit
+                FROM user_bets
+                WHERE match_id = ? AND bet_on = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (match_id, bet_on),
+            ).fetchone()
+        if bet is None:
+            bet = conn.execute(
+                """
+                SELECT id, odds, stake, profit
+                FROM user_bets
+                WHERE match_name = ?
+                  AND bet_on = ?
+                  AND COALESCE(match_date, date) = COALESCE(?, COALESCE(match_date, date))
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (match_name, bet_on, match_date),
+            ).fetchone()
+        if bet is None:
+            continue
+        conn.execute(
+            """
+            UPDATE algo_opportunities
+            SET linked_bet_id = ?, real_odd = ?, real_stake = ?, real_profit = ?,
+                updated_at = ?
+            WHERE opportunity_key = ?
+            """,
+            (
+                int(bet[0]),
+                float(bet[1] or 0.0),
+                float(bet[2] or 0.0),
+                float(bet[3] or 0.0),
+                datetime.utcnow().isoformat(timespec="seconds"),
+                key,
+            ),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def refresh_algo_opportunity_staking(conn: sqlite3.Connection) -> int:
+    """Recompute theoretical stake/profit with current live staking policy."""
+    ensure_algo_opportunities_schema(conn)
+    rows = conn.execute(
+        """
+        SELECT opportunity_key, status, p_model, odd_book, segment_brier
+        FROM algo_opportunities
+        """
+    ).fetchall()
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    n = 0
+    for key, status, p_model, odd_book, segment_brier in rows:
+        stake_frac = _algo_kelly_stake_frac(p_model, odd_book, segment_brier)
+        profit = _algo_profit_for_status(str(status or ""), odd_book, stake_frac)
+        conn.execute(
+            """
+            UPDATE algo_opportunities
+            SET theoretical_stake_frac = ?, theoretical_profit = ?, updated_at = ?
+            WHERE opportunity_key = ?
+            """,
+            (stake_frac, profit, now_iso, key),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def sync_algo_opportunities_from_results(conn: sqlite3.Connection) -> int:
+    """Resolve theoretical Kelly outcome from the match-results cache."""
+    ensure_algo_opportunities_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player, names_match
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT opportunity_key, match_date, player1, player2, bet_on, odd_book,
+               p_model, segment_brier
+        FROM algo_opportunities
+        WHERE COALESCE(status, 'En cours') = 'En cours'
+          AND match_date IS NOT NULL
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+        """
+    ).fetchall()
+    n = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    for key, match_date, p1, p2, bet_on, odd_book, p_model, segment_brier in rows:
+        p1c = canonical_player(p1)
+        p2c = canonical_player(p2)
+        hit = conn.execute(
+            """
+            SELECT winner_canonical, score, retired, walkover, source
+            FROM match_results
+            WHERE match_date = ?
+              AND (
+                (p1_canonical = ? AND p2_canonical = ?)
+                OR (p1_canonical = ? AND p2_canonical = ?)
+              )
+            ORDER BY source = 'tennisexplorer' DESC, scraped_at DESC
+            LIMIT 1
+            """,
+            (match_date, p1c, p2c, p2c, p1c),
+        ).fetchone()
+        if not hit:
+            continue
+        winner, score, _retired, walkover, source = hit
+        if walkover:
+            status = "Annulé"
+            profit = 0.0
+        elif winner:
+            won = names_match(canonical_player(bet_on), winner)
+            status = "Gagné" if won else "Perdu"
+            stake_frac = _algo_kelly_stake_frac(p_model, odd_book, segment_brier)
+            profit = _algo_profit_for_status(status, odd_book, stake_frac)
+        else:
+            continue
+        stake_frac = _algo_kelly_stake_frac(p_model, odd_book, segment_brier)
+        conn.execute(
+            """
+            UPDATE algo_opportunities
+            SET status = ?, theoretical_stake_frac = ?, theoretical_profit = ?, result_source = ?,
+                score_final = ?, settled_ts = ?, updated_at = ?
+            WHERE opportunity_key = ?
+            """,
+            (status, stake_frac, profit, source, score, now_iso, now_iso, key),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+# ---------------------------------------------------------------------------
+# daily_top_proba_picks — top N probas favori/jour (ATP & WTA) pour replay réel
+# ---------------------------------------------------------------------------
+
+def ensure_daily_top_proba_schema(conn: sqlite3.Connection) -> None:
+    """Table canonique + index pour replay top probas journalier."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_top_proba_picks (
+            pick_key TEXT PRIMARY KEY,
+            calendar_date TEXT NOT NULL,
+            match_date TEXT NOT NULL,
+            tour TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            top_limit INTEGER NOT NULL DEFAULT 15,
+            match_id TEXT,
+            match_name TEXT NOT NULL,
+            player1 TEXT,
+            player2 TEXT,
+            fav_side INTEGER,
+            fav_player TEXT,
+            underdog_player TEXT,
+            p1_prob REAL,
+            p_model_fav REAL,
+            odd_fav REAL,
+            odd_underdog REAL,
+            true_odd_fav REAL,
+            true_odd_underdog REAL,
+            ev_fav REAL,
+            ev_fav_pct REAL,
+            p_implicit_fav REAL,
+            book_gap_pp REAL,
+            tournament TEXT,
+            surface TEXT,
+            match_time TEXT,
+            tourney_level TEXT,
+            confidence REAL,
+            segment_key TEXT,
+            segment_brier REAL,
+            theoretical_stake_frac REAL DEFAULT 0.0,
+            snapshot_built_at REAL,
+            snapshot_tier TEXT,
+            capture_source TEXT,
+            first_captured_ts TEXT,
+            last_captured_ts TEXT,
+            status TEXT DEFAULT 'En cours',
+            fav_won INTEGER,
+            winner_resolved TEXT,
+            score_final TEXT,
+            result_source TEXT,
+            theoretical_profit REAL DEFAULT 0.0,
+            settled_ts TEXT,
+            updated_at TEXT,
+            UNIQUE(calendar_date, tour, rank)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_daily_top_proba_cal ON daily_top_proba_picks(calendar_date)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_daily_top_proba_match ON daily_top_proba_picks(match_date, tour)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_daily_top_proba_status ON daily_top_proba_picks(status)"
+    )
+    conn.commit()
+
+
+def upsert_daily_top_proba_picks(
+    rows: Iterable[dict],
+    db_path: str = DB_PATH_DEFAULT,
+) -> int:
+    """Upsert le top N du jour (dernière capture par rang) ; préserve first_captured_ts."""
+    rows_list = list(rows or [])
+    if not rows_list:
+        return 0
+    conn = sqlite3.connect(db_path)
+    try:
+        ensure_daily_top_proba_schema(conn)
+        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+        cur = conn.cursor()
+        n = 0
+        for r in rows_list:
+            key = _none_if_blank(r.get("pick_key"))
+            cal = _none_if_blank(r.get("calendar_date"))
+            tour = _none_if_blank(r.get("tour"))
+            rank = int(r.get("rank") or 0)
+            match_name = _none_if_blank(r.get("match_name"))
+            if not key or not cal or not tour or rank <= 0 or not match_name:
+                continue
+            existing = cur.execute(
+                "SELECT first_captured_ts FROM daily_top_proba_picks WHERE pick_key = ?",
+                (key,),
+            ).fetchone()
+            first_ts = existing[0] if existing and existing[0] else (
+                _none_if_blank(r.get("first_captured_ts")) or now_iso
+            )
+            last_ts = _none_if_blank(r.get("last_captured_ts")) or now_iso
+            cur.execute(
+                """
+                INSERT INTO daily_top_proba_picks (
+                    pick_key, calendar_date, match_date, tour, rank, top_limit,
+                    match_id, match_name, player1, player2, fav_side, fav_player, underdog_player,
+                    p1_prob, p_model_fav, odd_fav, odd_underdog, true_odd_fav, true_odd_underdog,
+                    ev_fav, ev_fav_pct, p_implicit_fav, book_gap_pp,
+                    tournament, surface, match_time, tourney_level, confidence,
+                    segment_key, segment_brier, theoretical_stake_frac,
+                    snapshot_built_at, snapshot_tier, capture_source,
+                    first_captured_ts, last_captured_ts, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(pick_key) DO UPDATE SET
+                    match_date=excluded.match_date,
+                    top_limit=excluded.top_limit,
+                    match_id=excluded.match_id,
+                    match_name=excluded.match_name,
+                    player1=excluded.player1,
+                    player2=excluded.player2,
+                    fav_side=excluded.fav_side,
+                    fav_player=excluded.fav_player,
+                    underdog_player=excluded.underdog_player,
+                    p1_prob=excluded.p1_prob,
+                    p_model_fav=excluded.p_model_fav,
+                    odd_fav=excluded.odd_fav,
+                    odd_underdog=excluded.odd_underdog,
+                    true_odd_fav=excluded.true_odd_fav,
+                    true_odd_underdog=excluded.true_odd_underdog,
+                    ev_fav=excluded.ev_fav,
+                    ev_fav_pct=excluded.ev_fav_pct,
+                    p_implicit_fav=excluded.p_implicit_fav,
+                    book_gap_pp=excluded.book_gap_pp,
+                    tournament=excluded.tournament,
+                    surface=excluded.surface,
+                    match_time=excluded.match_time,
+                    tourney_level=excluded.tourney_level,
+                    confidence=excluded.confidence,
+                    segment_key=excluded.segment_key,
+                    segment_brier=excluded.segment_brier,
+                    theoretical_stake_frac=excluded.theoretical_stake_frac,
+                    snapshot_built_at=excluded.snapshot_built_at,
+                    snapshot_tier=excluded.snapshot_tier,
+                    capture_source=excluded.capture_source,
+                    last_captured_ts=excluded.last_captured_ts,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    key,
+                    cal,
+                    normalize_schedule_date(r.get("match_date")) or cal,
+                    tour,
+                    rank,
+                    int(r.get("top_limit") or 15),
+                    _none_if_blank(r.get("match_id")),
+                    match_name,
+                    _none_if_blank(r.get("player1")),
+                    _none_if_blank(r.get("player2")),
+                    int(r.get("fav_side") or 0) if r.get("fav_side") is not None else None,
+                    _none_if_blank(r.get("fav_player")),
+                    _none_if_blank(r.get("underdog_player")),
+                    _float_or_none(r.get("p1_prob")),
+                    _float_or_none(r.get("p_model_fav")),
+                    _float_or_none(r.get("odd_fav")),
+                    _float_or_none(r.get("odd_underdog")),
+                    _float_or_none(r.get("true_odd_fav")),
+                    _float_or_none(r.get("true_odd_underdog")),
+                    _float_or_none(r.get("ev_fav")),
+                    _float_or_none(r.get("ev_fav_pct")),
+                    _float_or_none(r.get("p_implicit_fav")),
+                    _float_or_none(r.get("book_gap_pp")),
+                    _none_if_blank(r.get("tournament")),
+                    _none_if_blank(r.get("surface")),
+                    _none_if_blank(r.get("match_time")),
+                    _none_if_blank(r.get("tourney_level")),
+                    _float_or_none(r.get("confidence")),
+                    _none_if_blank(r.get("segment_key")),
+                    _float_or_none(r.get("segment_brier")),
+                    _float_or_none(r.get("theoretical_stake_frac")),
+                    _float_or_none(r.get("snapshot_built_at")),
+                    _none_if_blank(r.get("snapshot_tier")),
+                    _none_if_blank(r.get("capture_source")),
+                    first_ts,
+                    last_ts,
+                    now_iso,
+                ),
+            )
+            n += 1
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def _lookup_match_result_for_players(
+    conn: sqlite3.Connection,
+    match_date: str,
+    p1c: str,
+    p2c: str,
+    *,
+    calendar_date: str | None = None,
+    date_window_days: int = 3,
+) -> tuple | None:
+    """Résultat TE/Sackmann : date exacte puis fenêtre autour du jour match / capture."""
+    exact = conn.execute(
+        """
+        SELECT winner_canonical, score, walkover, source, match_date
+        FROM match_results
+        WHERE match_date = ?
+          AND (
+            (p1_canonical = ? AND p2_canonical = ?)
+            OR (p1_canonical = ? AND p2_canonical = ?)
+          )
+          AND winner_canonical IS NOT NULL
+          AND TRIM(winner_canonical) != ''
+        ORDER BY source = 'tennisexplorer' DESC, scraped_at DESC
+        LIMIT 1
+        """,
+        (match_date, p1c, p2c, p2c, p1c),
+    ).fetchone()
+    if exact:
+        return exact
+
+    anchor = str(calendar_date or match_date or "")[:10]
+    if not anchor:
+        return None
+    window = max(1, int(date_window_days))
+    return conn.execute(
+        """
+        SELECT winner_canonical, score, walkover, source, match_date
+        FROM match_results
+        WHERE (
+            (p1_canonical = ? AND p2_canonical = ?)
+            OR (p1_canonical = ? AND p2_canonical = ?)
+          )
+          AND winner_canonical IS NOT NULL
+          AND TRIM(winner_canonical) != ''
+          AND julianday(match_date) BETWEEN julianday(?) - ? AND julianday(?) + ?
+        ORDER BY ABS(julianday(match_date) - julianday(?)) ASC,
+                 source = 'tennisexplorer' DESC,
+                 scraped_at DESC
+        LIMIT 1
+        """,
+        (p1c, p2c, p2c, p1c, anchor, window, anchor, window, match_date or anchor),
+    ).fetchone()
+
+
+def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
+    """Résout Gagné/Perdu sur le favori modèle via le cache match_results."""
+    ensure_daily_top_proba_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player, names_match
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT pick_key, calendar_date, match_date, player1, player2, fav_player, odd_fav,
+               p_model_fav, segment_brier, theoretical_stake_frac
+        FROM daily_top_proba_picks
+        WHERE COALESCE(status, 'En cours') = 'En cours'
+          AND match_date IS NOT NULL
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+          AND fav_player IS NOT NULL
+        """
+    ).fetchall()
+    n = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    for key, calendar_date, match_date, p1, p2, fav_player, odd_fav, p_model_fav, segment_brier, stake_frac in rows:
+        p1c = canonical_player(p1)
+        p2c = canonical_player(p2)
+        hit = _lookup_match_result_for_players(
+            conn,
+            str(match_date or "")[:10],
+            p1c,
+            p2c,
+            calendar_date=str(calendar_date or "")[:10] or None,
+        )
+        if not hit:
+            continue
+        winner, score, walkover, source, _resolved_date = hit
+        stake_frac = float(stake_frac or 0.0) or _algo_kelly_stake_frac(
+            p_model_fav, odd_fav, segment_brier
+        )
+        if walkover:
+            status = "Annulé"
+            fav_won = None
+            profit = 0.0
+        elif winner:
+            won = names_match(canonical_player(fav_player), winner)
+            status = "Gagné" if won else "Perdu"
+            fav_won = 1 if won else 0
+            profit = _algo_profit_for_status(status, odd_fav, stake_frac)
+        else:
+            continue
+        conn.execute(
+            """
+            UPDATE daily_top_proba_picks
+            SET status = ?, fav_won = ?, winner_resolved = ?, score_final = ?,
+                result_source = ?, theoretical_stake_frac = ?, theoretical_profit = ?,
+                settled_ts = ?, updated_at = ?
+            WHERE pick_key = ?
+            """,
+            (
+                status,
+                fav_won,
+                winner,
+                score,
+                source,
+                stake_frac,
+                profit,
+                now_iso,
+                now_iso,
+                key,
+            ),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def read_daily_top_proba_picks(
+    *,
+    calendar_date: str | None = None,
+    tour: str | None = None,
+    db_path: str = DB_PATH_DEFAULT,
+) -> list[dict]:
+    """Lecture pour replay / export."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_daily_top_proba_schema(conn)
+        sync_daily_top_proba_from_results(conn)
+        where = []
+        params: list[object] = []
+        if calendar_date:
+            where.append("calendar_date = ?")
+            params.append(calendar_date)
+        if tour:
+            where.append("tour = ?")
+            params.append(str(tour).upper())
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            f"""
+            SELECT * FROM daily_top_proba_picks
+            {where_sql}
+            ORDER BY calendar_date DESC, tour ASC, rank ASC
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def read_algo_opportunity_dates(db_path: str = DB_PATH_DEFAULT) -> list[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        ensure_algo_opportunities_schema(conn)
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT detected_date FROM algo_opportunities ORDER BY detected_date DESC"
+            ).fetchall()
+            if r[0]
+        ]
+    finally:
+        conn.close()
+
+
+def read_algo_opportunity_report(
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db_path: str = DB_PATH_DEFAULT,
+) -> dict:
+    """Return raw rows and aggregate metrics for the selected detected-date range."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_algo_opportunities_schema(conn)
+        dedupe_algo_opportunities(conn)
+        sync_algo_opportunities_from_bets(conn)
+        sync_algo_opportunities_from_results(conn)
+        refresh_algo_opportunity_staking(conn)
+        starting_bankroll = get_live_tracker_start_br(conn)
+        where = []
+        params: list[object] = []
+        if start_date:
+            where.append("detected_date >= ?")
+            params.append(start_date)
+        if end_date:
+            where.append("detected_date <= ?")
+            params.append(end_date)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        all_where = []
+        all_params: list[object] = []
+        if end_date:
+            all_where.append("detected_date <= ?")
+            all_params.append(end_date)
+        all_where_sql = ("WHERE " + " AND ".join(all_where)) if all_where else ""
+        all_rows = [
+            dict(r)
+            for r in conn.execute(
+                f"""
+                SELECT *
+                FROM algo_opportunities
+                {all_where_sql}
+                ORDER BY detected_date ASC, priority_score DESC, ev DESC
+                """,
+                all_params,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    all_rows = _apply_composite_ordered_theoretical_staking(
+        all_rows,
+        starting_bankroll=float(starting_bankroll or 0.0),
+    )
+    rows = []
+    for r in all_rows:
+        d = str(r.get("detected_date") or "")
+        if start_date and d < start_date:
+            continue
+        if end_date and d > end_date:
+            continue
+        rows.append(r)
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            str(r.get("detected_date") or ""),
+            float(r.get("priority_score") or 0.0),
+            float(r.get("ev") or 0.0),
+        ),
+        reverse=True,
+    )
+    resolved = [r for r in rows if r.get("status") in ("Gagné", "Perdu", "Annulé")]
+    won = [r for r in resolved if r.get("status") == "Gagné"]
+    staked = [r for r in rows if r.get("linked_bet_id") is not None]
+    real_resolved = [
+        r for r in staked if r.get("real_profit") is not None and r.get("status") in ("Gagné", "Perdu", "Annulé")
+    ]
+    non_cancelled_resolved = [r for r in resolved if r.get("status") != "Annulé"]
+    theo_profit = sum(float(r.get("theoretical_profit_eur") or 0.0) for r in non_cancelled_resolved)
+    theo_stake = sum(float(r.get("theoretical_stake_used_eur") or 0.0) for r in non_cancelled_resolved)
+    chronological_rows = sorted(rows, key=lambda r: str(r.get("detected_date") or ""))
+    first_row = next((r for r in chronological_rows if r.get("theoretical_bankroll_start") is not None), None)
+    last_row = next((r for r in reversed(chronological_rows) if r.get("theoretical_bankroll_end") is not None), None)
+    start_br = float((first_row or {}).get("theoretical_bankroll_start") or starting_bankroll or 0.0)
+    end_br = float((last_row or {}).get("theoretical_bankroll_end") or start_br)
+    real_profit = sum(float(r.get("real_profit") or 0.0) for r in real_resolved)
+    real_stake = sum(float(r.get("real_stake") or 0.0) for r in real_resolved)
+    real_ev_rows = [
+        r for r in staked
+        if r.get("real_odd") is not None and r.get("p_model") is not None
+    ]
+    avg_real_ev = (
+        sum((float(r.get("p_model") or 0.0) * float(r.get("real_odd") or 0.0) - 1.0) for r in real_ev_rows)
+        / len(real_ev_rows)
+        if real_ev_rows
+        else 0.0
+    )
+    avg_ev = (
+        sum(float(r.get("ev") or 0.0) for r in rows) / len(rows)
+        if rows
+        else 0.0
+    )
+    avg_priority = (
+        sum(float(r.get("priority_score") or 0.0) for r in rows) / len(rows)
+        if rows
+        else 0.0
+    )
+    return {
+        "rows": rows,
+        "metrics": {
+            "n_detected": len(rows),
+            "n_resolved": len(resolved),
+            "n_won": len(won),
+            "n_lost": len([r for r in resolved if r.get("status") == "Perdu"]),
+            "n_cancelled": len([r for r in resolved if r.get("status") == "Annulé"]),
+            "hit_rate_pct": (len(won) / max(1, len(non_cancelled_resolved)) * 100.0),
+            "theoretical_profit_u": theo_profit,
+            "theoretical_stake_u": theo_stake,
+            "theoretical_roi_pct": (theo_profit / theo_stake * 100.0) if theo_stake > 0 else 0.0,
+            "theoretical_start_bankroll": start_br,
+            "theoretical_end_bankroll": end_br,
+            "theoretical_growth_pct": (
+                ((end_br / start_br) - 1.0) * 100.0
+                if start_br > 0
+                else 0.0
+            ),
+            "avg_theoretical_stake_pct": (
+                sum(float(r.get("theoretical_stake_frac") or 0.0) for r in rows) / len(rows) * 100.0
+                if rows
+                else 0.0
+            ),
+            "n_real_bets": len(staked),
+            "real_profit": real_profit,
+            "real_stake": real_stake,
+            "real_roi_pct": (real_profit / real_stake * 100.0) if real_stake > 0 else 0.0,
+            "avg_real_ev_pct": avg_real_ev * 100.0,
+            "avg_ev_pct": avg_ev * 100.0,
+            "avg_priority": avg_priority,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Bootstrapping helper
 # ---------------------------------------------------------------------------
 
@@ -650,6 +1660,7 @@ def init_all(db_path: str = DB_PATH_DEFAULT) -> dict:
     try:
         added_cols = ensure_user_bets_schema(conn)
         ensure_match_results_cache(conn)
+        ensure_algo_opportunities_schema(conn)
         ensure_bets_meta(conn)
         ensure_live_tracker_start_br(conn)
         ensure_reconciliation_log(conn)

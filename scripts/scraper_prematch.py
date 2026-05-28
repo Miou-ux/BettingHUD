@@ -125,9 +125,11 @@ class FlashscoreScraper:
     async def get_today_matches_and_odds(self):
         """Scrape les matchs d'aujourd'hui ET de demain"""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Démarrage de l'extraction multi-jours...")
-        
-        matches_today = await self.get_matches_and_odds(day_offset=0)
-        matches_tomorrow = await self.get_matches_and_odds(day_offset=1)
+
+        matches_today, matches_tomorrow = await asyncio.gather(
+            self.get_matches_and_odds(day_offset=0),
+            self.get_matches_and_odds(day_offset=1),
+        )
         
         all_matches = matches_today + matches_tomorrow
         

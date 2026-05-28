@@ -358,9 +358,25 @@ def _is_day_complete(d_iso: str) -> bool:
 def _store_te_results_in_cache(
     conn: sqlite3.Connection, results_by_date: dict[str, list[dict]]
 ) -> int:
+    # Les pages TE affichent aussi des matchs pas encore terminés. Les anciennes
+    # entrées vides (winner NULL + score vide) ne doivent pas masquer un résultat
+    # plus récent ou donner un faux "hit" au portefeuille.
+    for d in results_by_date.keys():
+        conn.execute(
+            """
+            DELETE FROM match_results
+            WHERE match_date = ?
+              AND source = 'tennisexplorer'
+              AND winner_canonical IS NULL
+              AND COALESCE(score, '') = ''
+            """,
+            (d,),
+        )
     rows = []
     for d, matches in results_by_date.items():
         for m in matches:
+            if not m.get("winner_name") and not str(m.get("score_text") or "").strip():
+                continue
             p1c = canonical_player(m["p1_name"])
             p2c = canonical_player(m["p2_name"])
             wc = (
@@ -448,13 +464,17 @@ def _lookup_in_cache(
     p2c = canonical_player(bet_p2)
     keys = [f"{p1c}||{p2c}", f"{p2c}||{p1c}"]
     candidate_dates = [bet_date] + [d for d in nearby_dates if d != bet_date]
-    # exact key first
+    unresolved: dict | None = None
+    # exact key first, but prefer a resolved/walkover row over an empty placeholder
     for d in candidate_dates:
         bucket = cache.get(d) or {}
         for k in keys:
             if k in bucket:
-                return bucket[k]
-    # fuzzy fallback: scan all entries on those dates
+                hit = bucket[k]
+                if hit.get("winner_canonical") or hit.get("walkover"):
+                    return hit
+                unresolved = unresolved or hit
+    # fuzzy fallback: scan all entries on those dates, same resolved-first rule
     for d in candidate_dates:
         bucket = cache.get(d) or {}
         for k, v in bucket.items():
@@ -465,8 +485,10 @@ def _lookup_in_cache(
             ok_a = names_match(p1c, kp1) and names_match(p2c, kp2)
             ok_b = names_match(p1c, kp2) and names_match(p2c, kp1)
             if ok_a or ok_b:
-                return v
-    return None
+                if v.get("winner_canonical") or v.get("walkover"):
+                    return v
+                unresolved = unresolved or v
+    return unresolved
 
 
 # ---------------------------------------------------------------------------
@@ -695,14 +717,44 @@ class ResultsScraper:
 
 
 def main() -> int:
+    from scripts.portfolio_sync_lock import acquire_scrape_lock, release_scrape_lock, scrape_in_progress
+
+    if scrape_in_progress():
+        LOGGER.info("CLI run skipped: another results scrape is in progress")
+        return 2
+    if not acquire_scrape_lock():
+        LOGGER.info("CLI run skipped: scrape lock unavailable")
+        return 2
     scraper = ResultsScraper()
     try:
         n = asyncio.run(scraper.update_pending_bets())
         LOGGER.info("CLI run finished: %d bets settled", n)
+        try:
+            import sqlite3
+
+            from scripts.bets_db import (
+                ensure_algo_opportunities_schema,
+                ensure_user_bets_schema,
+                sync_algo_opportunities_from_bets,
+                sync_algo_opportunities_from_results,
+            )
+
+            conn = sqlite3.connect(scraper.db_path)
+            try:
+                ensure_user_bets_schema(conn)
+                ensure_algo_opportunities_schema(conn)
+                sync_algo_opportunities_from_bets(conn)
+                sync_algo_opportunities_from_results(conn)
+            finally:
+                conn.close()
+        except Exception as sync_exc:
+            LOGGER.warning("Algo report sync after CLI run ignored: %s", sync_exc)
         return 0
     except Exception as exc:
         LOGGER.exception("CLI run crashed: %s", exc)
         return 1
+    finally:
+        release_scrape_lock()
 
 
 if __name__ == "__main__":

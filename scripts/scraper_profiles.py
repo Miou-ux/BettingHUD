@@ -6,7 +6,7 @@ import json
 import os
 import time
 
-PROFILE_CACHE_VERSION = 4
+PROFILE_CACHE_VERSION = 5  # + te_last_match_date_iso (pont inactivité vs TML)
 
 
 class ProfileScraper:
@@ -25,7 +25,9 @@ class ProfileScraper:
             return None
         return os.path.join(self.cache_dir, f"{safe_name}.json")
 
-    def _load_from_cache(self, player_url, max_age_hours=12):
+    def _load_from_cache(self, player_url, max_age_hours=None):
+        if max_age_hours is None:
+            max_age_hours = max(1, int(os.getenv("BETTINGHUD_PROFILE_CACHE_HOURS", "24")))
         path = self._get_cache_path(player_url)
         if not path or not os.path.exists(path):
             return None
@@ -131,14 +133,22 @@ class ProfileScraper:
             return {'player_idx': 1, 'score_idx': 3}
         return None
 
-    def scrape_profile(self, player_url):
+    def scrape_profile(self, player_url, force_refresh: bool = False):
         """Scrape le profil d'un joueur et calcule sa forme et fatigue."""
         if not player_url or not isinstance(player_url, str):
             return None
 
-        cached_data = self._load_from_cache(player_url)
-        if cached_data:
-            return cached_data
+        if force_refresh:
+            path = self._get_cache_path(player_url)
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        else:
+            cached_data = self._load_from_cache(player_url)
+            if cached_data:
+                return cached_data
 
         url = f"https://www.tennisexplorer.com{player_url}"
 
@@ -259,6 +269,11 @@ class ProfileScraper:
 
             win_pct = (form_wins / form_matches * 100) if form_matches > 0 else 50.0
 
+            last_te_iso = None
+            if matches:
+                last_te_dt = max(m["date"] for m in matches)
+                last_te_iso = last_te_dt.date().isoformat()
+
             data = {
                 'fatigue_minutes': fatigue_minutes,
                 'fatigue_matches': fatigue_matches,
@@ -268,6 +283,7 @@ class ProfileScraper:
                 'rank': rank,
                 'age': age,
                 'hand': hand,
+                'te_last_match_date_iso': last_te_iso,
                 'last_update': now.isoformat(),
                 '_cache_v': PROFILE_CACHE_VERSION,
             }
