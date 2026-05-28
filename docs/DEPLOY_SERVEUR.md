@@ -2,7 +2,9 @@
 
 Dernière mise à jour : **28 mai 2026**.
 
-Guide pour héberger BettingHUD sur un VPS Ubuntu (production actuelle : **192.95.30.217**).
+Guide pour héberger BettingHUD sur un VPS Ubuntu — environnement **PROD** (production actuelle : **192.95.30.217**).
+
+Le PC de développement est **PREPROD** : voir **`docs/ENVIRONNEMENTS.md`**.
 
 > **Données** : `data/` et `models/` ne sont **pas** sur GitHub. Après un `git clone`, il faut copier la base SQLite et le bundle ML depuis la machine de dev.
 

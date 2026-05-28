@@ -21,6 +21,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 |------|---------|
 | [[ARCHITECTURE_ACTUELLE_ET_MISES]] | Architecture courante, Live Tracker, modèle v47, mises |
 | [[CHANGELOG_RECENT]] | Évolutions récentes (mai 2026) |
+| [[ENVIRONNEMENTS]] | **PREPROD** (PC local) vs **PROD** (serveur) — règles et workflow |
 | [[DEPLOY_SERVEUR]] | **Hébergement Ubuntu** (systemd, nginx, SSH, git pull) |
 | [[PREDICTION_ET_MISE]] | Probabilités, EV, Kelly, backtest |
 | [[BACKTEST_TOP10_PROBA_SIMULATIONS]] | Simulations top 10 / **top 15** proba/jour (2024–2026, Kelly, comparatif) |

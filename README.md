@@ -1,6 +1,11 @@
 # BettingHUD (Tennis)
 
-BettingHUD est un outil d'aide à la décision pour le pari tennis (local ou serveur dédié) :
+BettingHUD est un outil d'aide à la décision pour le pari tennis :
+
+- **PREPROD** : PC local (développement et tests)
+- **PROD** : serveur dédié Ubuntu (usage réel)
+
+Voir **`docs/ENVIRONNEMENTS.md`** pour le workflow complet.
 
 - ingestion ATP/WTA vers SQLite,
 - scraping prematch / profils,
@@ -141,5 +146,6 @@ Bundle exporté par défaut :
 - `docs/CHART_TOP_PROBAS_JOUR.md` : onglet Top probas jour (top 15, chart Altair, toggle EV favori partagé avec Live Tracker).
 - `docs/BACKTEST_TOP10_PROBA_SIMULATIONS.md` : campagne backtest top 10 / **top 15** probas/jour (2024–2026, Kelly séquentiel intraday, comparatif €).
 - `docs/DAILY_TOP_PROBA_REPLAY.md` : stockage top 15 ATP/WTA/jour (replay réel).
+- `docs/ENVIRONNEMENTS.md` : convention **PREPROD** (PC) vs **PROD** (serveur), workflow de déploiement.
 - `docs/DEPLOY_SERVEUR.md` : installation Ubuntu, systemd, nginx, mise à jour GitHub.
 - `docs/MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` : historique v45 / métriques snapshot d’époque.

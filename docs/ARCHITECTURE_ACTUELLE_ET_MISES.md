@@ -447,7 +447,18 @@ python -m streamlit run app/dashboard.py --server.port 8502 --server.address 127
 - Le Brier segment doit être lu comme qualité de calibration historique, pas comme certitude sur un match isolé.
 - Le score composite doit rester prioritaire sur l'EV brute pour ordonner les mises théoriques.
 
-## 12. Déploiement serveur (production)
+## 12. Environnements PREPROD / PROD
+
+| | PREPROD | PROD |
+|---|---------|------|
+| **Hôte** | PC local Windows | Serveur Ubuntu dédié |
+| **Usage** | Dev, tests, retrain, backtests | Paris réels, snapshot du jour, daemon 24/7 |
+| **Code** | Working copy locale | `/opt/bettinghud` + `git pull` |
+| **Données** | `data/bettinghud.db` locale | Base référence production |
+
+Référence : **`docs/ENVIRONNEMENTS.md`**.
+
+## 13. Déploiement serveur (production)
 
 Référence complète : **`docs/DEPLOY_SERVEUR.md`**.
 

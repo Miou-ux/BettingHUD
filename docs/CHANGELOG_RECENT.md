@@ -8,6 +8,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ## 0. Mise à jour 28 mai 2026 — Paris du jour, UI, déploiement serveur
 
+### 0.16 Convention PREPROD / PROD (28 mai)
+
+**Doc** : **`docs/ENVIRONNEMENTS.md`**
+
+| Environnement | Machine | Variable |
+|---------------|---------|----------|
+| **PREPROD** | PC local | `BETTINGHUD_ENV=preprod` (défaut) |
+| **PROD** | Serveur dédié | `BETTINGHUD_ENV=prod` (systemd) |
+
+Dashboard : bandeau + titre onglet navigateur `[PREPROD]` / `[PROD]` dans l’onglet Paramètres.
+
 ### 0.14 Dashboard — onglet Paris du jour & navigation (28 mai)
 
 **Fichiers** : `app/dashboard.py`

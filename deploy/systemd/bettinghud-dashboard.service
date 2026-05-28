@@ -8,6 +8,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/bettinghud
 Environment=HOME=/home/ubuntu
+Environment=BETTINGHUD_ENV=prod
 Environment=BETTINGHUD_HEADLESS=1
 Environment=BETTINGHUD_LIVE_DATA_DAEMON=1
 Environment=BETTINGHUD_AUTO_SYNC_TOURS=1

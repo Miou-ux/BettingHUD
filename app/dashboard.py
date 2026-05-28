@@ -125,6 +125,18 @@ def _env_flag(name: str, default: bool) -> bool:
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bettinghud_environment() -> str:
+    """preprod (défaut, PC local) ou prod (serveur dédié). Voir docs/ENVIRONNEMENTS.md."""
+    raw = (os.getenv("BETTINGHUD_ENV") or "preprod").strip().lower()
+    if raw in {"prod", "production"}:
+        return "prod"
+    return "preprod"
+
+
+def _bettinghud_environment_label() -> str:
+    return "PROD" if _bettinghud_environment() == "prod" else "PREPROD"
+
+
 # CLI / scripts (rebuild snapshot) : charge moteurs sans exécuter l'UI Streamlit.
 HEADLESS_APP = _env_flag("BETTINGHUD_HEADLESS", False)
 
@@ -798,7 +810,11 @@ def _inject_quant_terminal_theme() -> None:
     )
 
 
-st.set_page_config(page_title="BettingHUD - Tennis", page_icon="🎾", layout="wide")
+st.set_page_config(
+    page_title=f"BettingHUD [{_bettinghud_environment_label()}] - Tennis",
+    page_icon="🎾",
+    layout="wide",
+)
 
 _inject_quant_terminal_theme()
 
@@ -10323,6 +10339,15 @@ if not HEADLESS_APP:
     
     with tab_settings:
         st.header("⚙️ Paramètres")
+        if _bettinghud_environment() == "prod":
+            st.warning(
+                "Environnement **PROD** (serveur dédié) — paris et données de référence. "
+                "Développer et tester d’abord en **PREPROD** (PC local)."
+            )
+        else:
+            st.info(
+                "Environnement **PREPROD** (poste local) — version de test avant déploiement sur le serveur **PROD**."
+            )
         if _preload_status_caption:
             st.caption(_preload_status_caption)
         mobile_compact = st.toggle(
