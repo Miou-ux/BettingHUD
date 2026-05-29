@@ -138,6 +138,8 @@ def _bettinghud_environment_label() -> str:
 
 
 # CLI / scripts (rebuild snapshot) : charge moteurs sans exécuter l'UI Streamlit.
+# Ne PAS définir BETTINGHUD_HEADLESS sur le service systemd « dashboard » en PROD
+# (sinon tout le bloc UI sous `if not HEADLESS_APP` est ignoré). Voir docs/OPS_PROD_DEPANNAGE.md.
 HEADLESS_APP = _env_flag("BETTINGHUD_HEADLESS", False)
 
 
@@ -818,14 +820,13 @@ st.set_page_config(
 
 _inject_quant_terminal_theme()
 
-# Feedback immédiat : load_engines peut prendre > 1 min (sinon page blanche).
+# Feedback immédiat : load_engines peut bloquer l’UI (fond #0B0C10 = écran noir sans ce bandeau).
 _init_status = None
-if not HEADLESS_APP:
-    try:
-        _init_status = st.status("Chargement du dashboard…", expanded=False)
-        _init_status.write("Modèle ML + stats (SQLite)…")
-    except Exception:
-        _init_status = None
+try:
+    _init_status = st.status("Chargement du dashboard…", expanded=False)
+    _init_status.write("Modèle ML + stats (SQLite)…")
+except Exception:
+    _init_status = None
 
 # Incrémenter si l’API de TennisStatsEngine / moteurs change (invalide le cache Streamlit).
 _ENGINES_CACHE_VERSION = 21  # invalidate: feature store + rank-prior Elo live feeds
@@ -955,6 +956,47 @@ def _match_snapshot_quality_flags(match: dict) -> tuple[bool, str | None, float 
     return unreliable, alert, _match_book_gap_pp_max(match)
 
 
+def _enrich_form_record(form: dict | None) -> dict:
+    """Complète wins/losses pour l'affichage W-L (snapshots TE anciens ou cache partiel)."""
+    f = dict(form or {})
+    try:
+        matches = int(f.get("matches") or 0)
+    except (TypeError, ValueError):
+        matches = 0
+    if matches <= 0:
+        f.setdefault("wins", 0)
+        f.setdefault("losses", 0)
+        return f
+    wins = f.get("wins")
+    losses = f.get("losses")
+    try:
+        if wins is not None and losses is not None:
+            w = int(wins)
+            lo = int(losses)
+            f["wins"] = max(0, w)
+            f["losses"] = max(0, lo)
+            return f
+    except (TypeError, ValueError):
+        pass
+    if wins is not None:
+        try:
+            w = max(0, min(matches, int(wins)))
+            f["wins"] = w
+            f["losses"] = max(0, matches - w)
+            return f
+        except (TypeError, ValueError):
+            pass
+    try:
+        wp = float(f.get("win_pct", 50))
+        w = int(round(matches * wp / 100.0))
+        w = max(0, min(matches, w))
+    except (TypeError, ValueError):
+        w = 0
+    f["wins"] = w
+    f["losses"] = max(0, matches - w)
+    return f
+
+
 def _merge_live_profile(stats, profile, tour_hint=None, ref_date: str | None = None):
     """Met à jour forme / fatigue à partir du profil TennisExplorer scrapé.
 
@@ -967,16 +1009,31 @@ def _merge_live_profile(stats, profile, tour_hint=None, ref_date: str | None = N
     Rang / points issus de TML ou Sackmann (`stats_source` officiel) ne sont pas écrasés
     par l’estimation depuis TennisExplorer.
     """
+    pid = stats.get("_pid")
     if not profile:
         return (
-            stats_engine.get_recent_form(
-                stats.get("_pid"), tour_hint=tour_hint, ref_date=ref_date
+            _enrich_form_record(
+                stats_engine.get_recent_form(pid, tour_hint=tour_hint, ref_date=ref_date)
             ),
             stats_engine.get_recent_fatigue(
-                stats.get("_pid"), tour_hint=tour_hint, ref_date=ref_date
+                pid, tour_hint=tour_hint, ref_date=ref_date
             ),
         )
-    form = {"win_pct": profile["win_pct"], "matches": profile["form_matches"]}
+    form_matches = int(profile.get("form_matches") or 0)
+    if form_matches <= 0:
+        form = _enrich_form_record(
+            stats_engine.get_recent_form(pid, tour_hint=tour_hint, ref_date=ref_date)
+        )
+    else:
+        form_wins = int(profile.get("form_wins") or 0)
+        form = _enrich_form_record(
+            {
+                "win_pct": profile["win_pct"],
+                "matches": form_matches,
+                "wins": form_wins,
+                "losses": max(0, form_matches - form_wins),
+            }
+        )
     fatigue = {"minutes_played": profile["fatigue_minutes"], "matches": profile["fatigue_matches"]}
     official = str(stats.get("stats_source") or "") in _OFFICIAL_RANK_STATS_SOURCES
     if profile.get("rank") not in (None, 100) and not official:
@@ -1686,11 +1743,22 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
     ])
 
     # Forme 90j (win_pct + W-L)
+    p1_form = _enrich_form_record(p1_form)
+    p2_form = _enrich_form_record(p2_form)
+
     def _fmt_form(form):
-        wp = form.get("win_pct")
-        w = form.get("wins", 0); l = form.get("losses", 0)
+        f = _enrich_form_record(form)
+        try:
+            matches = int(f.get("matches") or 0)
+        except (TypeError, ValueError):
+            matches = 0
+        if matches <= 0:
+            return "—"
+        wp = f.get("win_pct")
         if wp is None:
             return "—"
+        w = int(f.get("wins") or 0)
+        l = int(f.get("losses") or 0)
         return f"{float(wp):.0f}% ({w}-{l})"
 
     p1_wp = p1_form.get("win_pct")
@@ -2113,10 +2181,22 @@ def _infobulle_dynamics_df(match: dict, player_name: str, opp_name: str, p_num: 
         h2h_s = f"{player_name} {pw2} — {pw1} {opp_name}"
         f_self, f_opp = match.get("p2_form") or {}, match.get("p1_form") or {}
         t_self, t_opp = match.get("p2_fatigue") or {}, match.get("p1_fatigue") or {}
-    form_s = (
-        f"{player_name}: {float(f_self.get('win_pct', 50)):.0f}% ({f_self.get('matches', 0)} m.) · "
-        f"{opp_name}: {float(f_opp.get('win_pct', 50)):.0f}% ({f_opp.get('matches', 0)} m.)"
-    )
+    f_self = _enrich_form_record(f_self)
+    f_opp = _enrich_form_record(f_opp)
+
+    def _form_infobulle_line(label: str, f: dict) -> str:
+        try:
+            n = int(f.get("matches") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            return f"{label}: —"
+        wp = float(f.get("win_pct", 50))
+        w = int(f.get("wins") or 0)
+        lo = int(f.get("losses") or 0)
+        return f"{label}: {wp:.0f}% ({w}-{lo} / {n} m.)"
+
+    form_s = f"{_form_infobulle_line(player_name, f_self)} · {_form_infobulle_line(opp_name, f_opp)}"
     fat_s = (
         f"{player_name}: ~{t_self.get('minutes_played', 0)} min / {t_self.get('matches', 0)} m. · "
         f"{opp_name}: ~{t_opp.get('minutes_played', 0)} min / {t_opp.get('matches', 0)} m."
@@ -3960,8 +4040,8 @@ def _force_refresh_live_match(match: dict) -> dict:
 
     out["p1_stats"] = p1_stats
     out["p2_stats"] = p2_stats
-    out["p1_form"] = p1_form
-    out["p2_form"] = p2_form
+    out["p1_form"] = _enrich_form_record(p1_form)
+    out["p2_form"] = _enrich_form_record(p2_form)
     out["p1_fatigue"] = p1_fatigue
     out["p2_fatigue"] = p2_fatigue
     out["p1_match_quality"] = p1_mq
@@ -4410,7 +4490,7 @@ def _build_live_matches_core(
                     cache_upd,
                 ) = _prepare_one_player_features(pname)
                 prepared_stats_by_name[pname2] = prep
-                form_by_name[pname2] = frm
+                form_by_name[pname2] = _enrich_form_record(frm)
                 fatigue_by_name[pname2] = fat
                 match_quality_by_name[pname2] = mq
                 speed_profile_by_name[pname2] = sp
@@ -4437,7 +4517,7 @@ def _build_live_matches_core(
                         cache_upd,
                     ) = fut.result()
                     prepared_stats_by_name[pname2] = prep
-                    form_by_name[pname2] = frm
+                    form_by_name[pname2] = _enrich_form_record(frm)
                     fatigue_by_name[pname2] = fat
                     match_quality_by_name[pname2] = mq
                     speed_profile_by_name[pname2] = sp
@@ -5458,6 +5538,319 @@ def _format_built_at_paris(built_at: float) -> str:
         return "—"
 
 
+def _format_relative_age_sec(age_sec: float | None) -> str:
+    """Libellé court « il y a X min » pour un âge en secondes."""
+    if age_sec is None:
+        return "—"
+    try:
+        age = max(0.0, float(age_sec))
+    except (TypeError, ValueError):
+        return "—"
+    if age < 90:
+        return f"il y a {int(age)} s"
+    if age < 3600:
+        return f"il y a {int(age // 60)} min"
+    if age < 86400:
+        h = int(age // 3600)
+        m = int((age % 3600) // 60)
+        return f"il y a {h} h {m} min" if m else f"il y a {h} h"
+    d = int(age // 86400)
+    h = int((age % 86400) // 3600)
+    return f"il y a {d} j {h} h" if h else f"il y a {d} j"
+
+
+def _file_age_sec(path: str) -> float | None:
+    try:
+        return max(0.0, time.time() - float(os.path.getmtime(path)))
+    except OSError:
+        return None
+
+
+def _latest_glob_mtime(patterns: list[str]) -> tuple[str | None, float | None]:
+    best_path: str | None = None
+    best_mtime = 0.0
+    for pattern in patterns:
+        for fp in glob.glob(pattern):
+            try:
+                mt = float(os.path.getmtime(fp))
+            except OSError:
+                continue
+            if mt >= best_mtime:
+                best_mtime = mt
+                best_path = fp
+    if best_path is None:
+        return None, None
+    return best_path, max(0.0, time.time() - best_mtime)
+
+
+def _morning_pipeline_status() -> dict:
+    """Dernier journal pipeline matin (détail + cron wrapper)."""
+    detail_path, detail_age = _latest_glob_mtime(
+        [os.path.join("data", "cache", "logs", "morning_pipeline_*.log")]
+    )
+    cron_path = os.path.join("data", "logs", "morning_pipeline_cron.log")
+    cron_age = _file_age_sec(cron_path) if os.path.isfile(cron_path) else None
+    path = detail_path
+    age = detail_age
+    if path is None and os.path.isfile(cron_path):
+        path = cron_path
+        age = cron_age
+    elif path and cron_age is not None and detail_age is not None and cron_age < detail_age:
+        # Cron plus récent que le log détaillé (ex. échec avant création du log horodaté)
+        path = cron_path
+        age = cron_age
+    outcome = "unknown"
+    summary = "—"
+    if path and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-4000:]
+        except OSError:
+            tail = ""
+        low = tail.lower()
+        if "pipeline terminé" in low or "pipeline termine" in low:
+            outcome = "ok"
+            summary = "Dernière exécution OK"
+        elif "erreur" in low or "échec" in low or "echec" in low:
+            outcome = "error"
+            summary = "Erreur détectée dans le journal"
+        else:
+            outcome = "warn"
+            summary = "Journal sans confirmation de succès"
+    return {
+        "path": path,
+        "age_sec": age,
+        "outcome": outcome,
+        "summary": summary,
+    }
+
+
+def _count_open_bets() -> int:
+    db_path = os.path.join("data", "bettinghud.db")
+    if not os.path.isfile(db_path):
+        return 0
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM user_bets
+                WHERE COALESCE(TRIM(status), '') = 'En cours'
+                """
+            ).fetchone()
+            return int(row[0] or 0)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
+def _collect_system_status() -> dict:
+    """Indicateurs read-only pour le bandeau Paramètres (diagnostic ops)."""
+    now = time.time()
+    csv_path, csv_mtime = _prematch_csv_signature()
+    csv_age = (now - float(csv_mtime)) if csv_path and csv_mtime else None
+
+    meta = snapshot_meta() or {}
+    snap_n = int(meta.get("n_matches") or 0)
+    built_at = meta.get("built_at")
+    try:
+        snap_age = (now - float(built_at)) if built_at else None
+    except (TypeError, ValueError):
+        snap_age = None
+    snap_file_age = _file_age_sec(SNAPSHOT_PATH) if os.path.isfile(SNAPSHOT_PATH) else None
+
+    from scripts.portfolio_sync_lock import daemon_recently_active
+
+    hb_path = os.path.join("data", "cache", ".portfolio_results_daemon.heartbeat")
+    hb_age = _file_age_sec(hb_path) if os.path.isfile(hb_path) else None
+    daemon_ok = daemon_recently_active()
+
+    morning = _morning_pipeline_status()
+    open_bets = _count_open_bets()
+    building = snapshot_build_in_progress()
+
+    def _level(age: float | None, *, ok_h: float, warn_h: float, present: bool = True) -> str:
+        if not present:
+            return "error"
+        if age is None:
+            return "warn"
+        if age <= ok_h * 3600:
+            return "ok"
+        if age <= warn_h * 3600:
+            return "warn"
+        return "error"
+
+    prematch_level = _level(csv_age, ok_h=0.5, warn_h=3.0, present=bool(csv_path))
+    snap_level = "error" if snap_n <= 0 and not building else _level(
+        snap_age, ok_h=6.0, warn_h=24.0, present=snap_n > 0 or building
+    )
+    if building and snap_n <= 0:
+        snap_level = "warn"
+
+    if daemon_ok:
+        daemon_level = "ok"
+    elif hb_age is None:
+        daemon_level = "warn"
+    elif hb_age <= 660:
+        daemon_level = "ok"
+    elif hb_age <= 3600:
+        daemon_level = "warn"
+    else:
+        daemon_level = "error"
+
+    morning_level = morning.get("outcome") or "warn"
+    if morning_level == "unknown":
+        morning_level = "warn"
+
+    issues: list[str] = []
+    if prematch_level == "error":
+        issues.append("CSV prematch absent ou trop ancien")
+    elif prematch_level == "warn":
+        issues.append("CSV prematch > 30 min")
+    if snap_level == "error":
+        issues.append("snapshot live absent ou obsolète")
+    elif snap_level == "warn":
+        if building:
+            issues.append("build snapshot en cours")
+        else:
+            issues.append("snapshot live > 6 h")
+    if daemon_level == "error":
+        issues.append("daemon résultats inactif")
+    elif daemon_level == "warn":
+        issues.append("daemon résultats non détecté")
+    if morning_level == "error":
+        issues.append("dernier pipeline matin en échec")
+    elif morning_level == "warn" and morning.get("path"):
+        issues.append("pipeline matin sans confirmation OK")
+
+    levels = [prematch_level, snap_level, daemon_level, morning_level]
+    if "error" in levels:
+        overall = "error"
+    elif "warn" in levels:
+        overall = "warn"
+    else:
+        overall = "ok"
+
+    return {
+        "overall": overall,
+        "issues": issues,
+        "prematch": {
+            "level": prematch_level,
+            "path": csv_path,
+            "age_sec": csv_age,
+            "label": os.path.basename(csv_path) if csv_path else "—",
+        },
+        "snapshot": {
+            "level": snap_level,
+            "n_matches": snap_n,
+            "age_sec": snap_age,
+            "built_paris": _format_built_at_paris(built_at) if built_at else "—",
+            "file_age_sec": snap_file_age,
+            "building": building,
+        },
+        "daemon": {
+            "level": daemon_level,
+            "active": daemon_ok,
+            "age_sec": hb_age,
+            "path": hb_path,
+        },
+        "morning": morning,
+        "morning_level": morning_level,
+        "open_bets": open_bets,
+        "environment": _bettinghud_environment_label(),
+    }
+
+
+def _render_system_status_banner() -> None:
+    """Bandeau diagnostic ops (onglet Paramètres) — lecture seule."""
+    status = _collect_system_status()
+    overall = status.get("overall") or "warn"
+    st.subheader("État système")
+    if overall == "ok":
+        st.success(
+            "Prêt à jouer — cotes, snapshot et services récents. "
+            "Consulte le détail ci-dessous si un onglet live est vide (filtre EV possible)."
+        )
+    elif overall == "error":
+        st.error(
+            "Attention — au moins un composant critique est absent ou trop ancien : "
+            + " · ".join(status.get("issues") or ["voir indicateurs"])
+        )
+    else:
+        st.warning(
+            "Partiellement prêt — vérifie les indicateurs orange avant de miser. "
+            + (
+                " · ".join(status.get("issues") or [])
+                if status.get("issues")
+                else "Certaines sources sont vieilles ou le daemon ne répond pas."
+            )
+        )
+
+    prem = status["prematch"]
+    snap = status["snapshot"]
+    daemon = status["daemon"]
+    morning = status["morning"]
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.metric(
+            "CSV prematch",
+            _format_relative_age_sec(prem.get("age_sec")),
+            help="Dernier fichier `data/scraped/prematch_odds_*.csv` (mtime disque).",
+        )
+        st.caption(prem.get("label") or "—")
+    with c2:
+        snap_label = (
+            f"{snap.get('n_matches', 0)} matchs"
+            if int(snap.get("n_matches") or 0) > 0
+            else ("build…" if snap.get("building") else "—")
+        )
+        st.metric(
+            "Snapshot live",
+            snap_label,
+            help="Meta `live_matches_snapshot` — matchs projetés jour/demain.",
+        )
+        st.caption(
+            f"{snap.get('built_paris', '—')} · {_format_relative_age_sec(snap.get('age_sec'))}"
+        )
+    with c3:
+        st.metric(
+            "Daemon résultats",
+            "actif" if daemon.get("active") else "inactif",
+            help="Heartbeat `data/cache/.portfolio_results_daemon.heartbeat` (< 11 min).",
+        )
+        st.caption(_format_relative_age_sec(daemon.get("age_sec")))
+    with c4:
+        st.metric(
+            "Pipeline matin",
+            _format_relative_age_sec(morning.get("age_sec")),
+            help="Dernier `data/cache/logs/morning_pipeline_*.log` ou cron wrapper.",
+        )
+        st.caption(str(morning.get("summary") or "—"))
+    with c5:
+        st.metric(
+            "Paris en cours",
+            str(status.get("open_bets", 0)),
+            help="Lignes `user_bets` avec statut « En cours ».",
+        )
+        st.caption("Portefeuille")
+
+    with st.expander("Détail fichiers & commandes", expanded=False):
+        st.markdown(
+            f"- **Environnement** : `{status.get('environment')}`\n"
+            f"- **CSV** : `{prem.get('path') or '—'}`\n"
+            f"- **Snapshot** : `{SNAPSHOT_PATH}` · fichier {_format_relative_age_sec(snap.get('file_age_sec'))}\n"
+            f"- **Daemon HB** : `{daemon.get('path')}`\n"
+            f"- **Pipeline** : `{morning.get('path') or '—'}`\n"
+        )
+        st.caption(
+            "Audit picks Paris/Telegram : `py -3 scripts/audit_daily_picks_parity.py` · "
+            "Rebuild snapshot : `py -3 scripts/rebuild_live_projection.py` · "
+            "Pipeline matin : `py -3 scripts/morning_live_pipeline.py`"
+        )
+
+
 def init_db():
     """Run all bets-DB migrations (idempotent)."""
     _init_bets_db('data/bettinghud.db')
@@ -5838,7 +6231,7 @@ def _match_calendar_date(m: dict):
 def _is_today_calendar_match(m: dict) -> bool:
     d = _match_calendar_date(m)
     if d is not None:
-        return d == datetime.now().date()
+        return d == datetime.now(_PARIS_TZ).date()
     return not str(m.get("time") or "").startswith("Demain")
 
 
@@ -5974,6 +6367,68 @@ def _passes_favorite_ev_band(
     if ev_max_frac is not None and float(ev_fav_frac) > float(ev_max_frac):
         return False
     return True
+
+
+def _compute_favorite_ev_funnel_stats(
+    matches: list[dict],
+    *,
+    today_only: bool = True,
+    ev_min_frac: float | None = None,
+    ev_max_frac: float | None = None,
+) -> dict:
+    """Compteurs entonnoir : pool → jour → cotes/probas → bande EV."""
+    stats = {
+        "total": len(matches),
+        "today": 0,
+        "with_metrics": 0,
+        "ev_in_band": 0,
+        "best_ev_pct": None,
+    }
+    for m in matches:
+        if today_only and not _is_today_calendar_match(m):
+            continue
+        stats["today"] += 1
+        met = _match_favorite_model_metrics(m)
+        if not met:
+            continue
+        stats["with_metrics"] += 1
+        ev_pct = met.get("ev_fav_pct")
+        if ev_pct is not None:
+            try:
+                ev_f = float(ev_pct)
+                if stats["best_ev_pct"] is None or ev_f > stats["best_ev_pct"]:
+                    stats["best_ev_pct"] = ev_f
+            except (TypeError, ValueError):
+                pass
+        if _passes_favorite_ev_band(met, ev_min_frac=ev_min_frac, ev_max_frac=ev_max_frac):
+            stats["ev_in_band"] += 1
+    return stats
+
+
+def _format_favorite_ev_funnel_caption(
+    stats: dict,
+    *,
+    ev_min_frac: float | None = None,
+    ev_max_frac: float | None = None,
+    top_n: int | None = None,
+) -> str:
+    """Ligne diagnostic entonnoir EV (empty states)."""
+    parts = [
+        f"**{stats.get('total', 0)}** pool",
+        f"**{stats.get('today', 0)}** jour",
+        f"**{stats.get('with_metrics', 0)}** cotes/probas",
+    ]
+    if ev_min_frac is not None or ev_max_frac is not None:
+        lo = int((ev_min_frac or 0) * 100)
+        hi = int((ev_max_frac or 1) * 100)
+        parts.append(f"**{stats.get('ev_in_band', 0)}** EV +{lo} % → +{hi} %")
+    if top_n is not None:
+        parts.append(f"Top **{top_n}**")
+    line = " → ".join(parts)
+    best = stats.get("best_ev_pct")
+    if best is not None and int(stats.get("ev_in_band") or 0) == 0:
+        line += f" · meilleure EV favori : **{float(best):+.1f} %**"
+    return line
 
 
 def _filter_matches_favorite_ev_band(
@@ -6210,10 +6665,31 @@ def _render_top_model_probs_panel(
         today_only=today_only,
     )
     if df_top.empty:
-        st.info(
-            f"Aucun match avec cotes valides dans la sélection "
-            f"({n_pool} match(s) dans le périmètre affiché)."
+        _funnel = _compute_favorite_ev_funnel_stats(
+            matches,
+            today_only=today_only,
+            ev_min_frac=ev_min_frac,
+            ev_max_frac=ev_max_frac,
         )
+        st.info(
+            "Aucune ligne à afficher dans le top probas."
+        )
+        st.caption(_format_favorite_ev_funnel_caption(
+            _funnel,
+            ev_min_frac=ev_min_frac,
+            ev_max_frac=ev_max_frac,
+            top_n=TOP_PROBAS_DISPLAY_LIMIT,
+        ))
+        if ev_min_frac is not None and int(_funnel.get("with_metrics") or 0) > 0:
+            st.caption(
+                "Le filtre EV favori est actif — désactivez-le ci-dessus pour voir "
+                "toutes les probas du jour."
+            )
+        elif int(_funnel.get("today") or 0) == 0 and int(_funnel.get("total") or 0) > 0:
+            st.caption(
+                f"**{n_pool}** match(s) dans le périmètre calendrier, "
+                "mais aucun daté aujourd'hui (Europe/Paris)."
+            )
         return
     _rows = _collect_top_model_prob_rows(
         matches,
@@ -6321,7 +6797,7 @@ def _collect_top_favorite_action_cards(
     *,
     limit: int = 5,
 ) -> list[dict]:
-    """Top favoris modèle du jour (cartes actionnables) triés par proba décroissante."""
+    """Top favoris modèle du jour (EV favori 15–100 %) triés par proba décroissante."""
     ev_min_frac = FAVORITE_EV_BAND_MIN_FRAC
     ev_max_frac = FAVORITE_EV_BAND_MAX_FRAC
     cards: list[dict] = []
@@ -6344,23 +6820,54 @@ def _render_top5_proba_action_tab() -> None:
         st.toast("Filtre appliqué — onglet Live Tracker ouvert.", icon="↪")
     st.header("🎯 Top 5 proba · Action rapide")
     st.caption(
-        "Version épurée : top 5 favoris modèle du jour (sans filtres), "
+        "Top 5 favoris modèle du jour · **EV favori +15 % à +100 %** · "
         "cote modifiable, mise reco Kelly/Brier, enregistrement direct portefeuille."
     )
     _today_paris = datetime.now(_PARIS_TZ).date().isoformat()
-    st.caption(f"Périmètre : matchs du **{_today_paris}** (Europe/Paris) · top 5 par proba favori modèle.")
+    st.caption(
+        f"Périmètre : matchs du **{_today_paris}** (Europe/Paris) · "
+        f"tri **proba favori modèle** ↓ · EV = p_fav × cote_fav − 1."
+    )
 
     matches = _load_today_tracked_matches_for_inplay()
+    _funnel = _compute_favorite_ev_funnel_stats(
+        matches,
+        today_only=True,
+        ev_min_frac=FAVORITE_EV_BAND_MIN_FRAC,
+        ev_max_frac=FAVORITE_EV_BAND_MAX_FRAC,
+    )
     if not matches:
         st.info(
-            "Aucun match du jour disponible dans le snapshot live. "
-            "Utilisez « Actualiser le Live Tracker » puis revenez sur cet onglet."
+            "Aucun match du jour dans le pool Paris du jour "
+            "(snapshot + cotes + rang + ATP/WTA majeur)."
+        )
+        st.caption(_format_favorite_ev_funnel_caption(_funnel, top_n=5))
+        st.caption(
+            "Utilisez **Actualiser le Live Tracker** si le snapshot est vide, "
+            "ou vérifiez qu'il reste des matchs ATP/WTA du jour."
         )
         return
 
     cards = _collect_top_favorite_action_cards(matches, limit=5)
     if not cards:
-        st.info("Aucun match actionnable trouvé (cotes/probas manquantes).")
+        st.caption(_format_favorite_ev_funnel_caption(
+            _funnel,
+            ev_min_frac=FAVORITE_EV_BAND_MIN_FRAC,
+            ev_max_frac=FAVORITE_EV_BAND_MAX_FRAC,
+            top_n=5,
+        ))
+        if int(_funnel.get("with_metrics") or 0) > 0:
+            _ev_band = (
+                f"+{int(FAVORITE_EV_BAND_MIN_FRAC * 100)} % à "
+                f"+{int(FAVORITE_EV_BAND_MAX_FRAC * 100)} %"
+            )
+            st.warning(
+                f"Aucun pick Top 5 — bande EV {_ev_band} : "
+                f"**0** / **{_funnel['with_metrics']}** match(s) éligible(s). "
+                "Consultez **Top probas jour** (toggle EV off) ou attendez de meilleures cotes."
+            )
+        else:
+            st.info("Pool du jour OK mais cotes ou probas modèle manquantes sur tous les matchs.")
         return
 
     _bets_sig = _user_bets_state_signature()
@@ -7494,10 +8001,15 @@ def _current_live_signature_dict() -> dict:
 def _hydrate_live_matches_from_disk() -> list:
     """Applique le snapshot disque (TTL 24 h) au session_state si la signature courante correspond."""
     sig_t = _current_live_signature_tuple()
-    snap = load_live_snapshot(
-        _current_live_signature_dict(),
-        max_age_sec=LIVE_SNAPSHOT_TTL_SEC,
-    )
+    sig_d = _current_live_signature_dict()
+    snap = load_live_snapshot(sig_d, max_age_sec=LIVE_SNAPSHOT_TTL_SEC)
+    # Nouveau scrape prematch (mtime CSV) : le snapshot disque reste valide tant que le modèle
+    # n'a pas changé — même repli que _load_live_matches_for_algo_sync.
+    if snap is None:
+        snap = load_live_snapshot_by_model(
+            _live_model_signature_dict(),
+            max_age_sec=LIVE_SNAPSHOT_TTL_SEC,
+        )
     if snap is not None:
         st.session_state["_live_matches_sig"] = sig_t
         st.session_state["_live_matches_cache"] = list(snap)
@@ -7658,6 +8170,7 @@ if not HEADLESS_APP:
         real_matches = list(st.session_state.get("_live_matches_cache") or [])
         if not real_matches:
             real_matches = _hydrate_live_matches_from_disk()
+        _n_snapshot_raw = len(real_matches)
         _lt_has_data = bool(real_matches)
         _build_active = snapshot_build_in_progress()
         if _lt_has_data and _build_active:
@@ -7701,9 +8214,11 @@ if not HEADLESS_APP:
         
         # Filtrer les matchs sans cotes valides (si on n'a pas pu les simuler non plus)
         real_matches = [m for m in real_matches if m['odd_p1'] > 1.0 and m['odd_p2'] > 1.0]
-        _n_pre_rank_data = len(real_matches)
+        _n_with_odds = len(real_matches)
+        _n_pre_rank_data = _n_with_odds
         real_matches = [m for m in real_matches if _match_has_rank_points_source(m)]
-        _n_rank_data_excluded = _n_pre_rank_data - len(real_matches)
+        _n_with_rank = len(real_matches)
+        _n_rank_data_excluded = _n_pre_rank_data - _n_with_rank
     
         # Filtrer les matchs trop anciens. Même règle que le build snapshot :
         # on conserve les matchs démarrés récemment pour l'In-Play.
@@ -7738,6 +8253,7 @@ if not HEADLESS_APP:
             return (_now_live_paris - scheduled) <= _started_grace
 
         real_matches = [m for m in real_matches if is_future_or_recent_started_match(m)]
+        _n_after_time = len(real_matches)
     
         st.markdown("---")
         
@@ -7809,6 +8325,7 @@ if not HEADLESS_APP:
             m for m in filtered_matches
             if _is_major_atp_wta(m.get("category"), m.get("tournament"))
         ]
+        _n_day_major = len(filtered_matches)
         if _n_rank_data_excluded:
             st.caption(
                 f"{_n_rank_data_excluded} match(s) masqué(s) : pas de données rang/points "
@@ -7936,6 +8453,7 @@ if not HEADLESS_APP:
             ),
         )
         _ev_min_frac, _ev_max_frac = _favorite_ev_band_params()
+        _n_before_ev: int | None = None
         if _ev_min_frac is not None or _ev_max_frac is not None:
             _n_before_ev = len(filtered_matches)
             filtered_matches = _filter_matches_favorite_ev_band(
@@ -7952,10 +8470,21 @@ if not HEADLESS_APP:
         if filtered_matches:
             st.caption(f"Live Tracker : **{len(filtered_matches)}** match(s) disponibles après filtres.")
         else:
-            st.warning(
-                "Aucun match ne passe les filtres actuels. Essaie **Tous** pour le jour, "
-                "**Tous** pour le circuit/tournoi, désactive **Segments bien calibrés**, "
-                "et remets **Alertes données** sur **Tous les matchs**."
+            st.warning("Aucun match ne passe les filtres actuels.")
+            st.caption(
+                f"Entonnoir snapshot : **{_n_snapshot_raw}** disque → "
+                f"**{_n_with_odds}** cotes → **{_n_with_rank}** rang/points → "
+                f"**{_n_after_time}** horaire → **{_n_day_major}** "
+                f"{day_filter.lower()} + ATP/WTA → **0** après filtres UI."
+            )
+            if _n_before_ev is not None and _n_before_ev > 0:
+                st.caption(
+                    f"Filtre EV actif : **0** / **{_n_before_ev}** match(s) dans la bande "
+                    f"+{int((_ev_min_frac or 0) * 100)} % → +{int((_ev_max_frac or 1) * 100)} %."
+                )
+            st.caption(
+                "Essayez **Tous** (jour / circuit / tournoi), désactivez **Segments bien calibrés** "
+                "et **EV favori**, remettez **Alertes données** sur **Tous les matchs**."
             )
     
         if (
@@ -10348,6 +10877,7 @@ if not HEADLESS_APP:
             st.info(
                 "Environnement **PREPROD** (poste local) — version de test avant déploiement sur le serveur **PROD**."
             )
+        _render_system_status_banner()
         if _preload_status_caption:
             st.caption(_preload_status_caption)
         mobile_compact = st.toggle(

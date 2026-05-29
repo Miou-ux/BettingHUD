@@ -63,6 +63,13 @@ def _install_streamlit_mock() -> None:
 
 
 def main() -> int:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(os.path.join(ROOT, ".env"))
+    except ImportError:
+        pass
+
     log_dir = os.path.join(ROOT, "data", "cache", "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(
@@ -125,6 +132,19 @@ def main() -> int:
         _log(f"Report algo synchronisé : {n_sync} opportunité(s).")
     except Exception as exc:
         _log(f"Sync report algo ignorée : {exc}")
+
+    if os.getenv("TELEGRAM_TOP5_AFTER_MORNING", "").strip().lower() in ("1", "true", "yes"):
+        env_name = (os.getenv("BETTINGHUD_ENV") or "preprod").strip().lower()
+        if env_name != "prod":
+            _log("Telegram Top 5 ignore (PREPROD — envoi reserve a PROD).")
+        else:
+            try:
+                from scripts.telegram_top5_notify import run_notify
+
+                tg = run_notify(dry_run=False, source="morning")
+                _log(f"Telegram Top 5 envoye : {tg.get('n_picks', 0)} pick(s).")
+            except Exception as exc:
+                _log(f"Telegram Top 5 ignore : {exc}")
 
     _log(f"Pipeline terminé ({elapsed:.0f} s build). Journal : {log_path}")
     return 0

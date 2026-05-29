@@ -6,6 +6,8 @@ Documentation des campagnes de simulation **mai 2026** : sélection par **probab
 **Données** : `data/backtest_{year}_bets.csv` (générés par `scripts/backtest_2026.py`)  
 **Exports** : `data/reports/`
 
+**Étude complémentaire (top 5 proba vs top 5 EV, grille EV min 5–20 %)** : [BACKTEST_TOP5_PROBA_VS_EV.md](BACKTEST_TOP5_PROBA_VS_EV.md)
+
 ---
 
 ## 1. Protocole commun
@@ -223,6 +225,13 @@ python scripts/simulate_top10_proba_2026.py --year 2026 --skip-backtest --top-n 
 # Paris pour atteindre 1 000 € depuis 100 € (Kelly séquentiel)
 python scripts/bets_to_br_target.py --top-n 15 --years 2024,2025,2026 --br-start 100 --target 1000
 
+# Top 5 proba vs top 5 EV (grille EV min 5, 10, 15, 20 %)
+py -3 scripts/compare_top5_proba_vs_ev_2026.py --years 2024,2025,2026 --ev-mins 5,10,15,20
+```
+
+Voir résultats et recommandations : [BACKTEST_TOP5_PROBA_VS_EV.md](BACKTEST_TOP5_PROBA_VS_EV.md).
+
+```powershell
 # Export détail (100 premiers paris avec mises)
 python scripts/export_backtest_bets_sample.py --limit 100
 

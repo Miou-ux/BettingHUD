@@ -1,5 +1,5 @@
 [Unit]
-Description=BettingHUD Portfolio Results Daemon
+Description=BettingHUD Telegram Bot (/jour, /top5, /help)
 After=network-online.target bettinghud-dashboard.service
 Wants=network-online.target
 
@@ -11,9 +11,10 @@ WorkingDirectory=/opt/bettinghud
 Environment=HOME=/home/ubuntu
 Environment=BETTINGHUD_ENV=prod
 Environment=PYTHONPATH=/opt/bettinghud
-ExecStart=/opt/bettinghud/venv/bin/python /opt/bettinghud/scripts/portfolio_results_daemon.py
+EnvironmentFile=-/opt/bettinghud/.env
+ExecStart=/opt/bettinghud/venv/bin/python /opt/bettinghud/scripts/telegram_bot_daemon.py
 Restart=always
-RestartSec=30
+RestartSec=15
 StartLimitIntervalSec=300
 StartLimitBurst=20
 TimeoutStartSec=60

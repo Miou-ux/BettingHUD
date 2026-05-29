@@ -458,17 +458,20 @@ python -m streamlit run app/dashboard.py --server.port 8502 --server.address 127
 
 Référence : **`docs/ENVIRONNEMENTS.md`**.
 
+Les paris réels, la bankroll Live Tracker et les caches **ne sont pas synchronisés** automatiquement entre PREPROD et PROD — uniquement le **code** via Git.
+
 ## 13. Déploiement serveur (production)
 
-Référence complète : **`docs/DEPLOY_SERVEUR.md`**.
+Référence complète : **`docs/DEPLOY_SERVEUR.md`**. Dépannage et incidents : **`docs/OPS_PROD_DEPANNAGE.md`**.
 
 | Composant | Emplacement / commande |
 |-----------|-------------------------|
 | Code | `/opt/bettinghud` (clone `https://github.com/Miou-ux/BettingHUD`) |
 | Dashboard | `systemctl` → `bettinghud-dashboard` (Streamlit `:8501` localhost) |
 | Daemon | `systemctl` → `bettinghud-daemon` (`portfolio_results_daemon`) |
+| Bot Telegram | `systemctl` → `bettinghud-telegram-bot` — `/jour`, `/top5` — voir **`docs/TELEGRAM_TOP5.md`** |
 | Web public | nginx port **80** → proxy vers Streamlit |
-| Pipeline matin | cron **05:00 UTC** → `morning_live_pipeline.py` |
-| Mise à jour code | `git pull` + `systemctl restart bettinghud-dashboard bettinghud-daemon` |
+| Pipeline matin | cron **05:00 UTC** → `morning_live_pipeline.py` (+ Top 5 si `TELEGRAM_TOP5_AFTER_MORNING=1`) |
+| Mise à jour code | `git pull` + `systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot` |
 
 Les données runtime (`data/bettinghud.db`, `models/*.pkl`, caches) restent sur le serveur et ne sont pas versionnées dans Git.

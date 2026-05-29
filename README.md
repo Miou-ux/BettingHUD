@@ -5,7 +5,11 @@ BettingHUD est un outil d'aide à la décision pour le pari tennis :
 - **PREPROD** : PC local (développement et tests)
 - **PROD** : serveur dédié Ubuntu (usage réel)
 
-Voir **`docs/ENVIRONNEMENTS.md`** pour le workflow complet.
+Voir **`docs/ENVIRONNEMENTS.md`** pour le workflow complet (PREPROD vs PROD, données, variables).
+
+**Production** : http://192.95.30.217 — installation **`docs/DEPLOY_SERVEUR.md`**, ops & dépannage **`docs/OPS_PROD_DEPANNAGE.md`**.
+
+**Backup PROD → PC** (quotidien) : `scripts/backup_prod_db_to_local.ps1` · tâche : `scripts/register_prod_backup_task.ps1` → `backups/prod/`.
 
 - ingestion ATP/WTA vers SQLite,
 - scraping prematch / profils,
@@ -91,6 +95,12 @@ Déploiement production documenté dans **`docs/DEPLOY_SERVEUR.md`** (systemd, n
 bash deploy/install_ubuntu.sh
 ```
 
+### Bot Telegram (PROD)
+
+Notifications et commandes **@BettingHUDbot** : `/jour` (Live Tracker), `/top5` (Paris du jour), envoi matinal après pipeline.
+
+Documentation : **`docs/TELEGRAM_TOP5.md`**. PREPROD : `py -3.11 scripts/telegram_top5_notify.py --dry-run` uniquement.
+
 ### Sync portefeuille (résultats des paris)
 
 Daemon dédié — résolution TE/Sackmann toutes les **10 minutes** (même Streamlit fermé).  
@@ -146,6 +156,8 @@ Bundle exporté par défaut :
 - `docs/CHART_TOP_PROBAS_JOUR.md` : onglet Top probas jour (top 15, chart Altair, toggle EV favori partagé avec Live Tracker).
 - `docs/BACKTEST_TOP10_PROBA_SIMULATIONS.md` : campagne backtest top 10 / **top 15** probas/jour (2024–2026, Kelly séquentiel intraday, comparatif €).
 - `docs/DAILY_TOP_PROBA_REPLAY.md` : stockage top 15 ATP/WTA/jour (replay réel).
-- `docs/ENVIRONNEMENTS.md` : convention **PREPROD** (PC) vs **PROD** (serveur), workflow de déploiement.
+- `docs/ENVIRONNEMENTS.md` : convention **PREPROD** (PC) vs **PROD** (serveur), workflow de déploiement, sync données.
 - `docs/DEPLOY_SERVEUR.md` : installation Ubuntu, systemd, nginx, mise à jour GitHub.
+- `docs/OPS_PROD_DEPANNAGE.md` : ops production, variables (`BETTINGHUD_HEADLESS`), incidents (écran noir, UI vide), checklist.
+- `docs/PROD_RESILIENCE.md` : redémarrage auto après crash app ou reboot serveur (systemd).
 - `docs/MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` : historique v45 / métriques snapshot d’époque.

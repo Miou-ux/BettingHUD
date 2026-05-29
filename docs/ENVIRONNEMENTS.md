@@ -20,6 +20,19 @@ Variable d’environnement : **`BETTINGHUD_ENV`** = `preprod` (défaut) ou `prod
 3. **PREPROD** : tests, backtests, essais UI, retrain ML, rebuild snapshot sans impact sur les utilisateurs « live ».
 4. **Ne jamais** lancer un nettoyage destructif de `user_bets` en PROD sans sauvegarde explicite.
 5. **`data/` et `models/`** : bases distinctes (pas de sync automatique). Copie manuelle uniquement si besoin (voir ci-dessous).
+6. **Ne pas confondre** `BETTINGHUD_HEADLESS` (scripts CLI) et `--server.headless` (Streamlit sans navigateur sur le serveur).
+
+### Ce qui est synchronisé automatiquement
+
+| Élément | PREPROD → PROD |
+|---------|----------------|
+| Code (`app/`, `scripts/`, `deploy/`, `requirements.txt`) | Oui, via **Git** |
+| Paris en cours (`user_bets`) | **Non** |
+| BR Live Tracker (`live_br_*` dans SQLite) | **Non** |
+| Snapshots `data/cache/` | **Non** (rebuild par env) |
+| Modèle `.pkl` | **Non** (promotion manuelle `scp`) |
+
+Au **premier déploiement**, une copie `scp` de `bettinghud.db` peut avoir aligné PREPROD et PROD ; ensuite chaque environnement évolue séparément.
 
 ---
 
@@ -65,6 +78,27 @@ scp bettinghud:/opt/bettinghud/data/bettinghud.db O:\Miouppy\Documents\BettingHU
 
 Ne pas faire l’inverse (PREPROD → PROD) sans contrôle : risque d’écraser l’historique réel.
 
+### Backup quotidien PROD → PC local (recommandé)
+
+Copie automatique de la base **production** sur ton PC (hors Git, dossier `backups/prod/`) :
+
+```powershell
+cd O:\Miouppy\Documents\BettingHUD
+# Test manuel
+powershell -ExecutionPolicy Bypass -File scripts\backup_prod_db_to_local.ps1
+
+# Tâche planifiée Windows (05:30 chaque jour, 30 jours de rétention)
+powershell -ExecutionPolicy Bypass -File scripts\register_prod_backup_task.ps1
+```
+
+Prérequis : alias SSH `bettinghud` (clé dans `~/.ssh/config`), venv Python sur le serveur (`/opt/bettinghud/venv`).
+
+Restauration locale (écrase PREPROD) :
+
+```powershell
+Copy-Item backups\prod\bettinghud_prod_YYYYMMDD_HHmmss.db data\bettinghud.db -Force
+```
+
 ---
 
 ## Configuration
@@ -88,15 +122,32 @@ Défini dans les unités systemd (`deploy/systemd/`) :
 Environment=BETTINGHUD_ENV=prod
 ```
 
+**Important :** ne pas mettre `BETTINGHUD_HEADLESS=1` sur le service **dashboard** — ce flag sert aux scripts (`rebuild_live_projection.py`, etc.) pour charger les moteurs **sans** dessiner l’UI. Streamlit serveur sans navigateur = déjà `--server.headless=true`.
+
 L’onglet **Paramètres** du dashboard affiche un bandeau **PROD** ou **PREPROD**.
+
+### Tableau des variables (résumé)
+
+| Variable | PREPROD | PROD (systemd dashboard) |
+|----------|---------|---------------------------|
+| `BETTINGHUD_ENV` | `preprod` (défaut) | `prod` |
+| `BETTINGHUD_HEADLESS` | Scripts CLI uniquement (`1`) | **Non défini** |
+| `BETTINGHUD_LIVE_DATA_DAEMON` | Optionnel (`1` si activé) | `1` |
+| `BETTINGHUD_AUTO_SYNC_TOURS` | Optionnel | `1` |
+
+Planning complet (cron, daemon, ML, snapshot) : **`docs/SCHEDULE_MISES_A_JOUR.md`**.  
+Détail ops et dépannage : **`docs/OPS_PROD_DEPANNAGE.md`**.
 
 ---
 
 ## Automatisations par environnement
 
+> **Planning détaillé** (horaires, intervalles, commandes) : [[SCHEDULE_MISES_A_JOUR]].
+
 | Tâche | PREPROD | PROD |
 |-------|---------|------|
 | Pipeline matin | Manuel ou tâche Windows (`register_morning_task.ps1`) | Cron 05:00 UTC |
+| Telegram | **Non** (`--dry-run` seulement) | Pipeline matin + `bettinghud-telegram-bot.service` — voir [[TELEGRAM_TOP5]] |
 | Daemon portefeuille | `run_portfolio_daemon.bat` ou `--once` | `bettinghud-daemon.service` |
 | Sync tours / ML auto | Threads dashboard local | Idem (variables `BETTINGHUD_*`) |
 
@@ -116,5 +167,8 @@ L’onglet **Paramètres** du dashboard affiche un bandeau **PROD** ou **PREPROD
 ## Voir aussi
 
 - [[DEPLOY_SERVEUR]] — installation et ops serveur
+- [[SCHEDULE_MISES_A_JOUR]] — planning scrape, snapshot, ML, daemon, Telegram
+- [[OPS_PROD_DEPANNAGE]] — incidents PROD, nginx, HEADLESS, checklist
+- [[PROD_RESILIENCE]] — redémarrage automatique (systemd, boot serveur)
 - [[ARCHITECTURE_ACTUELLE_ET_MISES]] — § 12 Déploiement
 - [[CHANGELOG_RECENT]] — historique des changements

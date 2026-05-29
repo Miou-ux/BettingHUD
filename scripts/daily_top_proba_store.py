@@ -267,6 +267,100 @@ def collect_daily_top_proba_rows(
     return rows
 
 
+def collect_top5_proba_picks(
+    matches: list[dict],
+    *,
+    limit: int | None = 5,
+    ev_min_frac: float = 0.15,
+    ev_max_frac: float = 1.0,
+    today_only: bool = True,
+    calendar_date: str | None = None,
+    ml: TennisMLModel | None = None,
+) -> list[dict]:
+    """Top N favoris modèle du jour (EV favori dans la bande), tri proba ↓ — aligné onglet Paris du jour."""
+    cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
+    cal_date_obj = datetime.strptime(cal_day, "%Y-%m-%d").date()
+    if ml is None:
+        ml = TennisMLModel()
+        if hasattr(ml, "_load_bundle_if_needed"):
+            ml._load_bundle_if_needed()
+
+    pool: list[dict] = []
+    for m in matches:
+        if today_only and not is_today_paris_match(m, today=cal_date_obj):
+            continue
+        met = _match_favorite_metrics(m)
+        if met is None:
+            continue
+        ev_f = float(met["ev_fav"])
+        if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
+            continue
+        tour = _match_tour(m)
+        p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
+        seg_key = resolve_match_brier_segment_key(
+            ml,
+            tour=tour,
+            surface=m.get("surface"),
+            tournament=m.get("tournament"),
+            tourney_level=m.get("tourney_level") or m.get("category"),
+        )
+        seg_brier = float(
+            getattr(ml, "segment_brier_scores", {}).get(
+                seg_key, getattr(ml, "global_test_brier", 0.1741)
+            )
+        )
+        pool.append(
+            {
+                **met,
+                "rank": 0,
+                "calendar_date": cal_day,
+                "tour": tour,
+                "match_name": f"{p1_name} vs {p2_name}",
+                "player1": p1_name,
+                "player2": p2_name,
+                "tournament": str(m.get("tournament") or "")[:80] or None,
+                "surface": str(m.get("surface") or "")[:40] or None,
+                "match_time": str(m.get("time") or "")[:40] or None,
+                "segment_key": seg_key,
+                "segment_brier": seg_brier,
+                "theoretical_stake_frac": _algo_kelly_stake_frac(
+                    met["p_model_fav"], met["odd_fav"], seg_brier
+                ),
+            }
+        )
+
+    ranked = sorted(pool, key=lambda r: (-float(r["p_model_fav"]), str(r["match_name"]).lower()))
+    out: list[dict] = []
+    cap = len(ranked) if limit is None else max(0, int(limit))
+    for rank, row in enumerate(ranked[:cap], start=1):
+        pick = dict(row)
+        pick["rank"] = rank
+        out.append(pick)
+    return out
+
+
+def collect_daily_ev_band_picks(
+    matches: list[dict],
+    *,
+    limit: int | None = None,
+    ev_min_frac: float = 0.15,
+    ev_max_frac: float = 1.0,
+    today_only: bool = True,
+    calendar_date: str | None = None,
+    ml: TennisMLModel | None = None,
+) -> list[dict]:
+    """Tous les picks du jour dans la bande EV favori (tri proba ↓)."""
+    return collect_top5_proba_picks(
+        matches,
+        limit=limit,
+        ev_min_frac=ev_min_frac,
+        ev_max_frac=ev_max_frac,
+        today_only=today_only,
+        calendar_date=calendar_date,
+        ml=ml,
+    )
+
+
 def _append_jsonl_capture(
     rows: list[dict],
     *,

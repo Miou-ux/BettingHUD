@@ -6,7 +6,77 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 29 mai 2026 — Bot Telegram
+
+### 0.21 Bot Telegram — commande `/strategie` (29 mai)
+
+**Doc** : **`docs/TELEGRAM_TOP5.md`** § 4.1
+
+| Commande | Alias | Contenu |
+|----------|-------|---------|
+| `/strategie` | `/strategy` | Synthèse sélection (Top 5, EV 15–100 %) + mise Kelly ½ × Brier, cap 15 % |
+
+Fichiers : `scripts/telegram_top5_notify.py` (`format_bot_strategy_message`), `scripts/telegram_bot_daemon.py`.
+
+Aperçu local : `py -3 scripts/telegram_top5_notify.py --strategy`
+
+---
+
+### 0.20 Quick wins ops & UI — audit picks, état système, empty states (29 mai)
+
+**Doc** : **`docs/OPS_UI_QUICK_WINS.md`**
+
+| # | Livrable | Fichiers |
+|---|----------|----------|
+| **1** | Audit parité Paris du jour / Telegram / DB | `scripts/audit_daily_picks_parity.py` |
+| **2** | Bandeau **État système** (5 indicateurs) dans Paramètres | `app/dashboard.py` — `_render_system_status_banner()` |
+| **3** | Empty states entonnoir EV (Paris, Top probas, Live Tracker) | `app/dashboard.py` — `_compute_favorite_ev_funnel_stats()` |
+
+Commande audit : `py -3 scripts/audit_daily_picks_parity.py` (exit 0 = Paris ≡ Telegram).
+
+---
+
+### 0.19 Backtest Roland-Garros 2026 — 3 stratégies (29 mai)
+
+**Doc** : **`docs/BACKTEST_RG_2026.md`** · **Script** : `scripts/backtest_rg_strategies.py`
+
+Replay réel `algo_opportunities` depuis le **18/05/2026** : Top 5 proba vs Top 5 EV vs tous paris **p_model ≥ 65 %** (pool EV 15–100 %).
+
+Exports : `data/reports/backtest_rg_strategies_*.csv`
+
+---
+
+### 0.18 Bot Telegram @BettingHUDbot (29 mai)
+
+**Doc** : **`docs/TELEGRAM_TOP5.md`** (documentation complète)
+
+| Élément | Détail |
+|---------|--------|
+| **Bot** | `@BettingHUDbot` — notifications + commandes **PROD uniquement** |
+| **`/jour`** | Tous les matchs scannés **Live Tracker (Aujourd'hui)**, sans filtre EV — `scripts/live_tracker_picks.py` |
+| **`/top5`** | Top 5 proba Paris du jour (EV favori 15–100 %) — `collect_top5_proba_picks` |
+| **Matinal** | `TELEGRAM_TOP5_AFTER_MORNING=1` → envoi Top 5 en fin de `morning_live_pipeline.py` |
+| **Daemon** | `bettinghud-telegram-bot.service` — polling `/jour`, `/top5`, `/help` |
+| **Config** | `/opt/bettinghud/.env` : `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (jamais commité) |
+| **PREPROD** | `--dry-run` seulement ; pas de tâche Windows Telegram |
+
+Fichiers : `scripts/telegram_top5_notify.py`, `scripts/telegram_bot_daemon.py`, `scripts/live_tracker_picks.py`, `deploy/systemd/bettinghud-telegram-bot.service`.
+
+---
+
 ## 0. Mise à jour 28 mai 2026 — Paris du jour, UI, déploiement serveur
+
+### 0.17 Ops PROD — écran noir, UI vide, nginx (28 mai)
+
+**Doc** : **`docs/OPS_PROD_DEPANNAGE.md`** (guide complet)
+
+| Incident | Cause | Correctif |
+|----------|-------|-----------|
+| Écran noir | `matplotlib` / `bs4` manquants ; WebSocket nginx ; thème sombre pendant chargement | `pip install -r requirements.txt` ; `deploy/nginx/bettinghud.conf` ; bandeau chargement UI |
+| Seul « Prêt. » + ligne modèle | `BETTINGHUD_HEADLESS=1` sur `bettinghud-dashboard.service` | Retirer la variable — réservée aux scripts CLI |
+| Données PREPROD ≠ PROD | Pas de sync auto de `bettinghud.db` | Paris réels en PROD ; `scp` manuel si besoin |
+
+Fichiers : `.streamlit/config.toml` (proxy), `deploy/systemd/bettinghud-dashboard.service` (sans `BETTINGHUD_HEADLESS`).
 
 ### 0.16 Convention PREPROD / PROD (28 mai)
 
@@ -18,6 +88,8 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **PROD** | Serveur dédié | `BETTINGHUD_ENV=prod` (systemd) |
 
 Dashboard : bandeau + titre onglet navigateur `[PREPROD]` / `[PROD]` dans l’onglet Paramètres.
+
+**Données** : paris, BR et caches **ne sont pas poussés** automatiquement PREPROD → PROD (voir `ENVIRONNEMENTS.md` § règles).
 
 ### 0.14 Dashboard — onglet Paris du jour & navigation (28 mai)
 

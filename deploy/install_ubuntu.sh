@@ -46,11 +46,11 @@ mkdir -p data/cache data/logs models
 
 echo "[5/6] Services systemd…"
 if [[ -d "${APP_DIR}/deploy/systemd" ]]; then
-  for unit in bettinghud-dashboard.service bettinghud-daemon.service; do
+  for unit in bettinghud-dashboard.service bettinghud-daemon.service bettinghud-telegram-bot.service; do
     sudo cp "${APP_DIR}/deploy/systemd/${unit}" "/etc/systemd/system/${unit}"
   done
   sudo systemctl daemon-reload
-  sudo systemctl enable bettinghud-dashboard.service bettinghud-daemon.service
+  sudo systemctl enable bettinghud-dashboard.service bettinghud-daemon.service bettinghud-telegram-bot.service
 fi
 
 echo "[6/6] Nginx…"
