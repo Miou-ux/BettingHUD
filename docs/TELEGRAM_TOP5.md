@@ -74,13 +74,14 @@ flowchart LR
 
 Même pool de matchs que le Live Tracker (**Aujourd’hui**), mais **uniquement les paris EV+** (`collect_live_tracker_value_picks`).
 
-**Matchs scannés** (via `scripts/live_tracker_picks.py`) :
+**Matchs scannés** (via `scripts/daily_top_proba_store.collect_top5_proba_picks`) :
 
 1. Snapshot live du jour (`load_today_matches_for_daily_top_proba`)
 2. Cotes valides (`odd_p1`, `odd_p2` > 1)
 3. Rang/points fiables sur les deux joueurs
-4. Calendrier **aujourd’hui** (Europe/Paris)
-5. Match à venir ou démarré depuis moins de `BETTINGHUD_LIVE_STARTED_GRACE_MINUTES` (défaut **90** min)
+4. **Gros tournois ATP/WTA uniquement** (`is_major_atp_wta_match` — hors Challenger, ITF, UTR, futures)
+5. Calendrier **aujourd’hui** (Europe/Paris)
+6. Match à venir ou démarré depuis moins de `BETTINGHUD_LIVE_STARTED_GRACE_MINUTES` (défaut **90** min) — pour `/jour` via `live_tracker_picks`
 
 **Lignes affichées** :
 

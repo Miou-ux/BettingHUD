@@ -46,6 +46,38 @@ def test_collect_top15_per_circuit():
     assert atp[0]["fav_player"] == "E"
 
 
+def test_collect_top5_excludes_challenger():
+    from scripts.daily_top_proba_store import collect_top5_proba_picks
+
+    major = _match("A", "B", 0.88, "WTA", date="2026-05-27")
+    major["true_odd_p1"] = 1.20
+    major["true_odd_p2"] = 5.00
+    major["odd_p1"] = 1.25
+    major["odd_p2"] = 4.50
+    chal = dict(major)
+    chal.update(
+        {
+            "player1": "C",
+            "player2": "D",
+            "tournament": "Perugia challenger",
+            "feature_snapshot": {"capped_p1_prob": 0.95},
+            "true_odd_p1": 1.15,
+            "odd_p1": 1.18,
+        }
+    )
+    picks = collect_top5_proba_picks(
+        [chal, major],
+        limit=5,
+        ev_min_frac=0.0,
+        ev_max_frac=2.0,
+        today_only=True,
+        calendar_date="2026-05-27",
+    )
+    assert len(picks) == 1
+    assert picks[0]["fav_player"] == "A"
+    assert "challenger" not in str(picks[0].get("tournament") or "").lower()
+
+
 def test_filter_matches_for_daily_top_proba():
     from scripts.daily_top_proba_store import filter_matches_for_daily_top_proba
 

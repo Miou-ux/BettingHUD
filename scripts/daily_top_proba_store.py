@@ -18,6 +18,39 @@ from scripts.bets_db import (
 )
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
 
+_MINOR_TOURNAMENT_NAME_TOKENS = (
+    "challenger",
+    "itf",
+    "utr",
+    "utr pro tennis",
+    "universal tennis",
+    "futures",
+    "future",
+    "m15",
+    "m25",
+    "m35",
+    "m50",
+    "m60",
+    "m80",
+    "m100",
+    "w15",
+    "w25",
+    "w35",
+    "w50",
+    "w60",
+    "w80",
+    "w100",
+)
+
+
+def is_major_atp_wta_match(match: dict) -> bool:
+    """Gros tournois ATP/WTA — aligné onglet Paris du jour (_is_major_atp_wta)."""
+    c = str(match.get("category") or match.get("tour") or "").strip().upper()
+    if c not in {"ATP", "WTA"}:
+        return False
+    t = str(match.get("tournament") or "").lower()
+    return not any(tok in t for tok in _MINOR_TOURNAMENT_NAME_TOKENS)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PARIS_TZ = ZoneInfo("Europe/Paris")
 DEFAULT_TOP_LIMIT = 15
@@ -211,6 +244,8 @@ def collect_daily_top_proba_rows(
     for m in matches:
         if today_only and not is_today_paris_match(m, today=cal_date_obj):
             continue
+        if not is_major_atp_wta_match(m):
+            continue
         tour = _match_tour(m)
         if tour not in {t.upper() for t in tours}:
             continue
@@ -288,6 +323,8 @@ def collect_top5_proba_picks(
     pool: list[dict] = []
     for m in matches:
         if today_only and not is_today_paris_match(m, today=cal_date_obj):
+            continue
+        if not is_major_atp_wta_match(m):
             continue
         met = _match_favorite_metrics(m)
         if met is None:
