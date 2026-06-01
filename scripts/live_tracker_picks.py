@@ -5,7 +5,7 @@ Par défaut (/jour Telegram) :
   - cotes valides + rang/points sur les deux joueurs
   - matchs à venir ou démarrés récemment (grâce configurable)
   - **uniquement les paris EV+** (expected yield > 0, seuil défaut 0 %)
-  - tri **priorité composite** (comme Live Tracker)
+  - tri **proba modèle** décroissante (Telegram / dashboard)
   - variable optionnelle : ``TELEGRAM_JOUR_EV_MIN_PCT`` (ex. 15 pour +15 % min)
 
 ``/jourchallenger`` :
@@ -49,6 +49,33 @@ DEFAULT_CHALLENGER_EV_MAX_PCT = max(
 LIVE_STARTED_GRACE_MINUTES = max(
     0, int(os.getenv("BETTINGHUD_LIVE_STARTED_GRACE_MINUTES", "90"))
 )
+
+
+def _pick_model_proba_pct(row: dict) -> float:
+    try:
+        if row.get("p_model_pct") is not None:
+            return float(row["p_model_pct"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(row.get("p_model_fav") or 0.0) * 100.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def sort_picks_by_model_proba_desc(picks: list[dict]) -> list[dict]:
+    """Tri commun Telegram : proba modèle ↓, puis EV ↓, puis nom match."""
+    ordered = sorted(
+        picks,
+        key=lambda r: (
+            -_pick_model_proba_pct(r),
+            -float(r.get("ev_pct") or r.get("ev_fav_pct") or 0.0),
+            str(r.get("match_name") or "").lower(),
+        ),
+    )
+    for rank, row in enumerate(ordered, start=1):
+        row["rank"] = rank
+    return ordered
 
 
 def _match_calendar_date(m: dict) -> datetime.date | None:
@@ -207,16 +234,7 @@ def collect_live_tracker_all_side_picks(
                 }
             )
 
-    rows.sort(
-        key=lambda r: (
-            -float(r.get("priority_score") or 0.0),
-            -float(r.get("p_model_pct") or 0.0),
-            str(r.get("match_name") or "").lower(),
-        )
-    )
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
-    return rows
+    return sort_picks_by_model_proba_desc(rows)
 
 
 def collect_live_tracker_value_picks(
@@ -257,13 +275,8 @@ def collect_live_tracker_value_picks(
         if p2_val.get("is_value"):
             value_bets.append({"match": match, "player": 2, "val": p2_val, "idx": idx})
 
-    value_bets.sort(
-        key=lambda vb: float((vb.get("val") or {}).get("priority_score") or 0.0),
-        reverse=True,
-    )
-
     picks: list[dict] = []
-    for rank, vb in enumerate(value_bets, start=1):
+    for vb in value_bets:
         match = vb["match"]
         side = int(vb["player"])
         val = vb["val"] or {}
@@ -279,7 +292,6 @@ def collect_live_tracker_value_picks(
         kelly_frac = _algo_kelly_stake_frac(p_model, odd_book, seg_brier)
         picks.append(
             {
-                "rank": rank,
                 "bet_on": bet_on,
                 "opponent": opponent,
                 "fav_player": bet_on,
@@ -305,7 +317,7 @@ def collect_live_tracker_value_picks(
                 "side": side,
             }
         )
-    return picks
+    return sort_picks_by_model_proba_desc(picks)
 
 
 def load_live_tracker_day_picks(
@@ -326,7 +338,7 @@ def load_live_tracker_day_picks(
         for p in picks
         if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) > 0.0
     ]
-    return picks, meta, len(scanned)
+    return sort_picks_by_model_proba_desc(picks), meta, len(scanned)
 
 
 def load_live_tracker_challenger_day_picks(
@@ -355,13 +367,4 @@ def load_live_tracker_challenger_day_picks(
         for p in picks
         if ev_min <= float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) <= ev_max
     ]
-    picks.sort(
-        key=lambda r: (
-            -float(r.get("p_model_pct") or 0.0),
-            -float(r.get("ev_pct") or r.get("ev_fav_pct") or 0.0),
-            str(r.get("match_name") or "").lower(),
-        )
-    )
-    for rank, row in enumerate(picks, start=1):
-        row["rank"] = rank
-    return picks, meta, len(challenger_pool)
+    return sort_picks_by_model_proba_desc(picks), meta, len(challenger_pool)

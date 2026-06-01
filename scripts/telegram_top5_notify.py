@@ -249,7 +249,7 @@ def format_bot_strategy_message() -> str:
             "• Tri : proba modèle décroissante → <b>Top 5</b>",
             "",
             "<b>/top5</b> = ce Top 5 (Paris du jour)",
-            "<b>/jour</b> = value bets du jour (EV &gt; 0, tri priorité composite)",
+            "<b>/jour</b> = value bets du jour (EV &gt; 0, tri proba modèle ↓)",
             "<b>/jourchallenger</b> = Challengers du jour, EV +15 % → +100 %, tri proba",
             "",
             "<b>3. Stratégie de mise (Kelly)</b>",
@@ -276,7 +276,7 @@ def format_bot_help_message() -> str:
             "ℹ️ <b>Aide BettingHUD Bot</b>",
             "",
             "<b>/jour</b> · /picks · /picksdujour",
-            "  Matchs <b>Aujourd'hui</b> · value bets EV+ (tri priorité composite).",
+            "  Matchs <b>Aujourd'hui</b> · value bets EV+ (tri proba modèle ↓).",
             "",
             "<b>/jourchallenger</b>",
             "  Tournois <b>Challenger</b> ATP/WTA du jour.",
@@ -360,7 +360,7 @@ def format_daily_picks_telegram_messages(
         "📋 <b>BettingHUD</b> · Live Tracker (Aujourd'hui)",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
-        "🎯 Live Tracker · value bets <b>EV+</b> uniquement ↓",
+        "🎯 Live Tracker · value bets <b>EV+</b> · tri <b>proba modèle</b> ↓",
     ]
     if source == "manual":
         header_lines.append("📲 Demande manuelle")
