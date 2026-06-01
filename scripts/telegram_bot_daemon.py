@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daemon Telegram : commandes sur demande (/jour, /jourchallenger, /top5, /strategie).
+"""Daemon Telegram : commandes sur demande (/jour, /jourmajor, /jourchallenger, /top5, /strategie).
 
 Long polling getUpdates. Répond uniquement aux chat_id autorisés.
 Documentation : docs/TELEGRAM_TOP5.md
@@ -36,6 +36,7 @@ from scripts.telegram_top5_notify import (
     format_telegram_error_message,
     run_challenger_daily_picks_notify,
     run_daily_picks_notify,
+    run_major_daily_picks_notify,
     run_notify,
     send_telegram_chat_action,
     send_telegram_message,
@@ -58,6 +59,12 @@ CHALLENGER_PICKS_COMMANDS = frozenset({
     "/challengers",
     "/jourchallenger@bettinghudbot",
     "/challengers@bettinghudbot",
+})
+MAJOR_PICKS_COMMANDS = frozenset({
+    "/jourmajor",
+    "/majors",
+    "/jourmajor@bettinghudbot",
+    "/majors@bettinghudbot",
 })
 HELP_COMMANDS = frozenset({"/help", "/help@bettinghudbot"})
 STRATEGY_COMMANDS = frozenset({
@@ -204,6 +211,27 @@ def _handle_message(
             )
         return
 
+    if cmd in MAJOR_PICKS_COMMANDS or cmd in ("/jourmajor", "/majors"):
+        LOGGER.info("Commande /jourmajor — chat_id=%s", chat_id)
+        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
+        try:
+            out = run_major_daily_picks_notify(chat_id=chat_id, source="manual")
+            LOGGER.info(
+                "Majors du jour envoyes a %s : %d pick(s), %d message(s) (%s)",
+                chat_id,
+                int(out.get("n_picks") or 0),
+                int(out.get("sent") or out.get("n_messages") or 0),
+                out.get("calendar_date"),
+            )
+        except Exception as exc:
+            LOGGER.exception("Echec /jourmajor : %s", exc)
+            send_telegram_message(
+                format_telegram_error_message("Erreur Majors du jour", exc),
+                token=token,
+                chat_id=chat_id,
+            )
+        return
+
     if cmd in DAILY_PICKS_COMMANDS or cmd in ("/jour", "/picks", "/picksdujour"):
         LOGGER.info("Commande /jour — chat_id=%s", chat_id)
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
@@ -247,7 +275,7 @@ def _handle_message(
 
     if text.startswith("/"):
         send_telegram_message(
-            "❓ Commande inconnue. Essaie /jour, /jourchallenger, /top5, /strategie ou /help.",
+            "❓ Commande inconnue. Essaie /jour, /jourmajor, /jourchallenger, /top5, /strategie ou /help.",
             token=token,
             chat_id=chat_id,
         )

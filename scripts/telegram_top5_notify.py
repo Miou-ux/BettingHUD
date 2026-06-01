@@ -45,8 +45,11 @@ from scripts.daily_top_proba_store import (
 from scripts.live_tracker_picks import (
     DEFAULT_CHALLENGER_EV_MAX_PCT,
     DEFAULT_CHALLENGER_EV_MIN_PCT,
+    DEFAULT_MAJOR_EV_MAX_PCT,
+    DEFAULT_MAJOR_EV_MIN_PCT,
     load_live_tracker_challenger_day_picks,
     load_live_tracker_day_picks,
+    load_live_tracker_major_day_picks,
 )
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
@@ -221,6 +224,7 @@ def format_bot_welcome_message() -> str:
             "📌 <b>Commandes</b>",
             "  /jour — Picks du jour (EV+ uniquement)",
             "  /jourchallenger — Challengers EV +15 % → +100 %, tri proba",
+            "  /jourmajor — Majors 250+ EV +15 % → +100 %, tri proba",
             "  /top5 — Top 5 proba (résumé)",
             "  /strategie — Comment on sélectionne et mise",
             "  /help — Aide",
@@ -251,6 +255,7 @@ def format_bot_strategy_message() -> str:
             "<b>/top5</b> = ce Top 5 (Paris du jour)",
             "<b>/jour</b> = value bets du jour (EV &gt; 0, tri proba modèle ↓)",
             "<b>/jourchallenger</b> = Challengers du jour, EV +15 % → +100 %, tri proba",
+            "<b>/jourmajor</b> = Tournois 250+ du jour, EV +15 % → +100 %, tri proba",
             "",
             "<b>3. Stratégie de mise (Kelly)</b>",
             "• <b>½ Kelly</b> (mise prudente vs Kelly plein)",
@@ -281,6 +286,10 @@ def format_bot_help_message() -> str:
             "<b>/jourchallenger</b>",
             "  Tournois <b>Challenger</b> ATP/WTA du jour.",
             "  EV favori <b>+15 % → +100 %</b> · tri <b>proba modèle</b> ↓",
+            "",
+            "<b>/jourmajor</b> · /majors",
+            "  Tournois <b>main draw 250+</b> (ATP/WTA) du jour.",
+            "  EV <b>+15 % → +100 %</b> · tri <b>proba modèle</b> ↓",
             "",
             "<b>/top5</b> · /top",
             "  Top 5 proba du jour (EV favori +15 % → +100 %).",
@@ -460,6 +469,63 @@ def format_challenger_daily_picks_telegram_messages(
     return _chunk_telegram_messages([header, *pick_parts, footer])
 
 
+def format_major_daily_picks_telegram_messages(
+    picks: list[dict],
+    *,
+    calendar_date: str,
+    pool_size: int = 0,
+    snapshot_age_min: float | None = None,
+    source: str = "manual",
+    ev_min_pct: float = 15.0,
+    ev_max_pct: float = 100.0,
+) -> list[str]:
+    header_lines = [
+        "🎾 <b>BettingHUD</b> · Majors 250+ (Aujourd'hui)",
+        "",
+        f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        f"⚡ EV <code>+{ev_min_pct:.0f}%</code> → <code>+{ev_max_pct:.0f}%</code> · tri proba modèle ↓",
+    ]
+    if source == "manual":
+        header_lines.append("📲 Demande manuelle")
+    if snapshot_age_min is not None:
+        header_lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
+    header_lines.append(
+        f"✅ <b>{len(picks)}</b> pick(s) · {pool_size} major(s) scanné(s)"
+    )
+    header_lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    if not picks:
+        empty = header_lines + [
+            "",
+            "😴 <i>Aucun pick major EV+ dans la bande aujourd'hui.</i>",
+        ]
+        if pool_size > 0:
+            empty.append(
+                f"🔍 {pool_size} match(s) 250+ scanné(s) hors bande EV."
+            )
+        empty.extend(
+            [
+                "",
+                "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+            ]
+        )
+        return ["\n".join(empty).strip()]
+
+    pick_parts = [
+        "\n".join(_format_pick_block(row)).strip()
+        for row in picks
+        if _format_pick_block(row)
+    ]
+    footer = "\n".join(
+        [
+            "━━━━━━━━━━━━━━━━━━━━",
+            "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+        ]
+    )
+    header = "\n".join(header_lines).strip()
+    return _chunk_telegram_messages([header, *pick_parts, footer])
+
+
 def send_telegram_message(
     text: str,
     *,
@@ -575,6 +641,30 @@ def _load_challenger_jour_context(
     ev_max = (
         DEFAULT_CHALLENGER_EV_MAX_PCT if ev_max_pct is None else float(ev_max_pct)
     )
+    if limit is not None and limit > 0:
+        picks = picks[: int(limit)]
+        for i, row in enumerate(picks, start=1):
+            row["rank"] = i
+    return picks, meta, cal_day, scanned, _snapshot_age_min(meta), ev_min, ev_max
+
+
+def _load_major_jour_context(
+    *,
+    limit: int | None,
+    ev_threshold_pct: float | None = None,
+    ev_max_pct: float | None = None,
+) -> tuple[list[dict], dict, str, int, float | None, float, float]:
+    picks, meta, scanned = load_live_tracker_major_day_picks(
+        ev_threshold_pct=ev_threshold_pct,
+        ev_max_pct=ev_max_pct,
+    )
+    cal_day = datetime.now(PARIS_TZ).date().isoformat()
+    ev_min = (
+        DEFAULT_MAJOR_EV_MIN_PCT
+        if ev_threshold_pct is None
+        else float(ev_threshold_pct)
+    )
+    ev_max = DEFAULT_MAJOR_EV_MAX_PCT if ev_max_pct is None else float(ev_max_pct)
     if limit is not None and limit > 0:
         picks = picks[: int(limit)]
         for i, row in enumerate(picks, start=1):
@@ -796,6 +886,70 @@ def run_challenger_daily_picks_notify(
     return result
 
 
+def run_major_daily_picks_notify(
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    limit: int | None = None,
+    chat_id: str | None = None,
+    source: str = "manual",
+    ev_threshold_pct: float | None = None,
+    ev_max_pct: float | None = None,
+) -> dict:
+    _require_prod_for_send(force=force, dry_run=dry_run)
+    if limit is None:
+        limit = _resolve_pick_limit(
+            os.getenv("TELEGRAM_MAJOR_PICKS_LIMIT", "0"),
+            default=None,
+        )
+    picks, _meta, cal_day, pool_n, age_min, ev_min, ev_max = _load_major_jour_context(
+        limit=limit,
+        ev_threshold_pct=ev_threshold_pct,
+        ev_max_pct=ev_max_pct,
+    )
+    texts = format_major_daily_picks_telegram_messages(
+        picks,
+        calendar_date=cal_day,
+        pool_size=pool_n,
+        snapshot_age_min=age_min,
+        source=source,
+        ev_min_pct=ev_min,
+        ev_max_pct=ev_max,
+    )
+
+    result = {
+        "calendar_date": cal_day,
+        "n_picks": len(picks),
+        "n_messages": len(texts),
+        "dry_run": dry_run,
+        "message_preview": texts[0][:500] if texts else "",
+    }
+
+    if dry_run:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+        for i, text in enumerate(texts, start=1):
+            if len(texts) > 1:
+                print(f"--- Partie {i}/{len(texts)} ---")
+            print(text)
+            if i < len(texts):
+                print()
+        return result
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if not token or not target_chat:
+        raise SystemExit(
+            "TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID requis (.env ou variables d'environnement)."
+        )
+
+    result["sent"] = send_telegram_messages(texts, token=token, chat_id=target_chat)
+    result["chat_id"] = target_chat
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Notification Telegram Top 5 proba")
     ap.add_argument("--dry-run", action="store_true", help="Afficher le message sans envoyer")
@@ -813,6 +967,11 @@ def main() -> int:
         "--challenger",
         action="store_true",
         help="Apercu /jourchallenger (Challengers, EV 15-100 %%, tri proba).",
+    )
+    ap.add_argument(
+        "--major",
+        action="store_true",
+        help="Apercu /jourmajor (Majors 250+, EV 15-100 %%, tri proba).",
     )
     ap.add_argument(
         "--strategy",
@@ -873,6 +1032,25 @@ def main() -> int:
         if not args.dry_run:
             print(
                 f"Telegram OK — {out['n_picks']} Challenger pick(s), "
+                f"{out.get('sent', 0)} message(s) pour {out['calendar_date']}."
+            )
+        return 0
+
+    if args.major:
+        major_limit = _resolve_pick_limit(
+            os.getenv("TELEGRAM_MAJOR_PICKS_LIMIT", "0"),
+            default=None,
+        )
+        out = run_major_daily_picks_notify(
+            dry_run=bool(args.dry_run),
+            force=bool(args.force),
+            limit=major_limit,
+            chat_id=str(args.chat_id).strip() or None,
+            source="manual",
+        )
+        if not args.dry_run:
+            print(
+                f"Telegram OK — {out['n_picks']} Major pick(s), "
                 f"{out.get('sent', 0)} message(s) pour {out['calendar_date']}."
             )
         return 0

@@ -14,6 +14,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | **Top 5 matinal** | Fin du pipeline matin (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV favori **+15 % → +100 %** · tri proba ↓ (onglet **Paris du jour**) |
 | **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** avec **EV+** uniquement (seuil min défaut 0 %, tri priorité) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
+| **`/jourmajor`** | Commande Telegram | Tournois **main draw 250+** du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
@@ -120,7 +121,20 @@ Fonction : `load_live_tracker_challenger_day_picks` dans `scripts/live_tracker_p
 
 Prérequis : snapshot live incluant les Challengers (build matin ou rebuild). Voir **`docs/CHALLENGERS_ET_TOURNOIS.md`**.
 
-### 3.3 `/top5` et envoi matinal — Paris du jour
+### 3.3 `/jourmajor` — Majors 250+ du jour
+
+Alias : `/majors`.
+
+| Critère | Valeur |
+|---------|--------|
+| Tournois | `is_major_tournament_match` : main draw ATP/WTA **250+** (hors Challenger, WTA 125, ITF) |
+| Jour | **Aujourd’hui** (même hygiène que `/jour`) |
+| EV | **+15 % → +100 %** (`TELEGRAM_JOURMAJOR_EV_MIN_PCT` / `_MAX_PCT`) |
+| Tri | **Proba modèle** décroissante |
+
+Fonction : `load_live_tracker_major_day_picks` dans `scripts/live_tracker_picks.py`.
+
+### 3.4 `/top5` et envoi matinal — Paris du jour
 
 Aligné onglet **Paris du jour** / stratégie backtest validée :
 
@@ -143,6 +157,7 @@ Fonction : `scripts/daily_top_proba_store.collect_top5_proba_picks`.
 | `/help` | — | Aide détaillée |
 | `/jour` | `/picks`, `/picksdujour` | Matchs **Aujourd’hui** EV+ (tri priorité composite) |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
+| `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
 | `/top5` | `/top` | Top 5 proba main draw (EV favori 15–100 %) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 
