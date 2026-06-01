@@ -2,7 +2,7 @@
 
 Dernière mise à jour : **28 mai 2026**.
 
-Guide pour héberger BettingHUD sur un VPS Ubuntu — environnement **PROD** (production actuelle : **192.95.30.217**).
+Guide pour héberger BettingHUD sur un **serveur dédié** Ubuntu — environnement **PROD** (production actuelle : **192.95.30.217**).
 
 Le PC de développement est **PREPROD** : voir **`docs/ENVIRONNEMENTS.md`**.
 
@@ -117,7 +117,7 @@ Variables **dashboard** (voir `bettinghud-dashboard.service`) :
 | `BETTINGHUD_AUTO_SYNC_TOURS` | `1` | Sync tours automatique |
 | `BETTINGHUD_HEADLESS` | **absent** | **Ne pas définir** sur le dashboard (désactive tous les onglets) |
 
-Streamlit est lancé avec `--server.headless=true` (pas de navigateur sur le VPS) — c’est **distinct** de `BETTINGHUD_HEADLESS`.
+Streamlit est lancé avec `--server.headless=true` (pas de navigateur sur le serveur PROD) — c’est **distinct** de `BETTINGHUD_HEADLESS`.
 
 ```bash
 sudo cp /opt/bettinghud/deploy/systemd/*.service /etc/systemd/system/

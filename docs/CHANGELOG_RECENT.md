@@ -109,7 +109,7 @@ Dashboard : bandeau + titre onglet navigateur `[PREPROD]` / `[PROD]` dans l’on
 
 | Élément | Détail |
 |---------|--------|
-| **Production** | VPS Ubuntu 24.04 — app via **nginx** → Streamlit `127.0.0.1:8501` |
+| **Production** | Serveur dédié Ubuntu 24.04 — app via **nginx** → Streamlit `127.0.0.1:8501` |
 | **Services** | `deploy/systemd/bettinghud-dashboard.service`, `bettinghud-daemon.service` |
 | **Install** | `deploy/install_ubuntu.sh` |
 | **Cron** | `deploy/cron/morning-pipeline` — pipeline matin 05:00 UTC |

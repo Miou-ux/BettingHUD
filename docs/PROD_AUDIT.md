@@ -42,7 +42,7 @@ Checklist d’amélioration — pas un état garanti dans le temps ; revoir apr�
 1. **Sauvegardes automatiques de `data/bettinghud.db`**
    - Aucun répertoire `backups/` détecté.
    - **Mise en place (PC local)** : `scripts\backup_prod_db_to_local.ps1` + tâche planifiée `scripts\register_prod_backup_task.ps1` (dossier `backups/prod/`, rétention 30 j).
-   - Option complémentaire : cron sur le serveur + copie off-site (S3, autre VPS).
+   - Option complémentaire : cron sur le serveur + copie off-site (S3, autre machine).
 
 2. **Sonde de disponibilité externe**
    - systemd relance les processus mais n’alerte pas.
@@ -74,7 +74,7 @@ Checklist d’amélioration — pas un état garanti dans le temps ; revoir apr�
 8. **Serveur partagé avec Freqtrade**
    - Autre service actif (`freqtrade` sur `127.0.0.1:8080`).
    - Risque : charge CPU/RAM concurrente lors des scrapes Playwright.
-   - Idéal à terme : VPS dédié BettingHUD ou cgroups / priorités CPU.
+   - Idéal à terme : serveur dédié réservé à BettingHUD ou cgroups / priorités CPU.
 
 9. **Rotation des logs**
    - `data/logs` encore petit ; prévoir `logrotate` si croissance.

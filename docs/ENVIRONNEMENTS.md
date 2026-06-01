@@ -9,6 +9,8 @@ Convention officielle du projet :
 | **PREPROD** | PC local (Windows) | Développement, tests, expérimentations | `http://localhost:8501` |
 | **PROD** | Serveur dédié Ubuntu | Usage réel, paris et données de référence | `http://192.95.30.217` |
 
+> **Terminologie** : la PROD est un **serveur dédié** (machine physique ou dédiée chez l’hébergeur), pas un VPS mutualisé. Dans la doc et les échanges, préférer « serveur dédié PROD » plutôt que « VPS ».
+
 Variable d’environnement : **`BETTINGHUD_ENV`** = `preprod` (défaut) ou `prod`.
 
 ---

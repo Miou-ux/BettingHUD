@@ -12,7 +12,7 @@ Comment BettingHUD repart après une coupure électrique, un reboot manuel ou un
 
 | Niveau | Question | Mécanisme principal |
 |--------|----------|---------------------|
-| **Machine (VPS)** | Le serveur Ubuntu redémarre-t-il après extinction ? | BIOS / panel hébergeur + boot Linux |
+| **Machine (serveur dédié)** | Le serveur Ubuntu redémarre-t-il après extinction ? | BIOS / panel hébergeur + boot Linux |
 | **Application** | Streamlit / daemon repartent-ils si le process plante ? | **systemd** (`Restart=always`, `enabled`) |
 
 ---
@@ -86,7 +86,7 @@ sudo systemctl start bettinghud-dashboard
 
 Quand la machine **redémarre** (coupure, `sudo reboot`, mise à jour noyau) :
 
-1. Le firmware / l’hébergeur allume le VPS (voir § 4 si coupure longue).
+1. Le firmware / l’hébergeur allume le serveur dédié (voir § 4 si coupure longue).
 2. Ubuntu démarre → `multi-user.target`.
 3. systemd démarre les unités **`enabled`** : `nginx`, `bettinghud-dashboard`, `bettinghud-daemon`, `cron`.
 4. Le **cron** 05:00 UTC relance le pipeline matin le jour suivant (pas besoin que l’app tourne à minuit).
@@ -107,7 +107,7 @@ ssh bettinghud "systemctl is-active bettinghud-dashboard bettinghud-daemon nginx
 
 ## 4. Coupure électrique / serveur éteint longtemps
 
-Le **logiciel** BettingHUD ne peut pas rallumer un VPS éteint : c’est le **fournisseur** (OVH, etc.) ou le **BIOS/IPMI**.
+Le **logiciel** BettingHUD ne peut pas rallumer un serveur dédié éteint : c’est le **fournisseur** (OVH, etc.) ou le **BIOS/IPMI**.
 
 À configurer côté hébergeur (selon offre) :
 

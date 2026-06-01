@@ -94,7 +94,7 @@ Quand tu modifies le projet, mets à jour **au minimum** :
 |--------------------|---------------------|
 | Feature ou correctif livré | [[CHANGELOG_RECENT]] (section datée) |
 | Pipeline live, snapshot, env `BETTINGHUD_*` | [[ARCHITECTURE_ACTUELLE_ET_MISES]] + changelog |
-| Déploiement VPS Ubuntu | [[DEPLOY_SERVEUR]] |
+| Déploiement serveur dédié Ubuntu | [[DEPLOY_SERVEUR]] |
 | PREPROD/PROD, sync données, incident serveur | [[ENVIRONNEMENTS]] + [[OPS_PROD_DEPANNAGE]] |
 | ML, features, calibration, EV | [[PREDICTION_ET_MISE]] + changelog |
 | UI Streamlit, thème, onglets | [[UI_THEME_QUANT]] + changelog |
