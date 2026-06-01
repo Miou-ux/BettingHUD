@@ -1,6 +1,6 @@
-# Crée une tâche planifiée Windows : scrape + snapshot Live à 07:00 (lun–dim).
+# Crée une tâche planifiée Windows : scrape + snapshot Live à 02:00 (lun–dim, heure locale).
 param(
-    [string]$Time = "07:00",
+    [string]$Time = "02:00",
     [string]$TaskName = "BettingHUD-Morning-Live"
 )
 

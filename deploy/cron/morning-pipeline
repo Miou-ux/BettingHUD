@@ -1,2 +1,3 @@
-# Pipeline matinal BettingHUD — 05:00 UTC (ajuster si besoin fuseau Paris)
-0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py >> /opt/bettinghud/data/logs/morning_pipeline_cron.log 2>&1
+# Pipeline matinal BettingHUD — 02:00 Europe/Paris (snapshot + Telegram Top 5 si TELEGRAM_TOP5_AFTER_MORNING=1)
+CRON_TZ=Europe/Paris
+0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py >> /opt/bettinghud/data/logs/morning_pipeline_cron.log 2>&1

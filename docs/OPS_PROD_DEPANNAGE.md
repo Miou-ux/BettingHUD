@@ -76,7 +76,7 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 
 ### Cron
 
-- **05:00 UTC** : `scripts/morning_live_pipeline.py`
+- **02:00 Europe/Paris** : `scripts/morning_live_pipeline.py`
 - Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 - Logs : `data/logs/morning_pipeline_cron.log`
 

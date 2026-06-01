@@ -7,3 +7,9 @@ font = "sans serif"
 
 [server]
 headless = true
+enableCORS = false
+enableXsrfProtection = false
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false

@@ -12,7 +12,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **Top 5 matinal** | Fin du pipeline matin (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV favori **+15 % → +100 %** · tri proba ↓ (onglet **Paris du jour**) |
-| **`/jour`** | Commande Telegram | **Tous les matchs scannés** Live Tracker (Aujourd’hui), **sans filtre EV** |
+| **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** avec **EV+** uniquement (seuil min défaut 0 %, tri priorité) |
 | **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
@@ -20,7 +20,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 ```mermaid
 flowchart LR
   subgraph prod [PROD serveur]
-    Cron[Crontab 05:00 UTC]
+    Cron[Crontab 02:00 Paris]
     Pipe[morning_live_pipeline.py]
     Snap[Snapshot live]
     T5[telegram_top5_notify.py]
@@ -71,28 +71,24 @@ flowchart LR
 
 ### 3.1 `/jour` — Live Tracker (Aujourd’hui)
 
-Aligné sur l’onglet **Live Tracker** avec filtre jour **Aujourd’hui** et **sans** les filtres optionnels UI (EV bande favori, segments premium, etc.).
+Même pool de matchs que le Live Tracker (**Aujourd’hui**), mais **uniquement les paris EV+** (`collect_live_tracker_value_picks`).
 
-**Matchs inclus** (via `scripts/live_tracker_picks.py`) :
+**Matchs scannés** (via `scripts/live_tracker_picks.py`) :
 
 1. Snapshot live du jour (`load_today_matches_for_daily_top_proba`)
 2. Cotes valides (`odd_p1`, `odd_p2` > 1)
-3. Rang/points fiables sur les deux joueurs (`match_has_rank_points_source`)
+3. Rang/points fiables sur les deux joueurs
 4. Calendrier **aujourd’hui** (Europe/Paris)
 5. Match à venir ou démarré depuis moins de `BETTINGHUD_LIVE_STARTED_GRACE_MINUTES` (défaut **90** min)
 
-**Une ligne par opportunité** (`collect_live_tracker_all_side_picks`) :
+**Lignes affichées** :
 
-- Si un ou deux **value bets** détectés → une ligne par côté value
-- Sinon → une ligne sur le **favori modèle** (proba, EV, cote, Kelly)
+- Uniquement les côtés avec **EV strictement positive** (`ValueDetector`, seuil min défaut **0 %**)
+- Variable optionnelle : `TELEGRAM_JOUR_EV_MIN_PCT=15` pour exiger au moins +15 % (comme le Live Tracker UI)
 
-**Pas de filtre** :
+**Pas de ligne** sur le favori modèle si EV ≤ 0.
 
-- Pas de bande EV +15 % → +100 % sur le favori
-- Pas de plafond EV 100 %
-- Pas de limite « Top 5 » ou « Top 15 »
-
-**Tri** : score **priorité composite** (Sharpe / Brier × qualité segment), comme le tri par défaut « Composite » du Live Tracker.
+**Tri** : score **priorité composite** (Sharpe / Brier × qualité segment).
 
 **Champs affichés** (message Telegram HTML) :
 
@@ -179,7 +175,8 @@ TELEGRAM_TOP5_LIMIT=5
 TELEGRAM_TOP5_EV_MIN_PCT=15
 TELEGRAM_TOP5_EV_MAX_PCT=100
 
-# /jour — limite optionnelle (0 = tous les matchs scannés)
+# /jour — limite optionnelle (0 = tous les picks EV+)
+TELEGRAM_JOUR_EV_MIN_PCT=0
 TELEGRAM_DAILY_PICKS_LIMIT=0
 
 # Chats autorisés pour /jour et /top5 (optionnel, virgules)
@@ -213,7 +210,7 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 
 Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 
-- **05:00 UTC** : `scripts/morning_live_pipeline.py`
+- **02:00 Europe/Paris** : `scripts/morning_live_pipeline.py`
 - Charge `.env` au démarrage
 - Si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning")`
 

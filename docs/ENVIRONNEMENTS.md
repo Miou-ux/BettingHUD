@@ -146,7 +146,7 @@ Détail ops et dépannage : **`docs/OPS_PROD_DEPANNAGE.md`**.
 
 | Tâche | PREPROD | PROD |
 |-------|---------|------|
-| Pipeline matin | Manuel ou tâche Windows (`register_morning_task.ps1`) | Cron 05:00 UTC |
+| Pipeline matin | Manuel ou tâche Windows (`register_morning_task.ps1`, 02:00) | Cron 02:00 Paris |
 | Telegram | **Non** (`--dry-run` seulement) | Pipeline matin + `bettinghud-telegram-bot.service` — voir [[TELEGRAM_TOP5]] |
 | Daemon portefeuille | `run_portfolio_daemon.bat` ou `--once` | `bettinghud-daemon.service` |
 | Sync tours / ML auto | Threads dashboard local | Idem (variables `BETTINGHUD_*`) |

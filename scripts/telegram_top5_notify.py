@@ -11,7 +11,8 @@ Optionnel :
   TELEGRAM_TOP5_LIMIT          (defaut 5)
   TELEGRAM_TOP5_EV_MIN_PCT     (defaut 15)
   TELEGRAM_TOP5_EV_MAX_PCT     (defaut 100)
-  TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les matchs Live Tracker /jour)
+  TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les picks EV+ /jour)
+  TELEGRAM_JOUR_EV_MIN_PCT     (defaut 0 = tout EV strictement positif)
   TELEGRAM_TOP5_AFTER_MORNING  (pipeline matin)
   BETTINGHUD_LIVE_SNAPSHOT_TTL_SEC
 
@@ -175,7 +176,7 @@ def format_bot_welcome_message() -> str:
             "Je t'envoie chaque matin le <b>Top 5 proba</b> (EV +15 % → +100 %).",
             "",
             "📌 <b>Commandes</b>",
-            "  /jour — Picks Live Tracker du jour (value bets)",
+            "  /jour — Picks du jour (EV+ uniquement)",
             "  /top5 — Top 5 proba (résumé)",
             "  /strategie — Comment on sélectionne et mise",
             "  /help — Aide",
@@ -204,7 +205,7 @@ def format_bot_strategy_message() -> str:
             "• Tri : proba modèle décroissante → <b>Top 5</b>",
             "",
             "<b>/top5</b> = ce Top 5 (Paris du jour)",
-            "<b>/jour</b> = tous les matchs scannés Live Tracker, <i>sans</i> filtre EV",
+            "<b>/jour</b> = value bets du jour (EV &gt; 0, tri priorité composite)",
             "",
             "<b>3. Stratégie de mise (Kelly)</b>",
             "• <b>½ Kelly</b> (mise prudente vs Kelly plein)",
@@ -242,7 +243,7 @@ def format_bot_help_message() -> str:
             "<b>/start</b>",
             "  Message de bienvenue.",
             "",
-            "🌅 Envoi automatique /top5 après le pipeline matin (~05:00 UTC).",
+            "🌅 Envoi automatique /top5 après le pipeline matin (~02:00 Paris).",
         ]
     )
 
@@ -311,7 +312,7 @@ def format_daily_picks_telegram_messages(
         "📋 <b>BettingHUD</b> · Live Tracker (Aujourd'hui)",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
-        "🎯 Live Tracker · tous les matchs scannés ↓",
+        "🎯 Live Tracker · value bets <b>EV+</b> uniquement ↓",
     ]
     if source == "manual":
         header_lines.append("📲 Demande manuelle")
@@ -329,7 +330,7 @@ def format_daily_picks_telegram_messages(
         ]
         if pool_size > 0:
             empty.append(
-                f"🔍 {pool_size} match(s) scanné(s) — aucun value bet au seuil Live actuel."
+                f"🔍 {pool_size} match(s) scanné(s) — aucun pari EV+ aujourd'hui."
             )
         empty.extend(
             [
@@ -536,7 +537,7 @@ def run_daily_picks_notify(
         )
     if ev_threshold_pct is None:
         raw = os.getenv("TELEGRAM_JOUR_EV_MIN_PCT", "").strip()
-        ev_threshold_pct = float(raw) if raw else None
+        ev_threshold_pct = float(raw) if raw else 0.0
     picks, _meta, cal_day, pool_n, age_min = _load_live_tracker_jour_context(
         limit=limit,
         ev_threshold_pct=ev_threshold_pct,

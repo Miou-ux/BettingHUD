@@ -1,12 +1,12 @@
 """Picks du jour alignés onglet Live Tracker (headless, PROD / Telegram).
 
-Par défaut (/jour) :
+Par défaut (/jour Telegram) :
   - matchs **Aujourd'hui** (Europe/Paris)
   - cotes valides + rang/points sur les deux joueurs
   - matchs à venir ou démarrés récemment (grâce configurable)
-  - **tous les matchs scannés** : côté(s) value si détecté(s), sinon favori modèle
-  - **sans filtre EV** (ni bande 15–100 %, ni plafond)
+  - **uniquement les paris EV+** (expected yield > 0, seuil défaut 0 %)
   - tri **priorité composite** (comme Live Tracker)
+  - variable optionnelle : ``TELEGRAM_JOUR_EV_MIN_PCT`` (ex. 15 pour +15 % min)
 """
 from __future__ import annotations
 
@@ -294,10 +294,15 @@ def load_live_tracker_day_picks(
 ) -> tuple[list[dict], dict[str, Any], int]:
     """Charge snapshot + retourne (picks, meta, n_matchs_scannés).
 
-    Aligné Live Tracker (Aujourd'hui) : **tous les matchs scannés**,
-    sans filtre EV (proba, cote, EV, Kelly pour le côté retenu).
-    """
+    Telegram ``/jour`` : **value bets EV+** uniquement (seuil min en %, défaut 0).
+  """
     matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
     scanned = filter_live_tracker_day_matches(matches, today_only=True)
-    picks = collect_live_tracker_all_side_picks(scanned)
+    ev_min = 0.0 if ev_threshold_pct is None else float(ev_threshold_pct)
+    picks = collect_live_tracker_value_picks(scanned, ev_threshold_pct=ev_min)
+    picks = [
+        p
+        for p in picks
+        if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) > 0.0
+    ]
     return picks, meta, len(scanned)

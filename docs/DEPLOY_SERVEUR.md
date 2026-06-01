@@ -170,11 +170,11 @@ Let’s Encrypt exige en général un nom de domaine. Alternatives :
 
 Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 
-- **05:00 UTC** chaque jour : `scripts/morning_live_pipeline.py`
+- **02:00 Europe/Paris** chaque jour (`CRON_TZ=Europe/Paris`) : `scripts/morning_live_pipeline.py`
 - Logs : `data/logs/morning_pipeline_cron.log`
 - Si `TELEGRAM_TOP5_AFTER_MORNING=1` dans `/opt/bettinghud/.env` → envoi **Top 5 proba** en fin de pipeline
 
-Sur Windows, équivalent : `scripts/register_morning_task.ps1` (tâche planifiée 07:00 locale).
+Sur Windows, équivalent : `scripts/register_morning_task.ps1` (tâche planifiée **02:00** locale).
 
 ### Bot Telegram (commandes `/jour`, `/top5`)
 

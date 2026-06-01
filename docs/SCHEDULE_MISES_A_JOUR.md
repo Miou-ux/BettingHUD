@@ -10,7 +10,7 @@ Dernière mise à jour : **29 mai 2026**.
 ## 1. Timeline PROD (UTC)
 
 ```text
-05:00          Pipeline matin (cron)
+02:00 Paris     Pipeline matin (cron) + Telegram Top 5
                ├─ scrape TE jour + demain
                ├─ snapshot full (v47)
                ├─ sync algo_opportunities
@@ -31,7 +31,7 @@ Toutes les 10 min (bettinghud-daemon)
 ~30 s          Auto-refresh UI Live Tracker (affichage)
 ```
 
-**PREPROD** : même logique en manuel ou tâche Windows **07:00** (`scripts/register_morning_task.ps1`) — pas d’envoi Telegram réel.
+**PREPROD** : même logique en manuel ou tâche Windows **02:00** (`scripts/register_morning_task.ps1`) — pas d’envoi Telegram réel.
 
 ---
 
@@ -40,7 +40,7 @@ Toutes les 10 min (bettinghud-daemon)
 | | |
 |---|---|
 | **Script** | `scripts/morning_live_pipeline.py` |
-| **PROD** | Cron **05:00 UTC** — `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning` |
+| **PROD** | Cron **02:00 Europe/Paris** — `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning` |
 | **PREPROD** | Manuel ou `register_morning_task.ps1` (défaut **07:00** locale) |
 | **Logs PROD** | `data/logs/morning_pipeline_cron.log` + `data/cache/logs/morning_pipeline_*.log` |
 
@@ -142,7 +142,7 @@ ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/rebuild_live_pro
 
 | Événement | Quand |
 |-----------|--------|
-| **Top 5 matinal** | Après pipeline matin (~05:00 UTC) si `TELEGRAM_TOP5_AFTER_MORNING=1` |
+| **Top 5 matinal** | Après pipeline matin (~**02:00 Paris**) si `TELEGRAM_TOP5_AFTER_MORNING=1` |
 | **Commandes** | Bot polling 24/7 — `/top5`, `/jour`, `/help` |
 | **Service PROD** | `bettinghud-telegram-bot.service` |
 
@@ -167,7 +167,7 @@ Ces refresh **relisent** le snapshot / la DB — ils ne remplacent pas le pipeli
 
 | Tâche | PREPROD | PROD |
 |-------|---------|------|
-| Pipeline matin | Manuel / tâche Windows 07:00 | Cron **05:00 UTC** |
+| Pipeline matin | Manuel / tâche Windows 02:00 | Cron **02:00 Paris** |
 | live-data-daemon | Si dashboard ouvert | systemd dashboard |
 | Retrain ML hebdo | Si dashboard ouvert | Idem |
 | Daemon portefeuille | `.bat` / `--once` | `bettinghud-daemon.service` |

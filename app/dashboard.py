@@ -3026,39 +3026,61 @@ def _match_circuit(match: dict) -> str:
     return t if t in ("ATP", "WTA") else ""
 
 
+_LIVE_MINOR_TOURNAMENT_TOKENS_ALL = (
+    "challenger",
+    "itf",
+    "utr",
+    "utr pro tennis",
+    "universal tennis",
+    "futures",
+    "future",
+    "m15",
+    "m25",
+    "m35",
+    "m50",
+    "m60",
+    "m80",
+    "m100",
+    "w15",
+    "w25",
+    "w35",
+    "w50",
+    "w60",
+    "w80",
+    "w100",
+)
+_LIVE_MINOR_TOURNAMENT_TOKENS_NO_CHALLENGER = tuple(
+    tok for tok in _LIVE_MINOR_TOURNAMENT_TOKENS_ALL if tok != "challenger"
+)
+
+
+def _is_atp_wta_circuit_match(
+    category,
+    tournament_name,
+    *,
+    include_challengers: bool = False,
+) -> bool:
+    """ATP/WTA individuels ; optionnellement les Challengers (ITF/UTR/futures toujours exclus)."""
+    c = str(category or "").strip().upper()
+    if c not in {"ATP", "WTA"}:
+        return False
+    t = str(tournament_name or "").lower()
+    tokens = (
+        _LIVE_MINOR_TOURNAMENT_TOKENS_NO_CHALLENGER
+        if include_challengers
+        else _LIVE_MINOR_TOURNAMENT_TOKENS_ALL
+    )
+    return not any(tok in t for tok in tokens)
+
+
 def _is_major_atp_wta(category, tournament_name):
     """
     Conserve uniquement les gros tournois ATP/WTA.
     Exclut explicitement Challenger/ITF et circuits mineurs assimilés.
     """
-    c = str(category or "").strip().upper()
-    if c not in {"ATP", "WTA"}:
-        return False
-    t = str(tournament_name or "").lower()
-    minor_tokens = (
-        "challenger",
-        "itf",
-        "utr",
-        "utr pro tennis",
-        "universal tennis",
-        "futures",
-        "future",
-        "m15",
-        "m25",
-        "m35",
-        "m50",
-        "m60",
-        "m80",
-        "m100",
-        "w15",
-        "w25",
-        "w35",
-        "w50",
-        "w60",
-        "w80",
-        "w100",
+    return _is_atp_wta_circuit_match(
+        category, tournament_name, include_challengers=False
     )
-    return not any(tok in t for tok in minor_tokens)
 
 
 def _match_odds_lookup_key(p1: str, p2: str, tournament: str) -> tuple[str, str, str]:
@@ -3177,14 +3199,15 @@ def _filter_df_upcoming_or_recent_started_for_live(df: pd.DataFrame) -> pd.DataF
 
 
 def _load_prematch_df_for_live(csv_path: str) -> pd.DataFrame:
-    """Mêmes filtres que le build live (ATP/WTA majeurs, J+0/J+1, à venir ou récemment commencés)."""
+    """Mêmes filtres que le build live (ATP/WTA + Challengers, J+0/J+1, à venir ou récemment commencés)."""
     if not csv_path or not os.path.isfile(csv_path):
         return pd.DataFrame()
     df = pd.read_csv(csv_path)
     df = _filter_df_exclude_doubles_prematch(df)
     if df.empty:
         return df
-    df = _filter_df_major_atp_wta_vectorized(df)
+    # Inclure les Challengers dans le snapshot ; le Live Tracker les masque par défaut (toggle UI).
+    df = _filter_df_atp_wta_circuit_vectorized(df, include_challengers=True)
     if df.empty:
         return df
     if LIVE_ONLY_TODAY_TOMORROW:
@@ -3247,8 +3270,12 @@ def _filter_df_exclude_doubles_prematch(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[~drop].copy()
 
 
-def _filter_df_major_atp_wta_vectorized(df: pd.DataFrame) -> pd.DataFrame:
-    """Équivalent à _is_major_atp_wta sur chaque ligne, sans apply (pandas vectorisé)."""
+def _filter_df_atp_wta_circuit_vectorized(
+    df: pd.DataFrame,
+    *,
+    include_challengers: bool = False,
+) -> pd.DataFrame:
+    """Équivalent vectorisé à _is_atp_wta_circuit_match."""
     if df is None or df.empty:
         return df
     c = df.get("category", pd.Series("", index=df.index)).astype(str).str.strip().str.upper()
@@ -3256,31 +3283,18 @@ def _filter_df_major_atp_wta_vectorized(df: pd.DataFrame) -> pd.DataFrame:
     t = df.get("tournament", pd.Series("", index=df.index)).astype(str).str.lower().fillna("")
     minor = pd.Series(False, index=df.index)
     minor_tokens = (
-        "challenger",
-        "itf",
-        "utr",
-        "utr pro tennis",
-        "universal tennis",
-        "futures",
-        "future",
-        "m15",
-        "m25",
-        "m35",
-        "m50",
-        "m60",
-        "m80",
-        "m100",
-        "w15",
-        "w25",
-        "w35",
-        "w50",
-        "w60",
-        "w80",
-        "w100",
+        _LIVE_MINOR_TOURNAMENT_TOKENS_NO_CHALLENGER
+        if include_challengers
+        else _LIVE_MINOR_TOURNAMENT_TOKENS_ALL
     )
     for tok in minor_tokens:
         minor = minor | t.str.contains(tok, case=False, na=False, regex=False)
     return df.loc[ok_cat & ~minor].copy()
+
+
+def _filter_df_major_atp_wta_vectorized(df: pd.DataFrame) -> pd.DataFrame:
+    """Équivalent à _is_major_atp_wta sur chaque ligne, sans apply (pandas vectorisé)."""
+    return _filter_df_atp_wta_circuit_vectorized(df, include_challengers=False)
 
 
 def _filter_df_today_tomorrow_only(df: pd.DataFrame) -> pd.DataFrame:
@@ -6235,6 +6249,21 @@ def _is_today_calendar_match(m: dict) -> bool:
     return not str(m.get("time") or "").startswith("Demain")
 
 
+def _sanitize_stale_demain_time_label(m: dict) -> dict:
+    """Retire « Demain » si la date calendrier est déjà aujourd'hui (libellé scrape obsolète)."""
+    if not isinstance(m, dict):
+        return m
+    out = dict(m)
+    t = str(out.get("time") or "").strip()
+    if t.startswith("Demain") and _is_today_calendar_match(out):
+        out["time"] = t.replace("Demain", "", 1).strip() or t
+    return out
+
+
+def _sanitize_live_matches_list(matches: list) -> list:
+    return [_sanitize_stale_demain_time_label(m) for m in matches if isinstance(m, dict)]
+
+
 # Chart « Top probas jour » — voir docs/CHART_TOP_PROBAS_JOUR.md
 _TOP_PROBAS_CHART_MODEL_COLOR = "#294c86"
 _TOP_PROBAS_CHART_BOOK_COLOR = "#f0d78f"
@@ -8011,6 +8040,7 @@ def _hydrate_live_matches_from_disk() -> list:
             max_age_sec=LIVE_SNAPSHOT_TTL_SEC,
         )
     if snap is not None:
+        snap = _sanitize_live_matches_list(snap)
         st.session_state["_live_matches_sig"] = sig_t
         st.session_state["_live_matches_cache"] = list(snap)
         return list(snap)
@@ -8267,10 +8297,19 @@ if not HEADLESS_APP:
                 "🎾 Circuit",
                 _circuit_options,
                 key="live_circuit_filter",
-                help="ATP ou WTA uniquement (simples individuels, gros tournois).",
+                help="ATP ou WTA uniquement (simples individuels).",
+            )
+            include_challengers = st.checkbox(
+                "Inclure les Challengers",
+                key="live_include_challengers",
+                help=(
+                    "Affiche aussi les tournois ATP/WTA Challenger. "
+                    "ITF, UTR et tournois « futures » restent masqués. "
+                    "Un rebuild du snapshot peut être nécessaire après activation."
+                ),
             )
         else:
-            col_filter_day, col_filter_circuit, col_filter_tourney = st.columns(3)
+            col_filter_day, col_filter_circuit, col_filter_chal, col_filter_tourney = st.columns(4)
             with col_filter_day:
                 day_filter = st.radio("📅 Filtrer par jour :", ["Aujourd'hui", "Demain", "Tous"], horizontal=True)
             with col_filter_circuit:
@@ -8279,6 +8318,15 @@ if not HEADLESS_APP:
                     _circuit_options,
                     key="live_circuit_filter",
                     help="ATP ou WTA uniquement.",
+                )
+            with col_filter_chal:
+                include_challengers = st.checkbox(
+                    "Inclure les Challengers",
+                    key="live_include_challengers",
+                    help=(
+                        "Affiche aussi les tournois ATP/WTA Challenger. "
+                        "ITF, UTR et tournois « futures » restent masqués."
+                    ),
                 )
     
         _today_live_date = datetime.now().date()
@@ -8320,12 +8368,21 @@ if not HEADLESS_APP:
         else:
             filtered_matches = real_matches
     
-        # Garde-fou UI: ne proposer que gros tournois ATP/WTA.
+        # Garde-fou UI: gros tournois ATP/WTA par défaut ; Challengers si toggle actif.
         filtered_matches = [
-            m for m in filtered_matches
-            if _is_major_atp_wta(m.get("category"), m.get("tournament"))
+            m
+            for m in filtered_matches
+            if _is_atp_wta_circuit_match(
+                m.get("category"),
+                m.get("tournament"),
+                include_challengers=include_challengers,
+            )
         ]
         _n_day_major = len(filtered_matches)
+        if include_challengers:
+            st.caption(
+                "Challengers ATP/WTA inclus. ITF, UTR et tournois « futures » restent exclus."
+            )
         if _n_rank_data_excluded:
             st.caption(
                 f"{_n_rank_data_excluded} match(s) masqué(s) : pas de données rang/points "
