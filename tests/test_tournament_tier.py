@@ -24,6 +24,17 @@ def test_foggia_wta_125_excluded_from_main_draw():
     assert is_challenger_tier_match(m)
 
 
+def test_challenger_category_from_scraper():
+    m = {
+        "category": "Challenger",
+        "tournament": "Perugia challenger",
+        "tournament_url": "/perugia/2026/atp-men/",
+        "tourney_winner_points": 125,
+    }
+    assert is_challenger_tier_match(m)
+    assert not is_main_draw_tournament_match(m)
+
+
 def test_roland_garros_main_draw():
     m = {
         "category": "WTA",

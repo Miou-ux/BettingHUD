@@ -3062,6 +3062,9 @@ def _is_atp_wta_circuit_match(
 ) -> bool:
     """ATP/WTA individuels ; optionnellement les Challengers (ITF/UTR/futures toujours exclus)."""
     c = str(category or "").strip().upper()
+    if include_challengers and c == "CHALLENGER":
+        t = str(tournament_name or "").lower()
+        return "itf" not in t and "utr" not in t
     if c not in {"ATP", "WTA"}:
         return False
     t = str(tournament_name or "").lower()
@@ -3279,7 +3282,7 @@ def _filter_df_atp_wta_circuit_vectorized(
     if df is None or df.empty:
         return df
     c = df.get("category", pd.Series("", index=df.index)).astype(str).str.strip().str.upper()
-    ok_cat = c.isin(["ATP", "WTA"])
+    ok_cat = c.isin(["ATP", "WTA", "CHALLENGER"]) if include_challengers else c.isin(["ATP", "WTA"])
     t = df.get("tournament", pd.Series("", index=df.index)).astype(str).str.lower().fillna("")
     minor = pd.Series(False, index=df.index)
     minor_tokens = (
@@ -3289,7 +3292,11 @@ def _filter_df_atp_wta_circuit_vectorized(
     )
     for tok in minor_tokens:
         minor = minor | t.str.contains(tok, case=False, na=False, regex=False)
-    return df.loc[ok_cat & ~minor].copy()
+    itf_cat = c.isin(["ITF"]) if include_challengers else pd.Series(False, index=df.index)
+    itf_name = t.str.contains("itf", case=False, na=False) | t.str.contains(
+        "utr", case=False, na=False
+    )
+    return df.loc[ok_cat & ~minor & ~itf_cat & ~itf_name].copy()
 
 
 def _filter_df_major_atp_wta_vectorized(df: pd.DataFrame) -> pd.DataFrame:

@@ -24,6 +24,17 @@ class FlashscoreScraper:
             return 125
         if "itf" in low:
             return 0
+        if any(
+            slug in low
+            for slug in (
+                "french-open",
+                "roland-garros",
+                "wimbledon",
+                "us-open",
+                "australian-open",
+            )
+        ):
+            return 2000
         url = href if href.startswith("http") else f"{_TE_BASE}{href}"
         try:
             await page.goto(url, timeout=45000, wait_until="domcontentloaded")
@@ -33,16 +44,21 @@ class FlashscoreScraper:
         try:
             rows = await page.query_selector_all("table tr")
             for row in rows:
-                txt = (await row.inner_text() or "").strip().lower()
-                if "winner" not in txt:
-                    continue
                 cells = await row.query_selector_all("td")
-                if not cells:
+                if len(cells) < 2:
+                    continue
+                first = (await cells[0].inner_text() or "").strip().lower()
+                if first != "winner":
                     continue
                 last = (await cells[-1].inner_text() or "").strip()
                 last = last.replace("\xa0", "").replace(" ", "").replace(",", "")
                 if last.isdigit():
-                    return int(last)
+                    pts = int(last)
+                    if pts >= 250:
+                        return pts
+                    if pts in (125, 175, 200):
+                        return pts
+                    return pts
         except Exception:
             pass
         html = await page.content()

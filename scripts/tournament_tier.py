@@ -75,6 +75,9 @@ def is_main_draw_tournament_match(match: dict) -> bool:
 def is_challenger_tier_match(match: dict) -> bool:
     """Challenger ATP, WTA 125, ou nom/url assimilé mineur."""
     c = str(match.get("category") or match.get("tour") or "").strip().upper()
+    if c == "CHALLENGER":
+        t = str(match.get("tournament") or "").lower()
+        return "itf" not in t and "utr" not in t
     if c not in {"ATP", "WTA"}:
         return False
     t = str(match.get("tournament") or "").lower()
