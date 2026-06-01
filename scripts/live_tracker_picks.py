@@ -7,6 +7,11 @@ Par défaut (/jour Telegram) :
   - **uniquement les paris EV+** (expected yield > 0, seuil défaut 0 %)
   - tri **priorité composite** (comme Live Tracker)
   - variable optionnelle : ``TELEGRAM_JOUR_EV_MIN_PCT`` (ex. 15 pour +15 % min)
+
+``/jourchallenger`` :
+  - tournois ATP/WTA dont le nom contient « challenger »
+  - EV favori **+15 % → +100 %** (défaut, env ``TELEGRAM_JOURCHALLENGER_EV_*``)
+  - tri **proba modèle** décroissante
 """
 from __future__ import annotations
 
@@ -33,6 +38,12 @@ from scripts.value_detector import ValueDetector
 PARIS_TZ = ZoneInfo("Europe/Paris")
 DEFAULT_EV_THRESHOLD_PCT = max(
     0.0, float(os.getenv("BETTINGHUD_LIVE_EV_THRESHOLD_PCT", "15"))
+)
+DEFAULT_CHALLENGER_EV_MIN_PCT = max(
+    0.0, float(os.getenv("TELEGRAM_JOURCHALLENGER_EV_MIN_PCT", "15"))
+)
+DEFAULT_CHALLENGER_EV_MAX_PCT = max(
+    0.0, float(os.getenv("TELEGRAM_JOURCHALLENGER_EV_MAX_PCT", "100"))
 )
 LIVE_STARTED_GRACE_MINUTES = max(
     0, int(os.getenv("BETTINGHUD_LIVE_STARTED_GRACE_MINUTES", "90"))
@@ -72,6 +83,18 @@ def _is_future_or_recent_started_match(m: dict, *, now: datetime | None = None) 
     if LIVE_STARTED_GRACE_MINUTES <= 0:
         return False
     return (now - scheduled) <= timedelta(minutes=LIVE_STARTED_GRACE_MINUTES)
+
+
+def is_challenger_match(match: dict) -> bool:
+    """Tournoi ATP/WTA Challenger (nom du tournoi contient « challenger »)."""
+    c = str(match.get("category") or match.get("tour") or "").strip().upper()
+    if c not in {"ATP", "WTA"}:
+        return False
+    return "challenger" in str(match.get("tournament") or "").lower()
+
+
+def filter_challenger_matches(matches: list[dict]) -> list[dict]:
+    return [m for m in matches if is_challenger_match(m)]
 
 
 def filter_live_tracker_day_matches(
@@ -306,3 +329,41 @@ def load_live_tracker_day_picks(
         if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) > 0.0
     ]
     return picks, meta, len(scanned)
+
+
+def load_live_tracker_challenger_day_picks(
+    *,
+    ev_threshold_pct: float | None = None,
+    ev_max_pct: float | None = None,
+    max_age_sec: float | None = None,
+) -> tuple[list[dict], dict[str, Any], int]:
+    """Challengers du jour : value bets EV bande, tri proba modèle décroissante."""
+    ev_min = (
+        DEFAULT_CHALLENGER_EV_MIN_PCT
+        if ev_threshold_pct is None
+        else float(ev_threshold_pct)
+    )
+    ev_max = (
+        DEFAULT_CHALLENGER_EV_MAX_PCT if ev_max_pct is None else float(ev_max_pct)
+    )
+    matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+    scanned = filter_live_tracker_day_matches(matches, today_only=True)
+    challenger_pool = filter_challenger_matches(scanned)
+    picks = collect_live_tracker_value_picks(
+        challenger_pool, ev_threshold_pct=ev_min
+    )
+    picks = [
+        p
+        for p in picks
+        if ev_min <= float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) <= ev_max
+    ]
+    picks.sort(
+        key=lambda r: (
+            -float(r.get("p_model_pct") or 0.0),
+            -float(r.get("ev_pct") or r.get("ev_fav_pct") or 0.0),
+            str(r.get("match_name") or "").lower(),
+        )
+    )
+    for rank, row in enumerate(picks, start=1):
+        row["rank"] = rank
+    return picks, meta, len(challenger_pool)

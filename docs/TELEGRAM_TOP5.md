@@ -13,6 +13,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 |--------|-------------|---------|
 | **Top 5 matinal** | Fin du pipeline matin (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV favori **+15 % → +100 %** · tri proba ↓ (onglet **Paris du jour**) |
 | **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** avec **EV+** uniquement (seuil min défaut 0 %, tri priorité) |
+| **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
@@ -103,7 +104,22 @@ Même pool de matchs que le Live Tracker (**Aujourd’hui**), mais **uniquement 
 
 Messages longs : découpés automatiquement (~3900 caractères / message) avec en-tête « Partie 1/2 ».
 
-### 3.2 `/top5` et envoi matinal — Paris du jour
+### 3.2 `/jourchallenger` — Challengers du jour
+
+Alias : `/challengers`.
+
+| Critère | Valeur |
+|---------|--------|
+| Tournois | Nom contenant **challenger**, circuit **ATP** ou **WTA** |
+| Jour | **Aujourd’hui** (même hygiène que `/jour`) |
+| EV | **+15 % → +100 %** (`TELEGRAM_JOURCHALLENGER_EV_MIN_PCT` / `_MAX_PCT`) |
+| Tri | **Proba modèle** décroissante (pas priorité composite) |
+
+Fonction : `load_live_tracker_challenger_day_picks` dans `scripts/live_tracker_picks.py`.
+
+Prérequis : snapshot live incluant les Challengers (build matin ou rebuild).
+
+### 3.3 `/top5` et envoi matinal — Paris du jour
 
 Aligné onglet **Paris du jour** / stratégie backtest validée :
 
