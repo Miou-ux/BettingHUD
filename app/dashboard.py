@@ -4942,6 +4942,8 @@ def _build_live_matches_core(
             "prematch_id": prematch_id,
             "date": row.get('date', row['scraped_at'][:10]),
             "tournament": row.get('tournament', 'Tournoi en cours'),
+            "tournament_url": row.get("tournament_url"),
+            "tourney_winner_points": row.get("tourney_winner_points"),
             "category": row.get('category', 'ATP/WTA'),
             "tour": match_tour or "ATP",
             "time": row['time'],
@@ -7075,7 +7077,9 @@ def _load_today_tracked_matches_for_inplay() -> list[dict]:
             continue
         if not _match_has_rank_points_source(m):
             continue
-        if not _is_major_atp_wta(m.get("category"), m.get("tournament")):
+        from scripts.tournament_tier import is_major_tournament_match
+
+        if not is_major_tournament_match(m):
             continue
         if not _is_today_calendar_match(m):
             continue

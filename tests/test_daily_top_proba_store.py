@@ -59,7 +59,8 @@ def test_collect_top5_excludes_challenger():
         {
             "player1": "C",
             "player2": "D",
-            "tournament": "Perugia challenger",
+            "tournament": "Foggia",
+            "tourney_winner_points": 125,
             "feature_snapshot": {"capped_p1_prob": 0.95},
             "true_odd_p1": 1.15,
             "odd_p1": 1.18,

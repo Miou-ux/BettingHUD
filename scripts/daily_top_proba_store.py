@@ -17,39 +17,10 @@ from scripts.bets_db import (
     upsert_daily_top_proba_picks,
 )
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
+from scripts.tournament_tier import is_major_tournament_match
 
-_MINOR_TOURNAMENT_NAME_TOKENS = (
-    "challenger",
-    "itf",
-    "utr",
-    "utr pro tennis",
-    "universal tennis",
-    "futures",
-    "future",
-    "m15",
-    "m25",
-    "m35",
-    "m50",
-    "m60",
-    "m80",
-    "m100",
-    "w15",
-    "w25",
-    "w35",
-    "w50",
-    "w60",
-    "w80",
-    "w100",
-)
-
-
-def is_major_atp_wta_match(match: dict) -> bool:
-    """Gros tournois ATP/WTA — aligné onglet Paris du jour (_is_major_atp_wta)."""
-    c = str(match.get("category") or match.get("tour") or "").strip().upper()
-    if c not in {"ATP", "WTA"}:
-        return False
-    t = str(match.get("tournament") or "").lower()
-    return not any(tok in t for tok in _MINOR_TOURNAMENT_NAME_TOKENS)
+# Alias rétrocompat (scripts / tests).
+is_major_atp_wta_match = is_major_tournament_match
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PARIS_TZ = ZoneInfo("Europe/Paris")

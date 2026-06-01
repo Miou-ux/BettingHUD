@@ -1,14 +1,94 @@
 import asyncio
+import re
 from playwright.async_api import async_playwright
 import pandas as pd
 from datetime import datetime, timedelta
 import os
+
+_TE_BASE = "https://www.tennisexplorer.com"
 
 class FlashscoreScraper:
     def __init__(self):
         self.tennis_explorer_url = "https://www.tennisexplorer.com/matches/"
         self.data_dir = os.path.join("data", "scraped")
         os.makedirs(self.data_dir, exist_ok=True)
+
+    @staticmethod
+    async def _parse_winner_ranking_points(page, tournament_href: str) -> int | None:
+        """Points vainqueur (tableau TE) — 125 = WTA 125 / Challenger, 250+ = main draw."""
+        href = str(tournament_href or "").strip().split("?")[0]
+        if not href:
+            return None
+        low = href.lower()
+        if "-challenger" in low:
+            return 125
+        if "itf" in low:
+            return 0
+        url = href if href.startswith("http") else f"{_TE_BASE}{href}"
+        try:
+            await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(400)
+        except Exception:
+            return None
+        try:
+            rows = await page.query_selector_all("table tr")
+            for row in rows:
+                txt = (await row.inner_text() or "").strip().lower()
+                if "winner" not in txt:
+                    continue
+                cells = await row.query_selector_all("td")
+                if not cells:
+                    continue
+                last = (await cells[-1].inner_text() or "").strip()
+                last = last.replace("\xa0", "").replace(" ", "").replace(",", "")
+                if last.isdigit():
+                    return int(last)
+        except Exception:
+            pass
+        html = await page.content()
+        m = re.search(
+            r"winner[\s\S]{0,400}?(\d{2,4})\s*</td>\s*</tr>",
+            html,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+        return None
+
+    async def _enrich_tournament_winner_points(
+        self, context, matches: list[dict]
+    ) -> None:
+        singles = [
+            m
+            for m in matches
+            if str(m.get("tournament_url") or "").strip()
+            and "type=double" not in str(m.get("tournament_url") or "").lower()
+        ]
+        hrefs = sorted({str(m["tournament_url"]).strip() for m in singles})
+        if not hrefs:
+            return
+        cache: dict[str, int | None] = {}
+        sem = asyncio.Semaphore(4)
+
+        async def _one(href: str) -> None:
+            async with sem:
+                page = await context.new_page()
+                try:
+                    cache[href] = await self._parse_winner_ranking_points(page, href)
+                except Exception:
+                    cache[href] = None
+                finally:
+                    await page.close()
+
+        await asyncio.gather(*[_one(h) for h in hrefs])
+        for m in matches:
+            href = str(m.get("tournament_url") or "").strip()
+            pts = cache.get(href)
+            if pts is not None:
+                m["tourney_winner_points"] = int(pts)
 
     async def get_matches_and_odds(self, day_offset=0):
         target_date = datetime.now() + timedelta(days=day_offset)
@@ -30,6 +110,7 @@ class FlashscoreScraper:
             matches_data = []
             current_tournament = "Inconnu"
             current_category = "Inconnu"
+            current_tournament_url = ""
             
             rows = await page.query_selector_all("table.result tbody tr")
             
@@ -42,6 +123,9 @@ class FlashscoreScraper:
                     if tournament_header_el:
                         tournament_text = await tournament_header_el.inner_text()
                         current_tournament = tournament_text.strip()
+                        current_tournament_url = (
+                            await tournament_header_el.get_attribute("href") or ""
+                        ).strip()
                         
                         current_category = "Inconnu"
                         html = await row.inner_html()
@@ -50,8 +134,11 @@ class FlashscoreScraper:
                         elif "type-women" in html or "-women" in html or "WTA" in current_tournament:
                             current_category = "WTA"
                         
-                        if "Challenger" in current_tournament: current_category = "Challenger"
-                        elif "ITF" in current_tournament: current_category = "ITF"
+                        t_low = current_tournament.lower()
+                        if "challenger" in t_low:
+                            current_category = "Challenger"
+                        elif "itf" in t_low:
+                            current_category = "ITF"
                     continue
                     
                 if "one" in class_name or "two" in class_name:
@@ -94,6 +181,7 @@ class FlashscoreScraper:
                             "id": f"te_{match_count}",
                             "date": target_date.strftime('%Y-%m-%d'),
                             "tournament": current_tournament,
+                            "tournament_url": current_tournament_url,
                             "category": current_category,
                             "time": time_text,
                             "player1": player1,
@@ -118,6 +206,16 @@ class FlashscoreScraper:
                             matches_data.append(current_match)
                             match_count += 1
                         current_match = {}
+
+            if matches_data:
+                n_tourneys = len(
+                    {m.get("tournament_url") for m in matches_data if m.get("tournament_url")}
+                )
+                print(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] "
+                    f"Enrichissement points vainqueur ({n_tourneys} tournois)…"
+                )
+                await self._enrich_tournament_winner_points(context, matches_data)
             
             await browser.close()
             return matches_data

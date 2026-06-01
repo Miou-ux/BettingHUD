@@ -33,6 +33,7 @@ from scripts.ml_model import (
     resolve_segment_brier_score,
 )
 from scripts.priority_scoring import enrich_value_metrics
+from scripts.tournament_tier import is_challenger_tier_match
 from scripts.value_detector import ValueDetector
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
@@ -86,11 +87,8 @@ def _is_future_or_recent_started_match(m: dict, *, now: datetime | None = None) 
 
 
 def is_challenger_match(match: dict) -> bool:
-    """Tournoi ATP/WTA Challenger (nom du tournoi contient « challenger »)."""
-    c = str(match.get("category") or match.get("tour") or "").strip().upper()
-    if c not in {"ATP", "WTA"}:
-        return False
-    return "challenger" in str(match.get("tournament") or "").lower()
+    """Challenger ATP, WTA 125, etc. (nom, URL TE ou points vainqueur < 250)."""
+    return is_challenger_tier_match(match)
 
 
 def filter_challenger_matches(matches: list[dict]) -> list[dict]:
