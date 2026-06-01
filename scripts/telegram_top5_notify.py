@@ -68,6 +68,7 @@ _MO_FR = (
     "déc.",
 )
 _TELEGRAM_MAX_CHARS = 3900
+_TELEGRAM_HARD_LIMIT = 4096
 _TOUR_EMOJI = {"ATP": "🟢", "WTA": "🔵"}
 
 
@@ -128,6 +129,37 @@ def _format_pick_block(row: dict, *, rank: int | None = None) -> list[str]:
     return lines
 
 
+def _split_text_block(block: str, *, max_chars: int) -> list[str]:
+    """Découpe un bloc trop long (ex. corps /jour avec dizaines de picks)."""
+    block = block.strip()
+    if not block:
+        return []
+    if len(block) <= max_chars:
+        return [block]
+    lines = block.split("\n")
+    pieces: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+    for line in lines:
+        line = line.rstrip()
+        add = len(line) + (1 if buf else 0)
+        if buf and buf_len + add > max_chars:
+            pieces.append("\n".join(buf).strip())
+            buf = [line] if line else []
+            buf_len = len(line)
+        else:
+            if buf:
+                buf_len += 1
+            if line:
+                buf.append(line)
+                buf_len += len(line)
+    if buf:
+        pieces.append("\n".join(buf).strip())
+    if not pieces:
+        return [block[:max_chars]]
+    return pieces
+
+
 def _chunk_telegram_messages(parts: list[str], *, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
     if not parts:
         return [""]
@@ -135,22 +167,26 @@ def _chunk_telegram_messages(parts: list[str], *, max_chars: int = _TELEGRAM_MAX
     current: list[str] = []
     current_len = 0
     for part in parts:
-        block = part.strip()
-        if not block:
-            continue
-        extra = len(block) + (2 if current else 0)
-        if current and current_len + extra > max_chars:
-            chunks.append("\n".join(current).strip())
-            current = [block]
-            current_len = len(block)
-        else:
-            if current:
-                current_len += 2
-            current.append(block)
-            current_len += len(block)
+        for block in _split_text_block(part, max_chars=max_chars):
+            extra = len(block) + (2 if current else 0)
+            if current and current_len + extra > max_chars:
+                chunks.append("\n".join(current).strip())
+                current = [block]
+                current_len = len(block)
+            else:
+                if current:
+                    current_len += 2
+                current.append(block)
+                current_len += len(block)
     if current:
         chunks.append("\n".join(current).strip())
     return chunks or [""]
+
+
+def format_telegram_error_message(title: str, exc: BaseException) -> str:
+    """Message d'erreur HTML sûr (évite 400 si l'exception contient des chevrons)."""
+    detail = _escape_html(str(exc))[:900]
+    return f"⚠️ <b>{_escape_html(title)}</b>\n<code>{detail}</code>"
 
 
 def _snapshot_age_min(meta: dict) -> float | None:
@@ -352,10 +388,11 @@ def format_daily_picks_telegram_messages(
         )
         return ["\n".join(empty).strip()]
 
-    body_lines: list[str] = []
-    for row in picks:
-        body_lines.extend(_format_pick_block(row))
-
+    pick_parts = [
+        "\n".join(_format_pick_block(row)).strip()
+        for row in picks
+        if _format_pick_block(row)
+    ]
     footer = "\n".join(
         [
             "━━━━━━━━━━━━━━━━━━━━",
@@ -363,8 +400,7 @@ def format_daily_picks_telegram_messages(
         ]
     )
     header = "\n".join(header_lines).strip()
-    body = "\n".join(body_lines).strip()
-    return _chunk_telegram_messages([header, body, footer])
+    return _chunk_telegram_messages([header, *pick_parts, footer])
 
 
 def format_challenger_daily_picks_telegram_messages(
@@ -409,10 +445,11 @@ def format_challenger_daily_picks_telegram_messages(
         )
         return ["\n".join(empty).strip()]
 
-    body_lines: list[str] = []
-    for row in picks:
-        body_lines.extend(_format_pick_block(row))
-
+    pick_parts = [
+        "\n".join(_format_pick_block(row)).strip()
+        for row in picks
+        if _format_pick_block(row)
+    ]
     footer = "\n".join(
         [
             "━━━━━━━━━━━━━━━━━━━━",
@@ -420,8 +457,7 @@ def format_challenger_daily_picks_telegram_messages(
         ]
     )
     header = "\n".join(header_lines).strip()
-    body = "\n".join(body_lines).strip()
-    return _chunk_telegram_messages([header, body, footer])
+    return _chunk_telegram_messages([header, *pick_parts, footer])
 
 
 def send_telegram_message(
@@ -430,16 +466,34 @@ def send_telegram_message(
     token: str,
     chat_id: str,
     disable_web_page_preview: bool = True,
+    parse_mode: str | None = "HTML",
 ) -> dict:
     url = f"{TELEGRAM_API_BASE.format(token=token.strip())}/sendMessage"
-    payload = {
+    body = str(text or "").strip() or "⚠️ Message vide."
+    if len(body) > _TELEGRAM_HARD_LIMIT:
+        body = body[: _TELEGRAM_HARD_LIMIT - 12] + "\n… <i>(tronqué)</i>"
+    payload: dict = {
         "chat_id": chat_id.strip(),
-        "text": text,
-        "parse_mode": "HTML",
+        "text": body,
         "disable_web_page_preview": disable_web_page_preview,
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        detail = resp.text[:500]
+        if parse_mode == "HTML":
+            try:
+                return send_telegram_message(
+                    _escape_html(body),
+                    token=token,
+                    chat_id=chat_id,
+                    disable_web_page_preview=disable_web_page_preview,
+                    parse_mode=None,
+                )
+            except requests.RequestException:
+                pass
+        raise RuntimeError(f"Telegram sendMessage HTTP {resp.status_code}: {detail}") from None
     data = resp.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram API error: {data}")

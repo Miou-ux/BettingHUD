@@ -33,6 +33,7 @@ from scripts.telegram_top5_notify import (
     format_bot_help_message,
     format_bot_strategy_message,
     format_bot_welcome_message,
+    format_telegram_error_message,
     run_challenger_daily_picks_notify,
     run_daily_picks_notify,
     run_notify,
@@ -197,7 +198,7 @@ def _handle_message(
         except Exception as exc:
             LOGGER.exception("Echec /jourchallenger : %s", exc)
             send_telegram_message(
-                f"⚠️ <b>Erreur</b> Challengers du jour.\n<code>{exc}</code>",
+                format_telegram_error_message("Erreur Challengers du jour", exc),
                 token=token,
                 chat_id=chat_id,
             )
@@ -218,7 +219,7 @@ def _handle_message(
         except Exception as exc:
             LOGGER.exception("Echec /jour : %s", exc)
             send_telegram_message(
-                f"⚠️ <b>Erreur</b> lors du chargement des picks du jour.\n<code>{exc}</code>",
+                format_telegram_error_message("Erreur picks du jour (/jour)", exc),
                 token=token,
                 chat_id=chat_id,
             )
@@ -238,7 +239,7 @@ def _handle_message(
         except Exception as exc:
             LOGGER.exception("Echec /top5 : %s", exc)
             send_telegram_message(
-                f"⚠️ <b>Erreur</b> lors du chargement du Top 5.\n<code>{exc}</code>",
+                format_telegram_error_message("Erreur Top 5", exc),
                 token=token,
                 chat_id=chat_id,
             )
