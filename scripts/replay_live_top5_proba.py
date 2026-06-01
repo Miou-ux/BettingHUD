@@ -254,6 +254,22 @@ def main() -> None:
     ap.add_argument("--export", default=os.path.join(ROOT, "data", "reports", "replay_live_top5_proba.csv"))
     args = ap.parse_args()
 
+    # Résoudre les statuts avant replay (sinon beaucoup de faux « En cours »).
+    try:
+        import sqlite3
+
+        from scripts.bets_db import (
+            sync_algo_opportunities_from_results,
+            sync_daily_top_proba_from_results,
+        )
+
+        _cn = sqlite3.connect(args.db)
+        sync_algo_opportunities_from_results(_cn)
+        sync_daily_top_proba_from_results(_cn)
+        _cn.close()
+    except Exception:
+        pass
+
     raw = load_algo_opportunities(db_path=args.db, start=args.start, end=args.end)
     if raw.empty:
         raise SystemExit(f"Aucune opportunité dans {args.db}")

@@ -1084,8 +1084,8 @@ def sync_algo_opportunities_from_results(conn: sqlite3.Connection) -> int:
         return 0
     rows = conn.execute(
         """
-        SELECT opportunity_key, match_date, player1, player2, bet_on, odd_book,
-               p_model, segment_brier
+        SELECT opportunity_key, match_date, detected_date, player1, player2, bet_on,
+               odd_book, p_model, segment_brier
         FROM algo_opportunities
         WHERE COALESCE(status, 'En cours') = 'En cours'
           AND match_date IS NOT NULL
@@ -1095,26 +1095,20 @@ def sync_algo_opportunities_from_results(conn: sqlite3.Connection) -> int:
     ).fetchall()
     n = 0
     now_iso = datetime.utcnow().isoformat(timespec="seconds")
-    for key, match_date, p1, p2, bet_on, odd_book, p_model, segment_brier in rows:
+    for key, match_date, detected_date, p1, p2, bet_on, odd_book, p_model, segment_brier in rows:
         p1c = canonical_player(p1)
         p2c = canonical_player(p2)
-        hit = conn.execute(
-            """
-            SELECT winner_canonical, score, retired, walkover, source
-            FROM match_results
-            WHERE match_date = ?
-              AND (
-                (p1_canonical = ? AND p2_canonical = ?)
-                OR (p1_canonical = ? AND p2_canonical = ?)
-              )
-            ORDER BY source = 'tennisexplorer' DESC, scraped_at DESC
-            LIMIT 1
-            """,
-            (match_date, p1c, p2c, p2c, p1c),
-        ).fetchone()
+        md = str(match_date or "")[:10]
+        hit = _lookup_match_result_for_players(
+            conn,
+            md,
+            p1c,
+            p2c,
+            calendar_date=str(detected_date or md)[:10] or None,
+        )
         if not hit:
             continue
-        winner, score, _retired, walkover, source = hit
+        winner, score, walkover, source, _resolved_date = hit
         if walkover:
             status = "Annulé"
             profit = 0.0
