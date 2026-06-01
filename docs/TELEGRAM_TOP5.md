@@ -111,14 +111,14 @@ Alias : `/challengers`.
 
 | Critère | Valeur |
 |---------|--------|
-| Tournois | Nom contenant **challenger**, circuit **ATP** ou **WTA** |
+| Tournois | `is_challenger_tier_match` : `category=Challenger`, nom/url **challenger**, ou **points vainqueur &lt; 250** (ex. Foggia WTA 125) |
 | Jour | **Aujourd’hui** (même hygiène que `/jour`) |
 | EV | **+15 % → +100 %** (`TELEGRAM_JOURCHALLENGER_EV_MIN_PCT` / `_MAX_PCT`) |
 | Tri | **Proba modèle** décroissante (pas priorité composite) |
 
 Fonction : `load_live_tracker_challenger_day_picks` dans `scripts/live_tracker_picks.py`.
 
-Prérequis : snapshot live incluant les Challengers (build matin ou rebuild).
+Prérequis : snapshot live incluant les Challengers (build matin ou rebuild). Voir **`docs/CHALLENGERS_ET_TOURNOIS.md`**.
 
 ### 3.3 `/top5` et envoi matinal — Paris du jour
 
@@ -126,6 +126,7 @@ Aligné onglet **Paris du jour** / stratégie backtest validée :
 
 | Critère | Valeur |
 |---------|--------|
+| Tournois | **Majors ATP/WTA** uniquement (`is_major_atp_wta_match`) |
 | Filtre | EV **favori modèle** entre **+15 %** et **+100 %** |
 | Tri | Proba favori modèle ↓ |
 | Limite | **5** matchs (`TELEGRAM_TOP5_LIMIT`) |
@@ -140,8 +141,9 @@ Fonction : `scripts/daily_top_proba_store.collect_top5_proba_picks`.
 |----------|-------|--------|
 | `/start` | — | Message de bienvenue + liste des commandes |
 | `/help` | — | Aide détaillée |
-| `/jour` | `/picks`, `/picksdujour` | Tous les matchs scannés Live Tracker (Aujourd’hui) |
-| `/top5` | `/top` | Top 5 proba (EV favori 15–100 %) |
+| `/jour` | `/picks`, `/picksdujour` | Matchs **Aujourd’hui** EV+ (tri priorité composite) |
+| `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
+| `/top5` | `/top` | Top 5 proba main draw (EV favori 15–100 %) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 
 **Sécurité** : seuls les `chat_id` listés dans `TELEGRAM_CHAT_ID` ou `TELEGRAM_ALLOWED_CHAT_IDS` peuvent déclencher les commandes. Les autres reçoivent « Chat non autorisé ».

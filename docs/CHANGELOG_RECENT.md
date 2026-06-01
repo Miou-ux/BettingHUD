@@ -6,6 +6,37 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 1 juin 2026 — Challengers, tournois, Telegram
+
+**Doc dédiée** : **`docs/CHALLENGERS_ET_TOURNOIS.md`**
+
+### 0.22 Challengers Live Tracker, WTA 125, `/jourchallenger`, Top 5 main draw (1 juin)
+
+| Thème | Détail |
+|-------|--------|
+| **Live Tracker** | Toggle **« Inclure les Challengers »** (`live_include_challengers`) — masqué par défaut |
+| **Build snapshot** | Inclut ATP/WTA + **`category=Challenger`** + WTA 125 ; enrichissement **points vainqueur** TE |
+| **Classification** | `scripts/tournament_tier.py` — main draw **≥ 250 pts** vs challenger tier (125, nom, URL) |
+| **Cas Foggia** | TE affiche « Foggia » sans « challenger » → filtré via **125 pts** (plus seulement le nom) |
+| **Paris du jour / `/top5`** | `is_major_tournament_match` — **hors** Challenger / WTA 125 / ITF |
+| **Telegram** | **`/jourchallenger`** (alias `/challengers`) — EV 15–100 %, tri **proba** ↓ |
+| **Scrape** | `tournament_url`, `tourney_winner_points` sur chaque ligne CSV |
+
+Commits : `54cf276`, `bb3911b`, `28e8ee6`, `5d63936`, `5cc9e83`.
+
+Commandes PROD typiques après déploiement :
+
+```bash
+./venv/bin/python scripts/scraper_prematch.py
+BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/rebuild_live_projection.py
+```
+
+### 0.22b Terminologie PROD — serveur dédié (1 juin)
+
+**Doc** : `docs/ENVIRONNEMENTS.md` — PROD = **serveur dédié** (pas VPS mutualisé). Harmonisation `DEPLOY_SERVEUR.md`, `TELEGRAM_TOP5.md`, etc. Commit `d32d24b`.
+
+---
+
 ## 0. Mise à jour 29 mai 2026 — Bot Telegram
 
 ### 0.21 Bot Telegram — commande `/strategie` (29 mai)

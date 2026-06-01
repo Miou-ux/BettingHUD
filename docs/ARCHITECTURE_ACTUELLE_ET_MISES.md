@@ -67,16 +67,20 @@ Le principe important : le Live Tracker ne recalcule pas tout à chaque rerun St
 
 ### 3.1 Scrape prematch
 
-`scripts/scraper_prematch.py` récupère les matchs Tennis Explorer du jour et du lendemain. Le CSV produit est stocké dans `data/scraped/prematch_odds_*.csv`.
+`scripts/scraper_prematch.py` récupère les matchs Tennis Explorer du jour et du lendemain (`type=all`). Le CSV produit est stocké dans `data/scraped/prematch_odds_*.csv`.
 
 Le CSV contient notamment :
 
 - date et heure ;
-- tournoi, circuit, surface inférée ;
+- tournoi, **category** (`ATP`, `WTA`, `Challenger`, `ITF`, …), surface inférée ;
+- **`tournament_url`** (lien fiche TE) ;
+- **`tourney_winner_points`** (points vainqueur — 125 = Challenger/WTA 125, 250+ = main draw) ;
 - joueur 1 / joueur 2 ;
 - cotes prematch ;
 - URLs profils TE ;
 - identifiants prematch quand disponibles.
+
+Voir **`docs/CHALLENGERS_ET_TOURNOIS.md`** pour le filtrage main draw vs Challengers.
 
 ### 3.2 Snapshot deux niveaux
 
@@ -97,9 +101,16 @@ Signature snapshot :
 
 Un changement de modèle ou de version moteur invalide donc le snapshot.
 
-### 3.3 Filtres qualité
+### 3.3 Filtres tournoi et qualité
 
-Le Live masque les matchs sans source rang/points exploitable pour les deux joueurs.
+**Tournois** (`scripts/tournament_tier.py`) :
+
+- **Build live** : conserve ATP, WTA et **`Challenger`** (exclut ITF/UTR par nom) ;
+- **Live Tracker (défaut)** : main draw uniquement (nom + points ≥ 250 si connus) ;
+- **Toggle « Inclure les Challengers »** : challenger tier (ATP Challenger, WTA 125, `category=Challenger`) ;
+- **Paris du jour / Top 5 / `/top5`** : main draw uniquement.
+
+**Qualité données** — le Live masque les matchs sans source rang/points exploitable pour les deux joueurs.
 
 Les sources reconnues incluent notamment :
 
