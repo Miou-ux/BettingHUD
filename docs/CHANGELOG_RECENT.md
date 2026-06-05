@@ -6,6 +6,71 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 5 juin 2026 — BettingHUD-Web (React PREPROD)
+
+**Doc** : **`docs/WEB_REACT.md`** · Projet frère : `O:\Miouppy\Documents\BettingHUD-Web\`
+
+| Livrable | Détail |
+|----------|--------|
+| Option B | Dossier **séparé** — Streamlit / prod **inchangés** |
+| API | FastAPI lecture seule : `/api/health`, `/api/live/*`, `/api/picks/*` |
+| Front | Vite + React + TS — onglets Live / Picks / Top 5 |
+| Config | `BETTINGHUD_ROOT` → moteur existant, venv partagé |
+| Doc Web | `BettingHUD-Web/docs/` + `AGENTS.md` (doc obligatoire à chaque changement) |
+| Sauvegarde prod | DB + archive full du **2026-06-05** avant chantier React |
+
+---
+
+## 0. Mise à jour 28 mai 2026 (c) — Backtest majeurs EV 15–200 % (2026)
+
+**Doc** : **`docs/BACKTEST_MAJOR_EV_2026.md`** · **Script** : `scripts/backtest_major_ev_2026.py`
+
+Main draw ATP/WTA 250+, EV +15 % → +200 %, scénarios tous paris / Top 5 / Top 10 proba. Exports `data/reports/backtest_major_ev_2026_*.csv`.
+
+---
+
+## 0. Mise à jour 28 mai 2026 (b) — Approbation accès bot Telegram
+
+| Livrable | Détail |
+|----------|--------|
+| `/start` non autorisé | Notification admin + boutons **Approuver** / **Refuser** |
+| Persistance | `data/cache/telegram_allowed_chats.json` (fusionné avec `.env`) |
+| Fichier | `scripts/telegram_access.py` |
+
+---
+
+## 0. Mise à jour 28 mai 2026 — Auth web, bankroll Telegram avancée
+
+### 0.23 Authentification dashboard (`miouppy`)
+
+**Doc** : **`docs/WEB_AUTH.md`**
+
+| Livrable | Détail |
+|----------|--------|
+| Login Streamlit | `scripts/web_auth.py` · `data/web_users.json` (hash, gitignored) |
+| Reset par e-mail | `web_email.py` + jetons 1 h · lien `/?reset_token=…` |
+| Compte owner | `miouppy` · e-mail reset · `telegram_user_id` **7113749284** |
+| Paris dashboard | `save_bet` avec `telegram_user_id` si session web liée |
+| CLI | `scripts/init_web_user.py --email …` |
+
+Variables SMTP : `BETTINGHUD_SMTP_*`, `BETTINGHUD_WEB_BASE_URL`.
+
+### 0.24 Bankroll Telegram par utilisateur + commande `/brstats`
+
+**Doc** : **`docs/TELEGRAM_TOP5.md`** § 3.5 · § 4
+
+| Thème | Détail |
+|-------|--------|
+| BR par `telegram_user_id` | Tous paris app + bot (`compute_telegram_user_bankroll_eur`) |
+| `/br` | Synthèse : dispo, engagé, P/L, `/brset`, `/brajust` |
+| **`/brstats`** | ROI, win rate, forme 10 derniers, 7 j, par `tracker_source`, top paris en cours |
+| Alias | `/bradv`, `/brdetail` |
+| Scripts migration | `link_app_bets_to_telegram_user.py`, `sync_telegram_br_user.py` |
+
+Fichiers : `scripts/bets_db.py` (`compute_telegram_user_br_advanced_stats`), `scripts/telegram_bet_flow.py`, `scripts/telegram_bot_daemon.py`.
+
+---
+
 ## 0. Mise à jour 1 juin 2026 — Challengers, tournois, Telegram
 
 **Doc dédiée** : **`docs/CHALLENGERS_ET_TOURNOIS.md`**
@@ -437,7 +502,7 @@ Toute modification de **`self.features`** impose un **retrain complet** et la r�
 |-----------|--------|------|
 | **`BETTINGHUD_MAX_LIVE_MATCHES_BUILD`** | **200** (24 en `FAST_LIVE_MODE`) | Plafond de lignes CSV analysées (ML + identité) par build. |
 | **`_cap_live_build_prioritize_demain()`** | — | Si le CSV dépasse le plafond : **toutes** les lignes `Demain …` d’abord, puis le surplus du jour courant — évite de perdre Rome / Rabat / Strasbourg quand le jour courant remplit seul les 200 premières lignes. |
-| **`BETTINGHUD_MAX_PROFILE_FETCH`** | 100 | URLs profils TE scrapées par build (le reste passe par stats base / repli). |
+| **`BETTINGHUD_MAX_PROFILE_FETCH`** | 100 | Scrapes **réseau** max par build journée (cache disque : toutes URLs). Pipeline matin : **sans limite** (`BETTINGHUD_MORNING_BUILD=1`). |
 | **`BETTINGHUD_LIVE_ONLY_TODAY_TOMORROW`** | `true` | Filtre calendaire J+0 / J+1 sur le CSV avant build. |
 
 **Note affichage** : en soirée, avec le filtre **« Aujourd’hui »**, les tournois dont il ne reste que des matchs **`Demain …`** (ex. Rabat, Strasbourg) semblent absents — passer à **« Demain »** ou **« Tous »** + circuit **WTA**.
@@ -493,7 +558,8 @@ Toute modification de **`self.features`** impose un **retrain complet** et la r�
 | `BETTINGHUD_LIVE_SNAPSHOT_TTL_SEC` | `86400` | Âge max du snapshot disque. |
 | `BETTINGHUD_PREMATCH_TTL_MIN` | `30` | Re-scrape TE si CSV plus vieux. |
 | `BETTINGHUD_MAX_LIVE_MATCHES_BUILD` | `200` | Lignes max par build ML. |
-| `BETTINGHUD_MAX_PROFILE_FETCH` | `100` | Profils TE par build. |
+| `BETTINGHUD_MAX_PROFILE_FETCH` | `100` | Scrapes réseau max par build (cache disque : toutes URLs). |
+| `BETTINGHUD_MORNING_BUILD` | `0` | `1` dans `morning_live_pipeline` : pré-pass + scrape TE **sans aucune limite**. |
 | `BETTINGHUD_PROFILE_CACHE_HOURS` | `24` | TTL cache JSON profils TE. |
 | `BETTINGHUD_LIVE_ONLY_TODAY_TOMORROW` | `true` | Limite J+0 / J+1. |
 | `BETTINGHUD_FAST_LIVE_MODE` | `false` | Stats fictives, cap 24 matchs. |

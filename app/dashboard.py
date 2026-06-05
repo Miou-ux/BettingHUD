@@ -820,6 +820,12 @@ st.set_page_config(
 
 _inject_quant_terminal_theme()
 
+if not HEADLESS_APP:
+    from scripts.web_auth import require_web_login
+
+    if require_web_login() is None:
+        st.stop()
+
 # Feedback immédiat : load_engines peut bloquer l’UI (fond #0B0C10 = écran noir sans ce bandeau).
 _init_status = None
 try:
@@ -4163,17 +4169,18 @@ def _build_live_matches_core(
             if x not in seen_urls:
                 seen_urls.add(x)
                 urls_to_fetch.append(x)
-    # Garde-fou perf: au-delà, on laisse les autres joueurs passer via base/fallback.
+    # Garde-fou perf (journée) : limite les scrapes réseau, pas le cache disque.
+    # Pipeline matin (BETTINGHUD_MORNING_BUILD=1) : aucune limite.
+    _morning_build = _env_flag("BETTINGHUD_MORNING_BUILD", False)
     max_profile_fetch = max(
         0 if _fast_build else 1,
         min(1000, int(os.getenv("BETTINGHUD_MAX_PROFILE_FETCH", "0" if _fast_build else "100"))),
     )
     profile_fetch_workers = max(1, min(8, int(os.getenv("BETTINGHUD_PROFILE_SCRAPE_WORKERS", "6"))))
     profiles_by_url = {}
-    if ENABLE_PROFILE_SCRAPE and max_profile_fetch > 0 and not _fast_build:
-        cap_urls = urls_to_fetch[:max_profile_fetch]
+    if ENABLE_PROFILE_SCRAPE and not _fast_build and (_morning_build or max_profile_fetch > 0):
         targets_scrape: list[str] = []
-        for u in cap_urls:
+        for u in urls_to_fetch:
             cached_prof = profile_scraper._load_from_cache(
                 u, max_age_hours=PROFILE_CACHE_MAX_AGE_HOURS
             )
@@ -4181,26 +4188,31 @@ def _build_live_matches_core(
                 profiles_by_url[u] = cached_prof
             else:
                 targets_scrape.append(u)
+        if not _morning_build and len(targets_scrape) > max_profile_fetch:
+            targets_scrape = targets_scrape[:max_profile_fetch]
 
         def _scrape_u(url: str):
             return url, profile_scraper.scrape_profile(url)
 
         if len(targets_scrape) == 1:
             u = targets_scrape[0]
-            profiles_by_url[u] = profile_scraper.scrape_profile(u)
+            prof = profile_scraper.scrape_profile(u)
+            if prof:
+                profiles_by_url[u] = prof
         elif len(targets_scrape) > 1:
             with ThreadPoolExecutor(max_workers=profile_fetch_workers) as pool:
                 futs = [pool.submit(_scrape_u, u) for u in targets_scrape]
                 for fut in as_completed(futs):
                     try:
                         u, prof = fut.result()
-                        profiles_by_url[u] = prof
+                        if prof:
+                            profiles_by_url[u] = prof
                     except Exception:
                         pass
-        if PERF_LOG_LIVE_BUILD and cap_urls:
+        if PERF_LOG_LIVE_BUILD and urls_to_fetch:
             print(
-                f"[live-build] profils TE: {len(cap_urls) - len(targets_scrape)} cache / "
-                f"{len(targets_scrape)} scrape réseau",
+                f"[live-build] profils TE: {len(profiles_by_url)} chargés / "
+                f"{len(urls_to_fetch)} URLs ({len(targets_scrape)} scrape réseau)",
                 flush=True,
             )
     _mark("profile_scrape")
@@ -5355,6 +5367,102 @@ def start_live_projection_warmup():
     return True
 
 
+def ensure_te_profiles_for_prematch_csv(
+    csv_path: str | None = None,
+    *,
+    force_refresh: bool = False,
+    label: str = "te-profile-ensure",
+) -> dict[str, int]:
+    """Pré-scrape tous les profils TE manquants pour le CSV live filtré (pipeline matin)."""
+    out = {"urls": 0, "cached": 0, "scraped": 0, "failed": 0}
+    if not ENABLE_PROFILE_SCRAPE:
+        return out
+    path = csv_path
+    if not path:
+        path, _ = _prematch_csv_signature()
+    if not path or not os.path.isfile(path):
+        return out
+    df = _load_prematch_df_for_live(path)
+    if df.empty:
+        return out
+    urls: list[str] = []
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        for u in (row.get("p1_url"), row.get("p2_url")):
+            if pd.isna(u):
+                continue
+            x = str(u).strip()
+            if x and x not in seen:
+                seen.add(x)
+                urls.append(x)
+    out["urls"] = len(urls)
+    if not urls:
+        return out
+    workers = max(1, min(8, int(os.getenv("BETTINGHUD_PROFILE_SCRAPE_WORKERS", "6"))))
+    missing: list[str] = []
+    for url in urls:
+        if force_refresh:
+            missing.append(url)
+            continue
+        if profile_scraper._load_from_cache(url, max_age_hours=PROFILE_CACHE_MAX_AGE_HOURS):
+            out["cached"] += 1
+        else:
+            missing.append(url)
+
+    def _scrape_one(url: str) -> tuple[str, bool]:
+        try:
+            prof = profile_scraper.scrape_profile(url, force_refresh=force_refresh)
+            return url, bool(prof)
+        except Exception:
+            return url, False
+
+    def _run_batch(batch: list[str]) -> list[str]:
+        failed: list[str] = []
+        if not batch:
+            return failed
+        if len(batch) == 1:
+            _, ok = _scrape_one(batch[0])
+            if ok:
+                out["scraped"] += 1
+            else:
+                failed.append(batch[0])
+            return failed
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_scrape_one, u) for u in batch]
+            for fut in as_completed(futs):
+                try:
+                    url, ok = fut.result()
+                    if ok:
+                        out["scraped"] += 1
+                    else:
+                        failed.append(url)
+                except Exception:
+                    pass
+        return failed
+
+    failed = _run_batch(missing)
+    if failed:
+        time.sleep(2.0)
+        failed = _run_batch(failed)
+    out["failed"] = len(failed)
+    if urls:
+        print(
+            f"[{label}] profils TE: {out['cached']} cache / {out['scraped']} scrape / "
+            f"{out['failed']} échec(s) sur {out['urls']} URLs",
+            flush=True,
+        )
+    return out
+
+
+def _count_te_profiles_complete(matches: list) -> tuple[int, int]:
+    if not matches:
+        return 0, 0
+    complete = sum(
+        1 for m in matches if m.get("p1_profile_loaded") and m.get("p2_profile_loaded")
+    )
+    return complete, len(matches)
+
+
 def _background_prewarm_profiles_from_csv(csv_path: str, batch_size: int = 12) -> None:
     """Préchauffe les profils TE manquants ou expirés (lot limité par cycle daemon)."""
     if not ENABLE_PROFILE_SCRAPE or not csv_path or not os.path.isfile(csv_path):
@@ -5490,6 +5598,7 @@ if not HEADLESS_APP:
     st.markdown("---")
 
 from scripts.bets_db import (
+    APP_KELLY_TRACKER_SOURCES,
     compute_live_tracker_bankroll_eur,
     get_data_freshness_snapshot,
     init_all as _init_bets_db,
@@ -5944,6 +6053,15 @@ def save_bet(
 ) -> int:
     """Persist a bet with optional decision-context fields. Falls back to a
     minimal insert when called with positional arguments only (legacy path)."""
+    _tg_uid = None
+    try:
+        from scripts.web_auth import get_session_user
+
+        _wu = get_session_user()
+        if _wu and _wu.get("telegram_user_id"):
+            _tg_uid = str(_wu["telegram_user_id"]).strip()
+    except Exception:
+        pass
     bet_id = _save_bet_enriched(
         match_name=match_name,
         bet_on=bet_on,
@@ -5960,6 +6078,7 @@ def save_bet(
         bookmaker_source=bookmaker_source,
         notes=notes,
         tracker_source=tracker_source,
+        telegram_user_id=_tg_uid,
     )
     _clear_portfolio_runtime_caches()
     st.toast("✅ Pari enregistré avec succès dans votre portefeuille !")
@@ -6260,13 +6379,9 @@ def _is_today_calendar_match(m: dict) -> bool:
 
 def _sanitize_stale_demain_time_label(m: dict) -> dict:
     """Retire « Demain » si la date calendrier est déjà aujourd'hui (libellé scrape obsolète)."""
-    if not isinstance(m, dict):
-        return m
-    out = dict(m)
-    t = str(out.get("time") or "").strip()
-    if t.startswith("Demain") and _is_today_calendar_match(out):
-        out["time"] = t.replace("Demain", "", 1).strip() or t
-    return out
+    from scripts.daily_top_proba_store import sanitize_stale_demain_time_label
+
+    return sanitize_stale_demain_time_label(m)
 
 
 def _sanitize_live_matches_list(matches: list) -> list:
@@ -6683,6 +6798,28 @@ def _style_top_model_probs_df(df: pd.DataFrame):
         return df
 
 
+def _filter_matches_top_probas_scope(
+    matches: list[dict],
+    *,
+    include_challengers: bool,
+) -> list[dict]:
+    """Défaut = main draw 250+ ; option = même périmètre que Live Tracker (+ Challengers)."""
+    from scripts.tournament_tier import is_major_tournament_match
+
+    out: list[dict] = []
+    for m in matches:
+        if include_challengers:
+            if _is_atp_wta_circuit_match(
+                m.get("category"),
+                m.get("tournament"),
+                include_challengers=True,
+            ):
+                out.append(m)
+        elif is_major_tournament_match(m):
+            out.append(m)
+    return out
+
+
 def _render_top_model_probs_panel(
     matches: list[dict],
     *,
@@ -6787,10 +6924,38 @@ def _render_top_model_probs_tab() -> None:
         matches = list(_hydrate_live_matches_from_disk() or [])
 
     st.divider()
-    _render_favorite_ev_band_toggle(
-        widget_key=FAVORITE_EV_BAND_TOGGLE_KEY_TOPPROBAS,
-        label=f"Top {TOP_PROBAS_DISPLAY_LIMIT} · EV favori +15 % à +100 % (tri proba favori ↓)",
+    _col_ev, _col_chal = st.columns([3, 1])
+    with _col_ev:
+        _render_favorite_ev_band_toggle(
+            widget_key=FAVORITE_EV_BAND_TOGGLE_KEY_TOPPROBAS,
+            label=(
+                f"Top {TOP_PROBAS_DISPLAY_LIMIT} · EV favori +15 % à +100 % "
+                f"(tri proba favori ↓)"
+            ),
+        )
+    with _col_chal:
+        _include_challengers = st.checkbox(
+            "Inclure les Challengers",
+            value=False,
+            key="topprobas_include_challengers",
+            help=(
+                "Par défaut : uniquement les tournois **main draw ATP/WTA 250+** "
+                "(aligné Paris du jour). Cochez pour inclure aussi les Challengers "
+                "(ITF, UTR et futures restent exclus)."
+            ),
+        )
+    matches = _filter_matches_top_probas_scope(
+        matches, include_challengers=_include_challengers
     )
+    if _include_challengers:
+        st.caption(
+            "Challengers ATP/WTA inclus. ITF, UTR et tournois « futures » restent exclus."
+        )
+    else:
+        st.caption(
+            "Périmètre : **main draw ATP/WTA 250+** uniquement "
+            "(Challengers, ITF, UTR exclus — comme Paris du jour)."
+        )
     _render_top_model_probs_panel(matches, today_only=True, chart_key_prefix="top_probas_tab")
 
 
@@ -6913,8 +7078,8 @@ def _render_top5_proba_action_tab() -> None:
     br_snap = _cached_live_tracker_bankroll_snapshot(_bets_sig)
     br_avail = max(0.0, float(br_snap.get("available_eur") or 0.0))
     st.caption(
-        f"Bankroll disponible utilisée pour Kelly : **{br_avail:.2f} €** "
-        f"(même logique que Live Tracker)."
+        f"Bankroll Kelly (Live Tracker + Paris du jour + in-play) : **{br_avail:.2f} €** "
+        f"— les mises enregistrées ici déduisent cette BR."
     )
 
     for i, card in enumerate(cards, start=1):
@@ -8152,6 +8317,10 @@ if not HEADLESS_APP:
         """,
         unsafe_allow_html=True,
     )
+
+    from scripts.web_auth import render_account_banner
+
+    render_account_banner()
 
     tab_top5_action, tab_portfolio, tab_live, tab_top_probs, tab_backtest, tab_diag, tab_tracking, tab_settings = st.tabs(
         [
@@ -10079,7 +10248,10 @@ if not HEADLESS_APP:
             df_bets = df_bets.sort_values(["date_dt", "id"]).reset_index(drop=True)
     
             if "tracker_source" in df_bets.columns:
-                df_live_pf = df_bets[df_bets["tracker_source"].fillna("") == "live_tracker"].copy()
+                _ts_pf = df_bets["tracker_source"].fillna("").astype(str)
+                df_live_pf = df_bets[
+                    _ts_pf.isin(APP_KELLY_TRACKER_SOURCES) | (_ts_pf == "")
+                ].copy()
             else:
                 df_live_pf = df_bets.iloc[0:0].copy()
     
@@ -10087,14 +10259,19 @@ if not HEADLESS_APP:
                 snap_pf = live_tracker_bankroll_snapshot()
                 lt_open = df_live_pf[df_live_pf["status"] == "En cours"]
                 lt_closed = df_live_pf[df_live_pf["status"] != "En cours"]
-                st.markdown("### 📟 Live Tracker — bankroll et performance")
+                _n_top5 = int(
+                    (df_live_pf["tracker_source"].fillna("") == "top5_proba_action").sum()
+                )
+                st.markdown("### 📟 Bankroll Kelly (app)")
                 st.caption(
-                    "Mode simplifié: BR Kelly calculée sur tous les paris (live + legacy). "
-                    "La BR disponible se met à jour quand les paris passent Gagné / Perdu / Annulé."
+                    "BR et P/L sur les paris enregistrés via Live Tracker, Paris du jour "
+                    f"ou in-play ({len(df_live_pf)} lignes dont {_n_top5} Paris du jour). "
+                    "La BR disponible se met à jour quand les paris passent Gagné / Perdu / Annulé. "
+                    "Les métriques « Paris totaux » ci-dessous incluent tous les paris du tableau."
                 )
                 if MOBILE_COMPACT:
                     _lx1, _lx2 = st.columns(2)
-                    _lx1.metric("Paris live", len(df_live_pf))
+                    _lx1.metric("Paris Kelly (app)", len(df_live_pf))
                     _lx2.metric("En cours", len(lt_open))
                     _lx3, _lx4 = st.columns(2)
                     _lx3.metric("BR dispo (€)", f"{snap_pf['available_eur']:.2f}")
@@ -10102,7 +10279,7 @@ if not HEADLESS_APP:
                     st.metric("Capital total (€)", f"{snap_pf['equity_eur']:.2f}")
                 else:
                     lx1, lx2, lx3, lx4, lx5 = st.columns(5)
-                    lx1.metric("Paris live", len(df_live_pf))
+                    lx1.metric("Paris Kelly (app)", len(df_live_pf))
                     lx2.metric("En cours", len(lt_open))
                     lx3.metric("BR dispo (€)", f"{snap_pf['available_eur']:.2f}")
                     lx4.metric("Engagé (€)", f"{snap_pf['committed_open_eur']:.2f}")
@@ -10936,6 +11113,9 @@ if not HEADLESS_APP:
     
     with tab_settings:
         st.header("⚙️ Paramètres")
+        from scripts.web_auth import render_account_settings
+
+        render_account_settings()
         if _bettinghud_environment() == "prod":
             st.warning(
                 "Environnement **PROD** (serveur dédié) — paris et données de référence. "
