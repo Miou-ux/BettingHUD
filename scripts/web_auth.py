@@ -325,7 +325,7 @@ def _session_payload(rec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def request_password_reset(email: str) -> tuple[bool, str]:
+def request_password_reset(email: str, *, reset_path: str | None = None) -> tuple[bool, str]:
     """
     Envoie un e-mail de reset si le compte existe et SMTP est configuré.
     Retourne (smtp_ok, message_utilisateur) — message générique côté UI si compte inconnu.
@@ -351,7 +351,14 @@ def request_password_reset(email: str) -> tuple[bool, str]:
         )
 
     token = create_reset_token(str(rec.get("username") or ""))
-    reset_url = f"{web_base_url()}/?reset_token={token}"
+    reset_path = reset_path if reset_path is not None else os.getenv("BETTINGHUD_WEB_RESET_PATH", "/")
+    if not str(reset_path).startswith("/"):
+        reset_path = f"/{reset_path}"
+    base = web_base_url().rstrip("/")
+    if reset_path == "/":
+        reset_url = f"{base}/?reset_token={token}"
+    else:
+        reset_url = f"{base}{reset_path}?reset_token={token}"
     try:
         send_password_reset_email(
             to_email=addr,
