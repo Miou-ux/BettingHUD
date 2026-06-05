@@ -86,7 +86,8 @@ Clé Streamlit : `live_include_challengers`.
 
 Même avec le toggle, un match peut être absent si :
 
-- pas de **rang/points** fiables sur les deux joueurs (`_match_has_rank_points_source`) ;
+- pas de **rang/points** fiables sur les deux joueurs (`match_has_rank_points_source` dans `scripts/match_rank_quality.py`) ;
+- **données rang/points TML/WTA trop anciennes** : `stats_reference_date` de plus de **12 mois** (365 jours, variable `BETTINGHUD_STALE_RANK_STATS_MAX_DAYS`) sur au moins un joueur — ex. challenger avec dernier match TML en 2016 ;
 - cotes invalides ;
 - filtre **jour** / match déjà commencé (grâce 90 min) ;
 - pas encore dans le snapshot (rebuild requis après changement de code).

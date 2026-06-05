@@ -6,6 +6,20 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 5 juin 2026 (b) — Exclusion UI stats rang/points > 12 mois
+
+| Livrable | Détail |
+|----------|--------|
+| Module | `scripts/match_rank_quality.py` — source + fraîcheur `stats_reference_date` |
+| PROD | Live Tracker + Paris du jour / report algo (`app/dashboard.py`) |
+| PREPROD | API React (`/api/live/*`, `/api/picks/*`) via `filter_matches_for_daily_top_proba` |
+| Config | `BETTINGHUD_STALE_RANK_STATS_MAX_DAYS` (défaut 365) |
+| Tests | `tests/test_match_rank_quality.py` |
+
+Cas typique : challenger avec TML figé (ex. Moeller M. — ref 2016) masqué alors que le profil TE est à jour.
+
+---
+
 ## 0. Mise à jour 5 juin 2026 — BettingHUD-Web (React PREPROD)
 
 **Doc** : **`docs/WEB_REACT.md`** · Projet frère : `O:\Miouppy\Documents\BettingHUD-Web\`

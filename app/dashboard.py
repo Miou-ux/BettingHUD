@@ -79,6 +79,11 @@ from scripts.live_snapshot import (
     snapshot_meta,
 )
 from scripts.data_quality import run_data_quality_checks
+from scripts.match_rank_quality import (
+    STALE_RANK_STATS_MAX_DAYS,
+    count_matches_excluded_by_reason,
+    match_has_rank_points_source as _match_has_rank_points_source,
+)
 from scripts.model_monitor import compute_monthly_diagnostics, compute_feature_drift
 
 PROFILE_CACHE_SCHEMA = getattr(scraper_profiles, "PROFILE_CACHE_VERSION", 1)
@@ -1117,17 +1122,6 @@ def _match_homogeneous_rank_source(match: dict) -> bool:
     k1 = _rank_stats_source_key(match.get("p1_stats"))
     k2 = _rank_stats_source_key(match.get("p2_stats"))
     return bool(k1 and k2 and k1 == k2)
-
-
-def _match_has_rank_points_source(match: dict) -> bool:
-    """Les deux joueurs ont une source rang/points en base (hors rang TE estimé seul)."""
-    k1 = _rank_stats_source_key(match.get("p1_stats"))
-    k2 = _rank_stats_source_key(match.get("p2_stats"))
-    if not k1 or not k2:
-        return False
-    if k1 == "tennisexplorer_estimate" or k2 == "tennisexplorer_estimate":
-        return False
-    return True
 
 
 def _rank_source_quality_label(match: dict) -> str:
@@ -8425,10 +8419,14 @@ if not HEADLESS_APP:
         # Filtrer les matchs sans cotes valides (si on n'a pas pu les simuler non plus)
         real_matches = [m for m in real_matches if m['odd_p1'] > 1.0 and m['odd_p2'] > 1.0]
         _n_with_odds = len(real_matches)
-        _n_pre_rank_data = _n_with_odds
+        _rank_exclude_counts = count_matches_excluded_by_reason(real_matches)
         real_matches = [m for m in real_matches if _match_has_rank_points_source(m)]
         _n_with_rank = len(real_matches)
-        _n_rank_data_excluded = _n_pre_rank_data - _n_with_rank
+        _n_rank_data_excluded = sum(
+            _rank_exclude_counts.get(k, 0)
+            for k in ("missing_rank_source", "tennisexplorer_estimate")
+        )
+        _n_stale_rank_excluded = int(_rank_exclude_counts.get("stale_rank_stats", 0))
     
         # Filtrer les matchs trop anciens. Même règle que le build snapshot :
         # on conserve les matchs démarrés récemment pour l'In-Play.
@@ -8567,6 +8565,13 @@ if not HEADLESS_APP:
             st.caption(
                 f"{_n_rank_data_excluded} match(s) masqué(s) : pas de données rang/points "
                 "en base pour au moins un joueur, ou **rang Tennis Explorer estimé uniquement**."
+            )
+        if _n_stale_rank_excluded:
+            _stale_months = max(1, round(STALE_RANK_STATS_MAX_DAYS / 30))
+            st.caption(
+                f"{_n_stale_rank_excluded} match(s) masqué(s) : données rang/points TML/WTA "
+                f"de plus de **{_stale_months} mois** (`stats_reference_date` > "
+                f"{STALE_RANK_STATS_MAX_DAYS} jours) sur au moins un joueur."
             )
     
         _n_mixed_rank_src = sum(

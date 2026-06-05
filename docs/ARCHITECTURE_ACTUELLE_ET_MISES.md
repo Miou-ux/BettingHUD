@@ -110,14 +110,18 @@ Un changement de modèle ou de version moteur invalide donc le snapshot.
 - **Toggle « Inclure les Challengers »** : challenger tier (ATP Challenger, WTA 125, `category=Challenger`) ;
 - **Paris du jour / Top 5 / `/top5`** : main draw uniquement.
 
-**Qualité données** — le Live masque les matchs sans source rang/points exploitable pour les deux joueurs.
+**Qualité données** — le Live masque les matchs sans source rang/points exploitable pour les deux joueurs, ou dont la référence TML/WTA est **périmée** (> 12 mois par défaut).
+
+Module partagé : `scripts/match_rank_quality.py` (Streamlit PROD, API PREPROD React via `filter_matches_for_daily_top_proba` / `live_tracker_picks`).
 
 Les sources reconnues incluent notamment :
 
 - `matches_recent` pour ATP ;
 - `wta_matches` pour WTA ;
 - `rankings_wta_current` en repli WTA ;
-- `tennisexplorer_estimate` seulement quand autorisé par le flux.
+- `tennisexplorer_estimate` seulement quand autorisé par le flux (sinon exclus de l’UI).
+
+**Fraîcheur** : chaque joueur doit avoir `stats_reference_date` ≤ `BETTINGHUD_STALE_RANK_STATS_MAX_DAYS` (défaut **365**) par rapport à la date du match. Sinon le match est masqué (caption dédiée dans le Live Tracker).
 
 Le compteur `Profils TE complets` mesure autre chose : il indique si les profils Tennis Explorer ont été chargés pour les deux joueurs. Un match peut donc avoir rang/points valides même si un ancien snapshot avait encore des flags TE incomplets. Dans ce cas, il faut reconstruire un vrai snapshot full, pas seulement patcher les cotes.
 

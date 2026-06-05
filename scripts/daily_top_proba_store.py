@@ -17,6 +17,7 @@ from scripts.bets_db import (
     upsert_daily_top_proba_picks,
 )
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
+from scripts.match_rank_quality import match_has_rank_points_source
 from scripts.tournament_tier import is_major_tournament_match
 
 # Alias rétrocompat (scripts / tests).
@@ -35,26 +36,6 @@ DEFAULT_DAEMON_MIN_INTERVAL_SEC = int(
 DEFAULT_JSONL_MIN_INTERVAL_SEC = int(
     os.getenv("BETTINGHUD_DAILY_TOP_PROBA_JSONL_INTERVAL_SEC", "3600")
 )
-
-
-def _rank_stats_source_key(stats: dict | None) -> str | None:
-    if not stats:
-        return None
-    s = str(stats.get("stats_source") or "").strip().lower()
-    if not s or s == "no_ranking_source":
-        return None
-    return s
-
-
-def match_has_rank_points_source(match: dict) -> bool:
-    """Même garde-fou que le Live Tracker / report algo."""
-    k1 = _rank_stats_source_key(match.get("p1_stats"))
-    k2 = _rank_stats_source_key(match.get("p2_stats"))
-    if not k1 or not k2:
-        return False
-    if k1 == "tennisexplorer_estimate" or k2 == "tennisexplorer_estimate":
-        return False
-    return True
 
 
 def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
@@ -113,7 +94,11 @@ def load_today_matches_for_daily_top_proba(
     filtered = filter_matches_for_daily_top_proba(
         [dict(m) for m in matches if isinstance(m, dict)]
     )
-    today = [m for m in filtered if is_today_paris_match(m)]
+    today = [
+        sanitize_stale_demain_time_label(m)
+        for m in filtered
+        if is_today_paris_match(m)
+    ]
     return today, meta
 
 
@@ -133,6 +118,38 @@ def is_today_paris_match(m: dict, *, today: datetime.date | None = None) -> bool
     if d is not None:
         return d == today
     return not str(m.get("time") or "").startswith("Demain")
+
+
+def sanitize_stale_demain_time_label(m: dict) -> dict:
+    """Retire le préfixe scrape « Demain » si ``date`` est déjà le jour courant (Paris)."""
+    if not isinstance(m, dict):
+        return m
+    out = dict(m)
+    t = str(out.get("time") or "").strip()
+    if t.startswith("Demain") and is_today_paris_match(out):
+        out["time"] = t.replace("Demain", "", 1).strip() or t
+    return out
+
+
+def format_match_time_display(m: dict, *, ref_date: datetime.date | None = None) -> str | None:
+    """Libellé horaire Telegram / UI : « Aujourd'hui 10:00 » ou « Demain 10:00 » selon ``date``."""
+    ref = ref_date or datetime.now(PARIS_TZ).date()
+    sm = sanitize_stale_demain_time_label(m)
+    t = str(sm.get("time") or "").strip()
+    d = _match_calendar_date(sm)
+    if d is None:
+        return t[:40] or None
+    if d == ref:
+        clock = t.replace("Demain", "", 1).strip() if t.startswith("Demain") else t
+        if clock and not clock.lower().startswith("aujourd"):
+            return f"Aujourd'hui {clock}"
+        return clock or "Aujourd'hui"
+    if d > ref:
+        clock = t.replace("Demain", "", 1).strip() if t.startswith("Demain") else t
+        if clock.lower().startswith("demain"):
+            return clock
+        return f"Demain {clock}".strip() if clock else "Demain"
+    return t[:40] or None
 
 
 def _match_tour(m: dict) -> str:
@@ -245,7 +262,7 @@ def collect_daily_top_proba_rows(
                 "player2": p2_name,
                 "tournament": str(m.get("tournament") or "")[:80] or None,
                 "surface": str(m.get("surface") or "")[:40] or None,
-                "match_time": str(m.get("time") or "")[:40] or None,
+                "match_time": format_match_time_display(m, ref_date=cal_date_obj),
                 "tourney_level": str(m.get("tourney_level") or m.get("category") or "")[:20] or None,
                 "confidence": m.get("confidence"),
                 "segment_key": seg_key,
@@ -328,7 +345,7 @@ def collect_top5_proba_picks(
                 "player2": p2_name,
                 "tournament": str(m.get("tournament") or "")[:80] or None,
                 "surface": str(m.get("surface") or "")[:40] or None,
-                "match_time": str(m.get("time") or "")[:40] or None,
+                "match_time": format_match_time_display(m, ref_date=cal_date_obj),
                 "segment_key": seg_key,
                 "segment_brier": seg_brier,
                 "theoretical_stake_frac": _algo_kelly_stake_frac(

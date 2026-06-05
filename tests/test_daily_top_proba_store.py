@@ -83,14 +83,28 @@ def test_filter_matches_for_daily_top_proba():
     from scripts.daily_top_proba_store import filter_matches_for_daily_top_proba
 
     ok = {
+        "date": "2026-06-05",
         "odd_p1": 1.5,
         "odd_p2": 2.5,
-        "p1_stats": {"stats_source": "matches_recent"},
-        "p2_stats": {"stats_source": "wta_matches"},
+        "p1_stats": {
+            "stats_source": "matches_recent",
+            "stats_reference_date": "2026-05-01",
+        },
+        "p2_stats": {
+            "stats_source": "wta_matches",
+            "stats_reference_date": "2026-05-01",
+        },
     }
     bad_odds = {"odd_p1": 1.0, "odd_p2": 2.0, "p1_stats": ok["p1_stats"], "p2_stats": ok["p2_stats"]}
     bad_rank = {"odd_p1": 1.5, "odd_p2": 2.5, "p1_stats": {"stats_source": "tennisexplorer_estimate"}}
-    out = filter_matches_for_daily_top_proba([ok, bad_odds, bad_rank])
+    stale = {
+        "date": "2026-06-05",
+        "odd_p1": 1.5,
+        "odd_p2": 2.5,
+        "p1_stats": {"stats_source": "matches_recent", "stats_reference_date": "2016-07-11"},
+        "p2_stats": ok["p2_stats"],
+    }
+    out = filter_matches_for_daily_top_proba([ok, bad_odds, bad_rank, stale])
     assert len(out) == 1
 
 
