@@ -20,9 +20,38 @@ Cas typique : challenger avec TML figé (ex. Moeller M. — ref 2016) masqué al
 
 ---
 
-## 0. Mise à jour 5 juin 2026 — BettingHUD-Web (React PREPROD)
+## 0. Mise à jour 5 juin 2026 (d) — CourtAlpha UI (charte, EV, logo, tuiles)
 
-**Doc** : **`docs/WEB_REACT.md`** · Projet frère : `O:\Miouppy\Documents\BettingHUD-Web\`
+**Doc détaillée** : `CourtAlpha/docs/CHANGELOG.md` (section « session UI ») · `CourtAlpha/docs/UI_DESIGN.md`
+
+| Livrable | Détail |
+|----------|--------|
+| Logo | PNG transparent `courtalpha-logo.png` (traitement damier + blanc) |
+| Charte | Lime / teal / cyan / charcoal — `index.css`, `lib/brand.ts` |
+| EV lisible | Paliers colorés (`evDisplay.ts`, `EvPill`, `EvLegend`) — lime ≥15 %, teal 8–15 %, rouge &lt;0 |
+| Sémantique | Cyan = proba · jaune = mise Kelly · plus de tout-en-lime |
+| Typo | Échelle compacte (~14 px base) |
+| Tuiles | Survol `.tile-lift` (lift sans flou) |
+| Moteur | Inchangé · garde-fou `match_rank_quality.py` partagé avec API |
+
+---
+
+## 0. Mise à jour 5 juin 2026 (c) — CourtAlpha (rebrand + proba modèle UI)
+
+**Doc** : **`docs/WEB_REACT.md`** · Projet frère : `O:\Miouppy\Documents\CourtAlpha\`
+
+| Livrable | Détail |
+|----------|--------|
+| Rebrand | `BettingHUD-Web` renommé **CourtAlpha** (UI, logo, docs) |
+| Proba modèle | Affichée sur cartes match (`p_model_pct`, `p_model_fav`, `capped_p1_prob`) |
+| UX | Cote observée éditable conservée · polish typo / hiérarchie |
+| Moteur | `BETTINGHUD_ROOT` inchangé — toujours `BettingHUD/` |
+
+---
+
+## 0. Mise à jour 5 juin 2026 — BettingHUD-Web / CourtAlpha (React PREPROD)
+
+**Doc** : **`docs/WEB_REACT.md`** · Projet frère : `O:\Miouppy\Documents\CourtAlpha\` (anciennement `BettingHUD-Web`)
 
 | Livrable | Détail |
 |----------|--------|
@@ -30,7 +59,7 @@ Cas typique : challenger avec TML figé (ex. Moeller M. — ref 2016) masqué al
 | API | FastAPI lecture seule : `/api/health`, `/api/live/*`, `/api/picks/*` |
 | Front | Vite + React + TS — onglets Live / Picks / Top 5 |
 | Config | `BETTINGHUD_ROOT` → moteur existant, venv partagé |
-| Doc Web | `BettingHUD-Web/docs/` + `AGENTS.md` (doc obligatoire à chaque changement) |
+| Doc Web | `CourtAlpha/docs/` + `AGENTS.md` (doc obligatoire à chaque changement) |
 | Sauvegarde prod | DB + archive full du **2026-06-05** avant chantier React |
 
 ---

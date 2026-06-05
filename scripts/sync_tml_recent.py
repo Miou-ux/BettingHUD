@@ -158,48 +158,56 @@ def update_closing_odds(
     """
     Met à jour `closing_odd` + `clv_score` pour les paris dont le match a démarré/est terminé.
 
-    Source closing: dernier snapshot prematch disponible (`prematch_odds_*.csv`), utilisé comme
-    meilleure approximation de cote de clôture si API dédiée indisponible.
+    Source closing (priorite) :
+      1. Archives journalieres ``data/scraped/closing_odds/closing_odds_*.csv``
+      2. Dernier snapshot prematch ``prematch_odds_*.csv``
     """
-    csv_path = _latest_prematch_csv_path(scraped_dir)
-    if not csv_path:
-        print("[clv] skip: no prematch csv found", flush=True)
-        return 0
-    try:
-        try:
-            df = pd.read_csv(csv_path)
-        except OSError as oe:
-            # Windows: Errno 22 sur certains fichiers (cloud, encodage, moteur C) — repli moteur Python.
-            if getattr(oe, "errno", None) == 22 or "Invalid argument" in str(oe):
-                df = pd.read_csv(csv_path, engine="python", encoding="utf-8", encoding_errors="replace")
-            else:
-                raise
-    except Exception as e:
-        print(f"[clv] skip: cannot read {csv_path} ({e})", flush=True)
-        return 0
-    if df.empty:
-        print("[clv] skip: prematch csv empty", flush=True)
-        return 0
-
     idx_mid: dict[str, tuple[float, float]] = {}
     idx_name: dict[str, tuple[float, float]] = {}
-    for _, r in df.iterrows():
-        p1 = _norm_name(r.get("player1"))
-        p2 = _norm_name(r.get("player2"))
-        if not p1 or not p2:
-            continue
-        o1 = pd.to_numeric(r.get("odd_p1"), errors="coerce")
-        o2 = pd.to_numeric(r.get("odd_p2"), errors="coerce")
-        if pd.isna(o1) or pd.isna(o2):
-            continue
-        o1f, o2f = float(o1), float(o2)
-        if o1f <= 1.0 or o2f <= 1.0:
-            continue
-        key = "||".join(sorted([p1, p2]))
-        idx_name[key] = (o1f, o2f)
-        mid = str(r.get("prematch_id") or "").strip()
-        if mid:
-            idx_mid[mid] = (o1f, o2f)
+    try:
+        from scripts.closing_odds_archive import load_closing_odds_index
+
+        idx_name.update(load_closing_odds_index())
+    except Exception:
+        pass
+
+    csv_path = _latest_prematch_csv_path(scraped_dir)
+    if csv_path:
+        try:
+            try:
+                df = pd.read_csv(csv_path)
+            except OSError as oe:
+                if getattr(oe, "errno", None) == 22 or "Invalid argument" in str(oe):
+                    df = pd.read_csv(
+                        csv_path, engine="python", encoding="utf-8", encoding_errors="replace"
+                    )
+                else:
+                    raise
+        except Exception as e:
+            print(f"[clv] warn: cannot read prematch {csv_path} ({e})", flush=True)
+            df = pd.DataFrame()
+        if not df.empty:
+            for _, r in df.iterrows():
+                p1 = _norm_name(r.get("player1"))
+                p2 = _norm_name(r.get("player2"))
+                if not p1 or not p2:
+                    continue
+                o1 = pd.to_numeric(r.get("odd_p1"), errors="coerce")
+                o2 = pd.to_numeric(r.get("odd_p2"), errors="coerce")
+                if pd.isna(o1) or pd.isna(o2):
+                    continue
+                o1f, o2f = float(o1), float(o2)
+                if o1f <= 1.0 or o2f <= 1.0:
+                    continue
+                key = "||".join(sorted([p1, p2]))
+                idx_name.setdefault(key, (o1f, o2f))
+                mid = str(r.get("prematch_id") or r.get("id") or "").strip()
+                if mid:
+                    idx_mid[mid] = (o1f, o2f)
+
+    if not idx_name:
+        print("[clv] skip: no closing/prematch odds index", flush=True)
+        return 0
 
     db_abs = _resolve_data_path(db_path)
     conn = sqlite3.connect(db_abs)

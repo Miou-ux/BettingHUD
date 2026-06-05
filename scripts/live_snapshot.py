@@ -21,6 +21,13 @@ BUILD_PROGRESS_PATH = os.path.join(ROOT, "data", "cache", ".live_snapshot_build_
 
 # Cache RAM : évite de relire joblib à chaque rerun Streamlit (Live Tracker).
 _SNAPSHOT_RAM: dict[str, Any] = {"file_mtime": 0.0, "signature": None, "matches": None}
+# Cache pour load_latest_live_snapshot (bot Telegram, scripts headless).
+_LATEST_SNAPSHOT_RAM: dict[str, Any] = {
+    "path": "",
+    "file_mtime": 0.0,
+    "matches": None,
+    "meta": None,
+}
 
 # Ordre des étapes `_mark()` dans `_build_live_matches_core` (dashboard.py).
 LIVE_BUILD_PROGRESS_STEPS: tuple[tuple[str, str], ...] = (
@@ -341,17 +348,31 @@ def load_latest_live_snapshot(
             file_mtime = _snapshot_file_mtime(path)
             if max_age_sec > 0 and (time.time() - file_mtime) > float(max_age_sec):
                 continue
+            if (
+                _LATEST_SNAPSHOT_RAM.get("path") == path
+                and _LATEST_SNAPSHOT_RAM.get("file_mtime") == file_mtime
+                and isinstance(_LATEST_SNAPSHOT_RAM.get("matches"), list)
+                and isinstance(_LATEST_SNAPSHOT_RAM.get("meta"), dict)
+            ):
+                return list(_LATEST_SNAPSHOT_RAM["matches"]), dict(
+                    _LATEST_SNAPSHOT_RAM["meta"]
+                )
             payload = joblib.load(path)
             matches = payload.get("matches")
             if not isinstance(matches, list):
                 continue
             built_at = float(payload.get("built_at") or file_mtime)
-            return list(matches), {
+            meta = {
                 "built_at": built_at,
                 "n_matches": len(matches),
                 "signature": payload.get("signature") or {},
                 "snapshot_path": path,
             }
+            _LATEST_SNAPSHOT_RAM["path"] = path
+            _LATEST_SNAPSHOT_RAM["file_mtime"] = file_mtime
+            _LATEST_SNAPSHOT_RAM["matches"] = list(matches)
+            _LATEST_SNAPSHOT_RAM["meta"] = dict(meta)
+            return list(matches), meta
         except Exception:
             continue
     return None, None

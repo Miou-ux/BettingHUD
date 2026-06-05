@@ -164,10 +164,8 @@ class FlashscoreScraper:
                     if "bott" in class_name:
                         # First row of the match
                         time_cell = await cells[0].inner_text()
-                        if day_offset == 1:
-                            time_text = "Demain " + time_cell.strip()
-                        else:
-                            time_text = time_cell.strip()
+                        # Heure seule : le jour calendrier est dans ``date`` (évite « Demain » obsolète le lendemain).
+                        time_text = time_cell.strip()
                             
                         player1_cell = await cells[1].inner_text() if len(cells) > 1 else ""
                         player1 = player1_cell.strip()
@@ -253,6 +251,12 @@ class FlashscoreScraper:
             filepath = os.path.join(self.data_dir, filename)
             df.to_csv(filepath, index=False)
             print(f"Scraping terminé. {len(all_matches)} matchs sauvegardés dans {filepath}")
+            try:
+                from scripts.closing_odds_archive import ingest_match_rows
+
+                ingest_match_rows(all_matches, source="prematch")
+            except Exception as exc:
+                print(f"[closing_odds] ingest ignoré : {exc}")
             
         return all_matches
 

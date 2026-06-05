@@ -12,17 +12,20 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **Top 5 matinal** | Fin du pipeline matin (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV favori **+15 % → +100 %** · tri proba ↓ (onglet **Paris du jour**) |
-| **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** avec **EV+** uniquement (seuil min défaut 0 %, tri priorité) |
+| **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** · **proba > 60 %** · **EV > 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/jourmajor`** | Commande Telegram | Tournois **main draw 250+** du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
+| **`/br`**, **`/brstats`** | Commandes Telegram | Bankroll utilisateur (synthèse / stats avancées) |
+| **Parier (inline)** | Bouton sous chaque pick **`/jour`** / **`/top5`** | Cote perso → Kelly → confirmation → `user_bets` (`tracker_source=telegram_bet`) |
 
 ```mermaid
 flowchart LR
   subgraph prod [PROD serveur]
-    Cron[Crontab 02:00 Paris]
+    Cron2[Crontab 02:00 Paris build]
+    Cron4[Crontab 04:00 Paris Telegram]
     Pipe[morning_live_pipeline.py]
     Snap[Snapshot live]
     T5[telegram_top5_notify.py]
@@ -46,10 +49,11 @@ flowchart LR
 | Fichier | Rôle |
 |---------|------|
 | `scripts/telegram_top5_notify.py` | Formatage HTML, envoi messages, `run_notify`, `run_daily_picks_notify` |
-| `scripts/telegram_bot_daemon.py` | Long polling `getUpdates`, commandes `/jour`, `/top5`, `/help` |
+| `scripts/telegram_bot_daemon.py` | Long polling `getUpdates`, commandes + callbacks « Parier » |
+| `scripts/telegram_bet_flow.py` | Sessions cote/Kelly, enregistrement portefeuille depuis Telegram |
 | `scripts/live_tracker_picks.py` | Collecte headless des picks **Live Tracker (Aujourd’hui)** pour `/jour` |
 | `scripts/daily_top_proba_store.py` | `collect_top5_proba_picks` — Top 5 Paris du jour (EV 15–100 %) |
-| `scripts/morning_live_pipeline.py` | Pipeline matin ; envoi Top 5 si `TELEGRAM_TOP5_AFTER_MORNING=1` |
+| `scripts/morning_live_pipeline.py` | **02:00** `--build-only` · **04:00** `--telegram-only` (Top 5 si `TELEGRAM_TOP5_AFTER_MORNING=1`) |
 | `deploy/systemd/bettinghud-telegram-bot.service` | Service systemd daemon commandes |
 | `deploy/install_ubuntu.sh` | Installe et active le service Telegram |
 
@@ -73,7 +77,7 @@ flowchart LR
 
 ### 3.1 `/jour` — Live Tracker (Aujourd’hui)
 
-Même pool de matchs que le Live Tracker (**Aujourd’hui**), mais **uniquement les paris EV+** (`collect_live_tracker_value_picks`).
+Même pool de matchs que le Live Tracker (**Aujourd’hui**), filtrés **proba modèle > 60 %** et **EV > 15 %** (`filter_telegram_display_picks`).
 
 **Matchs scannés** (via `scripts/daily_top_proba_store.collect_top5_proba_picks`) :
 
@@ -87,7 +91,8 @@ Même pool de matchs que le Live Tracker (**Aujourd’hui**), mais **uniquement 
 **Lignes affichées** :
 
 - Uniquement les côtés avec **EV strictement positive** (`ValueDetector`, seuil min défaut **0 %**)
-- Variable optionnelle : `TELEGRAM_JOUR_EV_MIN_PCT=15` pour exiger au moins +15 % (comme le Live Tracker UI)
+- Seuils affichage : `TELEGRAM_MIN_PROBA_PCT=60`, `TELEGRAM_MIN_EV_PCT=15` (strictement `>`)
+- Scan initial : `TELEGRAM_JOUR_EV_MIN_PCT=15` (défaut)
 
 **Pas de ligne** sur le favori modèle si EV ≤ 0.
 
@@ -147,6 +152,33 @@ Aligné onglet **Paris du jour** / stratégie backtest validée :
 
 Fonction : `scripts/daily_top_proba_store.collect_top5_proba_picks`.
 
+### 3.5 Parier depuis Telegram (`/jour` et `/top5` uniquement)
+
+Sur demande via le daemon (pas sur l’envoi matinal automatique) :
+
+1. Un **message par match** avec bouton **💰 Parier**
+2. Clic → le bot demande ta **cote réelle** (ex. `1.92`)
+3. Calcul **½ Kelly × Brier** sur la bankroll app (comme le dashboard)
+4. **✅ Confirmer** (mise Kelly), **✏️ Autre mise**, ou envoi d’un montant en € (ex. `2.50`)
+5. Cumul autorisé sur le même match ; insertion `user_bets` (`tracker_source=telegram_bet`)
+
+Annuler une saisie en cours : `/annuler`.
+
+**Bankroll par utilisateur Telegram** (identifiant `from.id`, pas le `chat_id`) :
+
+| Commande | Action |
+|----------|--------|
+| `/br` | Synthèse BR : dispo, engagée, capital total, P/L réglé |
+| `/brstats` | Stats avancées (ROI, win rate, forme, 7 j, par source, paris en cours) |
+| `/brset 80` | Capital de départ (€) |
+| `/brajust +10` | Ajustement manuel (+ ou −) |
+
+Alias `/brstats` : `/bradv`, `/brdetail`.
+
+Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à ton `telegram_user_id` (dashboard **Miouppy** + paris bot). Capital de départ et ajustements sont **par compte**, pas globaux au chat.
+
+État temporaire : `data/cache/telegram_pick_registry.json`, `data/cache/telegram_bet_sessions.json` (TTL 24 h).
+
 ---
 
 ## 4. Commandes Telegram
@@ -155,13 +187,34 @@ Fonction : `scripts/daily_top_proba_store.collect_top5_proba_picks`.
 |----------|-------|--------|
 | `/start` | — | Message de bienvenue + liste des commandes |
 | `/help` | — | Aide détaillée |
-| `/jour` | `/picks`, `/picksdujour` | Matchs **Aujourd’hui** EV+ (tri priorité composite) |
+| `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
 | `/top5` | `/top` | Top 5 proba main draw (EV favori 15–100 %) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
+| `/br` | — | Bankroll utilisateur (synthèse) |
+| `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |
+| `/brset` | — | Capital de départ (`/brset 80`) |
+| `/brajust` | — | Ajustement manuel (`/brajust +10`) |
+| `/annuler` | `/cancel` | Annule une saisie de cote en cours (flux Parier) |
 
-**Sécurité** : seuls les `chat_id` listés dans `TELEGRAM_CHAT_ID` ou `TELEGRAM_ALLOWED_CHAT_IDS` peuvent déclencher les commandes. Les autres reçoivent « Chat non autorisé ».
+**Sécurité** : seuls les `chat_id` listés dans `TELEGRAM_CHAT_ID`, `TELEGRAM_ALLOWED_CHAT_IDS` ou le fichier d’approbation dynamique peuvent utiliser le bot.
+
+### 4.0 Demandes d’accès (`/start` non autorisé)
+
+| Étape | Comportement |
+|-------|----------------|
+| Bot ajouté / premier contact | Invitation explicite **`/start`** (ou bouton **Démarrer**) |
+| Inconnu envoie **`/start`** (ou un message) | Demande transmise à l’admin |
+| Toi (`TELEGRAM_CHAT_ID`) | Notification avec **✅ Approuver** / **❌ Refuser** |
+| **Approuver** | Accès immédiat + **3 messages** : confirmation, bienvenue, guide pratique (`/brset`, `/top5`, Parier, `/help`…) |
+| Utilisateur déjà autorisé · `/start` | Bienvenue + rappel `/help` et `/strategie` |
+
+Anti-spam admin : une seule notification par `chat_id` / heure (sauf si déjà approuvé).
+
+Variables optionnelles : `TELEGRAM_ADMIN_USER_ID` ou `TELEGRAM_ADMIN_USER_IDS` (défaut = `TELEGRAM_CHAT_ID`).
+
+Fichier : `scripts/telegram_access.py`.
 
 ### 4.1 `/strategie` — contenu
 
@@ -173,6 +226,19 @@ Message statique (`format_bot_strategy_message` dans `telegram_top5_notify.py`) 
 4. **Pratique** — vérifier cote réelle, miser ≤ reco Kelly
 
 Aperçu PREPROD : `py -3 scripts/telegram_top5_notify.py --strategy`
+
+### 4.2 `/brstats` — contenu
+
+Message HTML (`format_telegram_user_br_advanced_message` dans `telegram_bet_flow.py`) :
+
+1. **Synthèse** — capital départ, BR dispo, engagé (% du capital), equity, P/L, vs capital départ, ajustement manuel
+2. **Performance réglés** — volume, G/P/A, win rate, mises réglées, ROI, cotes moyennes gagnés/perdus
+3. **Forme** — 10 derniers paris réglés (✅/❌)
+4. **Par source** — Telegram, Live Tracker, Paris du jour, etc.
+5. **7 derniers jours** — P/L et volume par date
+6. **En cours** — jusqu’à 5 plus grosses mises ouvertes
+
+Données : `compute_telegram_user_br_advanced_stats` dans `scripts/bets_db.py`.
 
 ---
 
@@ -210,7 +276,9 @@ TELEGRAM_TOP5_EV_MIN_PCT=15
 TELEGRAM_TOP5_EV_MAX_PCT=100
 
 # /jour — limite optionnelle (0 = tous les picks EV+)
-TELEGRAM_JOUR_EV_MIN_PCT=0
+TELEGRAM_JOUR_EV_MIN_PCT=15
+TELEGRAM_MIN_PROBA_PCT=60
+TELEGRAM_MIN_EV_PCT=15
 TELEGRAM_DAILY_PICKS_LIMIT=0
 
 # Chats autorisés pour /jour et /top5 (optionnel, virgules)
@@ -227,12 +295,20 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 | `TELEGRAM_BOT_TOKEN` | — | Token @BotFather |
 | `TELEGRAM_CHAT_ID` | — | Chat principal (notifications + commandes) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | — | Liste additionnelle de chats autorisés |
-| `TELEGRAM_TOP5_AFTER_MORNING` | `0` | `1` = Top 5 en fin de `morning_live_pipeline.py` |
+| `TELEGRAM_TOP5_AFTER_MORNING` | `0` | `1` = Top 5 à **04:00** via `morning_live_pipeline.py --telegram-only` |
 | `TELEGRAM_TOP5_LIMIT` | `5` | Nombre de picks Top 5 |
 | `TELEGRAM_TOP5_EV_MIN_PCT` | `15` | EV min favori (Top 5) |
 | `TELEGRAM_TOP5_EV_MAX_PCT` | `100` | EV max favori (Top 5) |
 | `TELEGRAM_DAILY_PICKS_LIMIT` | `0` | Max lignes `/jour` (`0` = illimité) |
 | `TELEGRAM_BOT_POLL_TIMEOUT_SEC` | `25` | Timeout long polling |
+| `TELEGRAM_SEND_PARALLEL` | `4` | Envois parallèles des cartes `/jour` (mode Parier) |
+
+### Réactivité (v2026-06)
+
+- **Worker async** : le polling n’attend plus la fin de `/jour` ou `/top5` (file d’attente).
+- **Cache** (`telegram_runtime_cache.py`) : bundle ML + snapshot jour préchargés au démarrage, invalidés si le snapshot full change.
+- **Accusé callback immédiat** + indicateur « écrit… » avant traitement des commandes lentes.
+- **`/jour` interactif** : jusqu’à 4 envois Telegram en parallèle (`TELEGRAM_SEND_PARALLEL`).
 | `BETTINGHUD_LIVE_STARTED_GRACE_MINUTES` | `90` | Matchs démarrés encore inclus (/jour) |
 | `BETTINGHUD_LIVE_SNAPSHOT_TTL_SEC` | `86400` | TTL chargement snapshot |
 
@@ -244,9 +320,13 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 
 Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 
-- **02:00 Europe/Paris** : `scripts/morning_live_pipeline.py`
-- Charge `.env` au démarrage
-- Si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning")`
+| Heure (Paris) | Commande | Log |
+|---------------|----------|-----|
+| **02:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_cron.log` |
+| **04:00** | `morning_live_pipeline.py --telegram-only` | `data/logs/morning_telegram_cron.log` |
+
+- **02:00** : scrape TE, snapshot full, report algo (pas de Telegram).
+- **04:00** : si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning")` envoyé à **tous les chats validés** (`TELEGRAM_CHAT_ID` + `TELEGRAM_ALLOWED_CHAT_IDS` + `data/cache/telegram_allowed_chats.json`).
 
 ### 6.2 Service daemon commandes
 

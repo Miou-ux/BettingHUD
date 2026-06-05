@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daemon Telegram : commandes sur demande (/jour, /jourmajor, /jourchallenger, /top5, /strategie).
+"""Daemon Telegram : commandes sur demande (/jour, /top5, paris interactifs).
 
 Long polling getUpdates. Répond uniquement aux chat_id autorisés.
 Documentation : docs/TELEGRAM_TOP5.md
@@ -12,13 +12,16 @@ Variables :
   TELEGRAM_CHAT_ID
   TELEGRAM_ALLOWED_CHAT_IDS   (optionnel, liste séparée par virgules)
   TELEGRAM_BOT_POLL_TIMEOUT_SEC  (defaut 25)
+  TELEGRAM_SEND_PARALLEL         (defaut 4 — envois parallèles mode Parier /jour)
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import queue
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -29,7 +32,19 @@ os.environ.setdefault("BETTINGHUD_HEADLESS", "1")
 
 import requests
 
+from scripts.telegram_bet_flow import (
+    apply_telegram_brajust,
+    apply_telegram_brset,
+    format_telegram_user_br_advanced_message,
+    format_telegram_user_br_message,
+    handle_callback_query,
+    handle_text_message,
+    parse_brajust_delta,
+    parse_brset_amount,
+    telegram_user_id_from_update,
+)
 from scripts.telegram_top5_notify import (
+    answer_telegram_callback_query,
     format_bot_help_message,
     format_bot_strategy_message,
     format_bot_welcome_message,
@@ -74,6 +89,25 @@ STRATEGY_COMMANDS = frozenset({
     "/strategy@bettinghudbot",
 })
 START_COMMANDS = frozenset({"/start", "/start@bettinghudbot"})
+CANCEL_COMMANDS = frozenset({"/annuler", "/cancel"})
+BR_COMMANDS = frozenset({"/br", "/br@bettinghudbot"})
+BRSTATS_COMMANDS = frozenset({
+    "/brstats",
+    "/bradv",
+    "/brdetail",
+    "/brstats@bettinghudbot",
+    "/bradv@bettinghudbot",
+})
+BRSET_COMMANDS = frozenset({"/brset", "/brset@bettinghudbot"})
+BRAJUST_COMMANDS = frozenset({"/brajust", "/brajust@bettinghudbot"})
+# Commandes lourdes (snapshot + ML + envoi multi-messages) → file d'attente.
+SLOW_COMMANDS = frozenset(
+    TOP5_COMMANDS
+    | DAILY_PICKS_COMMANDS
+    | CHALLENGER_PICKS_COMMANDS
+    | MAJOR_PICKS_COMMANDS
+)
+_UPDATE_QUEUE: queue.Queue[tuple[dict, str, frozenset[str]]] | None = None
 
 
 def _setup_logger() -> logging.Logger:
@@ -108,12 +142,13 @@ def _load_dotenv() -> None:
 
 
 def _allowed_chat_ids() -> set[str]:
-    raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
-    ids = {x.strip() for x in raw.split(",") if x.strip()}
-    primary = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if primary:
-        ids.add(primary)
-    return ids
+    try:
+        from scripts.telegram_access import load_broadcast_chat_ids
+
+        return set(load_broadcast_chat_ids())
+    except Exception:
+        primary = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        return {primary} if primary else set()
 
 
 def _read_offset() -> int:
@@ -139,6 +174,33 @@ def _normalize_command(text: str) -> str:
     return first.split("@")[0] if "@" in first else first
 
 
+def _handle_my_chat_member(
+    update: dict,
+    *,
+    token: str,
+    allowed: set[str],
+) -> None:
+    chat = update.get("chat") or {}
+    chat_id = str(chat.get("id") or "").strip()
+    if not chat_id or chat_id in allowed:
+        return
+    try:
+        from scripts.telegram_access import handle_bot_joined_chat
+
+        def _send(cid: str, body: str, reply_markup: dict | None = None) -> None:
+            send_telegram_message(
+                body,
+                token=token,
+                chat_id=cid,
+                reply_markup=reply_markup,
+            )
+
+        handle_bot_joined_chat(update, token=token, send_message=_send)
+        LOGGER.info("Bot ajoute chat non autorise — chat_id=%s", chat_id)
+    except Exception as exc:
+        LOGGER.warning("my_chat_member : %s", exc)
+
+
 def _fetch_updates(token: str, offset: int, timeout_sec: int) -> list[dict]:
     url = f"https://api.telegram.org/bot{token.strip()}/getUpdates"
     params: dict = {"timeout": max(1, timeout_sec)}
@@ -150,6 +212,133 @@ def _fetch_updates(token: str, offset: int, timeout_sec: int) -> list[dict]:
     if not data.get("ok"):
         raise RuntimeError(f"getUpdates error: {data}")
     return list(data.get("result") or [])
+
+
+def _handle_callback(
+    cq: dict,
+    *,
+    token: str,
+    allowed: set[str],
+) -> None:
+    msg = cq.get("message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id") or "").strip()
+    telegram_user_id = telegram_user_id_from_update(cq=cq)
+    if not chat_id:
+        return
+
+    def send_message(
+        cid: str,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> None:
+        send_telegram_message(
+            text,
+            token=token,
+            chat_id=cid,
+            reply_markup=reply_markup,
+        )
+
+    def answer_callback(cq_obj: dict, text: str | None, alert: bool = False) -> None:
+        answer_telegram_callback_query(
+            str(cq_obj.get("id") or ""),
+            token=token,
+            text=text,
+            show_alert=alert,
+        )
+
+    try:
+        from scripts.telegram_access import try_handle_access_admin_callback
+
+        if try_handle_access_admin_callback(
+            cq,
+            token=token,
+            telegram_user_id=telegram_user_id,
+            answer_callback=answer_callback,
+            send_message=send_message,
+        ):
+            LOGGER.info(
+                "Callback acces admin — user=%s data=%s",
+                telegram_user_id,
+                cq.get("data"),
+            )
+            return
+    except Exception as exc:
+        LOGGER.warning("Callback acces admin : %s", exc)
+
+    if chat_id not in allowed:
+        LOGGER.warning("Callback refuse (chat_id=%s)", chat_id)
+        answer_telegram_callback_query(
+            str(cq.get("id") or ""),
+            token=token,
+            text="Chat non autorise",
+            show_alert=True,
+        )
+        return
+
+    if not telegram_user_id:
+        answer_telegram_callback_query(
+            str(cq.get("id") or ""),
+            token=token,
+            text="Utilisateur inconnu",
+            show_alert=True,
+        )
+        return
+
+    if handle_callback_query(
+        cq,
+        token=token,
+        chat_id=chat_id,
+        telegram_user_id=telegram_user_id,
+        send_message=send_message,
+        answer_callback=answer_callback,
+    ):
+        LOGGER.info(
+            "Callback traite — chat_id=%s user=%s data=%s",
+            chat_id,
+            telegram_user_id,
+            cq.get("data"),
+        )
+
+
+def _handle_bet_flow_text(
+    msg: dict,
+    *,
+    token: str,
+    allowed: set[str],
+) -> bool:
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id") or "").strip()
+    telegram_user_id = telegram_user_id_from_update(msg=msg)
+    text = str(msg.get("text") or "").strip()
+    if not chat_id or not text or not telegram_user_id:
+        return False
+    if chat_id not in allowed:
+        return False
+
+    cmd = _normalize_command(text)
+    if text.startswith("/") and cmd not in CANCEL_COMMANDS:
+        return False
+
+    def send_message(
+        cid: str,
+        body: str,
+        reply_markup: dict | None = None,
+    ) -> None:
+        send_telegram_message(
+            body,
+            token=token,
+            chat_id=cid,
+            reply_markup=reply_markup,
+        )
+
+    return handle_text_message(
+        msg,
+        token=token,
+        chat_id=chat_id,
+        telegram_user_id=telegram_user_id,
+        send_message=send_message,
+    )
 
 
 def _handle_message(
@@ -164,25 +353,137 @@ def _handle_message(
     if not chat_id or not text:
         return
 
+    if _handle_bet_flow_text(msg, token=token, allowed=allowed):
+        return
+
     cmd = _normalize_command(text)
 
     if chat_id not in allowed:
-        LOGGER.warning("Commande refusee (chat_id=%s) : %s", chat_id, cmd or text[:40])
-        send_telegram_message(
-            "🔒 <i>Chat non autorise.</i>",
-            token=token,
-            chat_id=chat_id,
-        )
+        try:
+            from scripts.telegram_access import (
+                handle_unauthorized_start,
+                process_unauthorized_access_request,
+            )
+
+            def _send_unauth(cid: str, body: str, reply_markup: dict | None = None) -> None:
+                send_telegram_message(
+                    body,
+                    token=token,
+                    chat_id=cid,
+                    reply_markup=reply_markup,
+                )
+
+            from_user = dict(msg.get("from") or {})
+            chat_type = str(chat.get("type") or "private")
+            if cmd in START_COMMANDS or cmd == "/start":
+                handle_unauthorized_start(msg, token=token, send_message=_send_unauth)
+                LOGGER.info("Demande acces /start — chat_id=%s", chat_id)
+            else:
+                process_unauthorized_access_request(
+                    chat_id=chat_id,
+                    from_user=from_user,
+                    chat_type=chat_type,
+                    token=token,
+                    send_message=_send_unauth,
+                    trigger="message",
+                )
+                LOGGER.info("Demande acces (message) — chat_id=%s", chat_id)
+        except Exception as exc:
+            LOGGER.exception("Demande acces : %s", exc)
+            send_telegram_message(
+                "🔒 <i>Chat non autorise.</i>\n\n"
+                "Envoie <code>/start</code> pour demander l'accès.",
+                token=token,
+                chat_id=chat_id,
+            )
         return
 
     if cmd in START_COMMANDS or cmd == "/start":
         send_telegram_message(format_bot_welcome_message(), token=token, chat_id=chat_id)
+        send_telegram_message(
+            "💡 Guide détaillé : <code>/help</code> · Stratégie & mise : <code>/strategie</code>",
+            token=token,
+            chat_id=chat_id,
+        )
         LOGGER.info("Commande /start — chat_id=%s", chat_id)
         return
 
     if cmd in HELP_COMMANDS or cmd == "/help":
         send_telegram_message(format_bot_help_message(), token=token, chat_id=chat_id)
         LOGGER.info("Commande /help — chat_id=%s", chat_id)
+        return
+
+    telegram_user_id = telegram_user_id_from_update(msg=msg)
+    from_user = msg.get("from") or {}
+    username = from_user.get("username") or from_user.get("first_name")
+
+    if cmd in BR_COMMANDS or cmd == "/br":
+        if not telegram_user_id:
+            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            return
+        send_telegram_message(
+            format_telegram_user_br_message(telegram_user_id, username=username),
+            token=token,
+            chat_id=chat_id,
+        )
+        LOGGER.info("Commande /br — user=%s chat_id=%s", telegram_user_id, chat_id)
+        return
+
+    if cmd in BRSTATS_COMMANDS or cmd in ("/brstats", "/bradv", "/brdetail"):
+        if not telegram_user_id:
+            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            return
+        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
+        send_telegram_message(
+            format_telegram_user_br_advanced_message(telegram_user_id, username=username),
+            token=token,
+            chat_id=chat_id,
+        )
+        LOGGER.info("Commande /brstats — user=%s chat_id=%s", telegram_user_id, chat_id)
+        return
+
+    if cmd in BRSET_COMMANDS or cmd == "/brset":
+        if not telegram_user_id:
+            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            return
+        amount = parse_brset_amount(text)
+        if amount is None:
+            send_telegram_message(
+                "Usage : <code>/brset 80</code> (capital de départ en €).",
+                token=token,
+                chat_id=chat_id,
+            )
+            return
+        apply_telegram_brset(telegram_user_id, amount)
+        send_telegram_message(
+            f"✅ Capital de départ fixé à <b>{amount:.2f} €</b>.\n\n"
+            + format_telegram_user_br_message(telegram_user_id, username=username),
+            token=token,
+            chat_id=chat_id,
+        )
+        LOGGER.info("Commande /brset — user=%s amount=%s", telegram_user_id, amount)
+        return
+
+    if cmd in BRAJUST_COMMANDS or cmd == "/brajust":
+        if not telegram_user_id:
+            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            return
+        delta = parse_brajust_delta(text)
+        if delta is None:
+            send_telegram_message(
+                "Usage : <code>/brajust +10</code> ou <code>/brajust -5</code>.",
+                token=token,
+                chat_id=chat_id,
+            )
+            return
+        apply_telegram_brajust(telegram_user_id, delta)
+        send_telegram_message(
+            f"✅ Ajustement <b>{delta:+.2f} €</b> appliqué.\n\n"
+            + format_telegram_user_br_message(telegram_user_id, username=username),
+            token=token,
+            chat_id=chat_id,
+        )
+        LOGGER.info("Commande /brajust — user=%s delta=%s", telegram_user_id, delta)
         return
 
     if cmd in STRATEGY_COMMANDS or cmd in ("/strategie", "/strategy"):
@@ -233,10 +534,22 @@ def _handle_message(
         return
 
     if cmd in DAILY_PICKS_COMMANDS or cmd in ("/jour", "/picks", "/picksdujour"):
-        LOGGER.info("Commande /jour — chat_id=%s", chat_id)
+        if not telegram_user_id:
+            send_telegram_message(
+                "⚠️ Impossible d'identifier ton compte Telegram.",
+                token=token,
+                chat_id=chat_id,
+            )
+            return
+        LOGGER.info("Commande /jour — chat_id=%s user=%s", chat_id, telegram_user_id)
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
         try:
-            out = run_daily_picks_notify(chat_id=chat_id, source="manual")
+            out = run_daily_picks_notify(
+                chat_id=chat_id,
+                source="manual",
+                interactive=True,
+                telegram_user_id=telegram_user_id,
+            )
             LOGGER.info(
                 "Picks du jour envoyes a %s : %d pick(s), %d message(s) (%s)",
                 chat_id,
@@ -254,10 +567,22 @@ def _handle_message(
         return
 
     if cmd in TOP5_COMMANDS or cmd in ("/top5", "/top"):
-        LOGGER.info("Commande /top5 — chat_id=%s", chat_id)
+        if not telegram_user_id:
+            send_telegram_message(
+                "⚠️ Impossible d'identifier ton compte Telegram.",
+                token=token,
+                chat_id=chat_id,
+            )
+            return
+        LOGGER.info("Commande /top5 — chat_id=%s user=%s", chat_id, telegram_user_id)
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
         try:
-            out = run_notify(chat_id=chat_id, source="manual")
+            out = run_notify(
+                chat_id=chat_id,
+                source="manual",
+                interactive=True,
+                telegram_user_id=telegram_user_id,
+            )
             LOGGER.info(
                 "Top 5 envoye a %s : %d pick(s) (%s)",
                 chat_id,
@@ -275,10 +600,69 @@ def _handle_message(
 
     if text.startswith("/"):
         send_telegram_message(
-            "❓ Commande inconnue. Essaie /jour, /jourmajor, /jourchallenger, /top5, /strategie ou /help.",
+            "❓ Commande inconnue. Essaie /top5, /jour, /jourmajor, /jourchallenger, /strategie ou /help.",
             token=token,
             chat_id=chat_id,
         )
+
+
+def _message_command(msg: dict) -> str | None:
+    text = str(msg.get("text") or "").strip()
+    if not text.startswith("/"):
+        return None
+    return _normalize_command(text)
+
+
+def _update_requires_background_worker(upd: dict) -> bool:
+    """Seules les commandes picks passent par la file (évite de bloquer /help, /br…)."""
+    if upd.get("callback_query") or upd.get("my_chat_member"):
+        return False
+    msg = upd.get("message") or upd.get("edited_message")
+    if not msg:
+        return False
+    cmd = _message_command(msg)
+    return bool(cmd and cmd in SLOW_COMMANDS)
+
+
+def _presignal_typing(upd: dict, *, token: str, allowed: set[str]) -> None:
+    """Indicateur « écrit… » avant commandes lourdes (file d'attente)."""
+    msg = upd.get("message") or upd.get("edited_message")
+    if not msg:
+        return
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id") or "").strip()
+    if chat_id not in allowed:
+        return
+    cmd = _message_command(msg)
+    if cmd and cmd in SLOW_COMMANDS:
+        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
+
+
+def _process_update(upd: dict, *, token: str, allowed: frozenset[str]) -> None:
+    allowed_set = set(allowed)
+    cq = upd.get("callback_query")
+    if cq:
+        _handle_callback(cq, token=token, allowed=allowed_set)
+        return
+    my_cm = upd.get("my_chat_member")
+    if my_cm:
+        _handle_my_chat_member(my_cm, token=token, allowed=allowed_set)
+        return
+    msg = upd.get("message") or upd.get("edited_message")
+    if msg:
+        _handle_message(msg, token=token, allowed=allowed_set)
+
+
+def _update_worker() -> None:
+    assert _UPDATE_QUEUE is not None
+    while True:
+        upd, token, allowed = _UPDATE_QUEUE.get()
+        try:
+            _process_update(upd, token=token, allowed=allowed)
+        except Exception as exc:
+            LOGGER.exception("Erreur traitement update : %s", exc)
+        finally:
+            _UPDATE_QUEUE.task_done()
 
 
 def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
@@ -298,9 +682,20 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
         LOGGER.error("TELEGRAM_CHAT_ID (ou TELEGRAM_ALLOWED_CHAT_IDS) manquant")
         return 1
 
+    global _UPDATE_QUEUE
+    _UPDATE_QUEUE = queue.Queue(maxsize=200)
+    threading.Thread(target=_update_worker, name="tg-update-worker", daemon=True).start()
+    threading.Thread(
+        target=lambda: __import__(
+            "scripts.telegram_runtime_cache", fromlist=["warm_telegram_runtime_cache"]
+        ).warm_telegram_runtime_cache(),
+        name="tg-warm-cache",
+        daemon=True,
+    ).start()
+
     offset = _read_offset()
     LOGGER.info(
-        "Telegram bot daemon demarre — poll %ds, chats autorises : %s",
+        "Telegram bot daemon demarre — poll %ds, file async (picks), chats autorises : %s",
         poll_timeout_sec,
         ", ".join(sorted(allowed)),
     )
@@ -308,13 +703,24 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
     while True:
         try:
             updates = _fetch_updates(token, offset, poll_timeout_sec)
+            allowed_now = frozenset(_allowed_chat_ids())
             for upd in updates:
                 uid = int(upd.get("update_id") or 0)
                 if uid >= offset:
                     offset = uid + 1
-                msg = upd.get("message") or upd.get("edited_message")
-                if msg:
-                    _handle_message(msg, token=token, allowed=allowed)
+                if _update_requires_background_worker(upd):
+                    _presignal_typing(upd, token=token, allowed=set(allowed_now))
+                    _UPDATE_QUEUE.put((upd, token, allowed_now))
+                else:
+                    cq = upd.get("callback_query")
+                    if cq:
+                        chat = (cq.get("message") or {}).get("chat") or {}
+                        cid = str(chat.get("id") or "").strip()
+                        if cid in allowed_now:
+                            answer_telegram_callback_query(
+                                str(cq.get("id") or ""), token=token
+                            )
+                    _process_update(upd, token=token, allowed=allowed_now)
             if updates:
                 _write_offset(offset)
         except requests.RequestException as exc:

@@ -16,6 +16,7 @@ Le **même toggle EV** est partagé avec le **Live Tracker** : quand il est acti
 | Constantes | `TOP_PROBAS_DISPLAY_LIMIT = 15`, `FAVORITE_EV_BAND_MIN_FRAC = 0.15`, `FAVORITE_EV_BAND_MAX_FRAC = 1.0` |
 | Snapshot | `data/cache/live_matches_snapshot.full.joblib` (ou variante active) |
 | Filtre jour | `_is_today_calendar_match()` — date `match.date` = jour courant (onglet Top probas) |
+| Filtre tournoi | Défaut : **main draw 250+** (`is_major_tournament_match`). Toggle **Inclure les Challengers** = même logique que Live Tracker. |
 | Cotes | `odd_p1` / `odd_p2` > 1.0 obligatoire |
 
 **Fréquence de mise à jour** : identique au snapshot live (pipeline matin, `rebuild_live_projection.py`, bouton **Actualiser le Live Tracker**).

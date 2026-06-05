@@ -136,21 +136,54 @@ sudo journalctl -u bettinghud-daemon -f
 
 ---
 
-## 6. Nginx (accès web par IP)
+## 6. Nginx (CourtAlpha + BettingHUD admin)
 
-Config : `deploy/nginx/bettinghud.conf` — proxy vers Streamlit **avec support WebSocket** (`map $http_upgrade`, `proxy_buffering off`, timeouts longs).
+Config PROD : `deploy/nginx/bettinghud.prod.conf`  
+Script d’activation : `deploy/nginx/setup_admin_subdomain.sh`
 
-- URL sans domaine : **http://192.95.30.217**
-- Streamlit n’est **pas** exposé directement (écoute localhost uniquement).
+| URL | Application |
+|-----|-------------|
+| **https://courtalpha.tech/** | **CourtAlpha** (React + API) |
+| **https://admin.courtalpha.tech/** | **BettingHUD** Streamlit (dashboard legacy) |
+| **https://courtalpha.tech:8502/** | Redirige vers `admin.courtalpha.tech` (compat.) |
 
-```bash
-sudo cp /opt/bettinghud/deploy/nginx/bettinghud.conf /etc/nginx/sites-available/bettinghud
-sudo ln -sf /etc/nginx/sites-available/bettinghud /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
-```
+Streamlit n’est **pas** exposé sur `:8501` (localhost uniquement).
 
-Copier aussi **`.streamlit/config.toml`** sur le serveur (thème + `enableCORS` / `enableXsrfProtection` adaptés au reverse proxy) :
+### Sous-domaine admin (recommandé)
+
+1. **DNS** chez le registrar (même zone que `courtalpha.tech`) :
+
+   ```text
+   admin.courtalpha.tech   A   192.95.30.217
+   ```
+
+2. Sur le serveur (après propagation DNS, ~5–30 min) :
+
+   ```bash
+   ssh bettinghud
+   cd /opt/bettinghud && git pull   # ou scp deploy/nginx/*
+   bash deploy/nginx/setup_admin_subdomain.sh
+   ```
+
+   Le script : vérifie le DNS → étend le certificat Let’s Encrypt → recharge nginx.
+
+3. Mettre à jour `/opt/bettinghud/.env` :
+
+   ```env
+   BETTINGHUD_WEB_BASE_URL=https://admin.courtalpha.tech
+   ```
+
+4. Redémarrer le dashboard si les liens reset mot de passe pointaient encore vers `:8502` :
+
+   ```bash
+   sudo systemctl restart bettinghud-dashboard
+   ```
+
+Le port **8502** peut rester ouvert (ufw) le temps de la transition ; les requêtes sont redirigées vers le sous-domaine. Vous pourrez fermer `8502/tcp` plus tard si souhaité.
+
+CourtAlpha : voir `/opt/courtalpha` + `courtalpha-api.service`. Doc : repo **CourtAlpha** `docs/DEPLOY.md`.
+
+Copier aussi **`.streamlit/config.toml`** sur le serveur (thème + proxy) :
 
 ```powershell
 scp O:\Miouppy\Documents\BettingHUD\.streamlit\config.toml bettinghud:/opt/bettinghud/.streamlit/config.toml
@@ -199,6 +232,34 @@ sudo systemctl enable --now bettinghud-telegram-bot
 ```
 
 Logs : `data/logs/telegram_bot_daemon.log`
+
+---
+
+## 7b. CourtAlphaX (compte public X)
+
+Documentation complète : **`docs/COURTALPHAX_X.md`**.
+
+Fichier cron : `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x`
+
+| Horaire (Paris) | Script |
+|-----------------|--------|
+| **04:15** | `courtalphax_daily_pick.py` — pick safe Top5 #1 ou « pas de value » |
+| **10:00–23:30, */30** | `courtalphax_result_notify.py` — résultat + BR |
+| **Dimanche 20:00** | `courtalphax_weekly_recap.py` — récap semaine |
+
+Logs : `data/logs/courtalphax_x.log`
+
+Variables dans `/opt/bettinghud/.env` : `COURTALPHAX_X_ENABLED=1`, clés OAuth X (`X_API_KEY`, …). Modèle : `docs/env.courtalphax.example`.
+
+Installation :
+
+```bash
+sudo cp /opt/bettinghud/deploy/cron/courtalphax-x /etc/cron.d/bettinghud-courtalphax-x
+sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-courtalphax-x
+sudo chmod 644 /etc/cron.d/bettinghud-courtalphax-x
+```
+
+Premier déploiement : exécuter `scripts/init_courtalphax_account.py` puis tester avec `--dry-run` avant le 1er tweet réel.
 
 ---
 

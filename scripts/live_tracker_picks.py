@@ -4,9 +4,9 @@ Par défaut (/jour Telegram) :
   - matchs **Aujourd'hui** (Europe/Paris)
   - cotes valides + rang/points sur les deux joueurs
   - matchs à venir ou démarrés récemment (grâce configurable)
-  - **uniquement les paris EV+** (expected yield > 0, seuil défaut 0 %)
+  - **EV > 15 %** (seuil défaut, ``TELEGRAM_JOUR_EV_MIN_PCT``)
+  - **proba modèle > 60 %** (filtre affichage Telegram, ``TELEGRAM_MIN_PROBA_PCT``)
   - tri **proba modèle** décroissante (Telegram / dashboard)
-  - variable optionnelle : ``TELEGRAM_JOUR_EV_MIN_PCT`` (ex. 15 pour +15 % min)
 
 ``/jourchallenger`` :
   - tournois ATP/WTA dont le nom contient « challenger »
@@ -29,6 +29,7 @@ from scripts.bets_db import _algo_kelly_stake_frac
 from scripts.daily_top_proba_store import (
     _match_favorite_metrics,
     filter_matches_for_daily_top_proba,
+    format_match_time_display,
     is_today_paris_match,
     load_today_matches_for_daily_top_proba,
 )
@@ -238,7 +239,7 @@ def collect_live_tracker_all_side_picks(
                     "tour": str(match.get("tour") or match.get("category") or "").upper(),
                     "tournament": str(match.get("tournament") or "")[:80] or None,
                     "surface": str(match.get("surface") or "")[:40] or None,
-                    "match_time": str(match.get("time") or "")[:40] or None,
+                    "match_time": format_match_time_display(match),
                     "odd_fav": odd_book,
                     "odd_book": odd_book,
                     "true_odd": true_odd,
@@ -267,9 +268,14 @@ def collect_live_tracker_value_picks(
     ev_pct = DEFAULT_EV_THRESHOLD_PCT if ev_threshold_pct is None else float(ev_threshold_pct)
     detector = ValueDetector(min_value_threshold=ev_pct / 100.0)
     if ml is None:
-        ml = TennisMLModel()
-        if hasattr(ml, "_load_bundle_if_needed"):
-            ml._load_bundle_if_needed()
+        try:
+            from scripts.telegram_runtime_cache import get_ml_model
+
+            ml = get_ml_model()
+        except Exception:
+            ml = TennisMLModel()
+            if hasattr(ml, "_load_bundle_if_needed"):
+                ml._load_bundle_if_needed()
 
     value_bets: list[dict] = []
     for idx, match in enumerate(matches):
@@ -320,7 +326,7 @@ def collect_live_tracker_value_picks(
                 "tour": str(match.get("tour") or match.get("category") or "").upper(),
                 "tournament": str(match.get("tournament") or "")[:80] or None,
                 "surface": str(match.get("surface") or "")[:40] or None,
-                "match_time": str(match.get("time") or "")[:40] or None,
+                "match_time": format_match_time_display(match),
                 "odd_fav": odd_book,
                 "odd_book": odd_book,
                 "true_odd": true_odd,
@@ -335,6 +341,7 @@ def collect_live_tracker_value_picks(
                 "segment_brier": seg_brier,
                 "confidence": match.get("confidence"),
                 "side": side,
+                "idx": int(vb.get("idx") or 0),
             }
         )
     return sort_picks_by_model_proba_desc(picks)
@@ -349,10 +356,17 @@ def load_live_tracker_day_picks(
 
     Telegram ``/jour`` : **value bets EV+** uniquement (seuil min en %, défaut 0).
   """
-    matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+    try:
+        from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
+
+        matches, meta = get_today_matches_cached(max_age_sec=max_age_sec)
+        ml = get_ml_model()
+    except Exception:
+        matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+        ml = None
     scanned = filter_live_tracker_day_matches(matches, today_only=True)
     ev_min = 0.0 if ev_threshold_pct is None else float(ev_threshold_pct)
-    picks = collect_live_tracker_value_picks(scanned, ev_threshold_pct=ev_min)
+    picks = collect_live_tracker_value_picks(scanned, ev_threshold_pct=ev_min, ml=ml)
     picks = [
         p
         for p in picks
@@ -376,11 +390,18 @@ def load_live_tracker_challenger_day_picks(
     ev_max = (
         DEFAULT_CHALLENGER_EV_MAX_PCT if ev_max_pct is None else float(ev_max_pct)
     )
-    matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+    try:
+        from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
+
+        matches, meta = get_today_matches_cached(max_age_sec=max_age_sec)
+        ml = get_ml_model()
+    except Exception:
+        matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+        ml = None
     scanned = filter_live_tracker_day_matches(matches, today_only=True)
     challenger_pool = filter_challenger_matches(scanned)
     picks = collect_live_tracker_value_picks(
-        challenger_pool, ev_threshold_pct=ev_min
+        challenger_pool, ev_threshold_pct=ev_min, ml=ml
     )
     picks = [
         p
@@ -403,10 +424,17 @@ def load_live_tracker_major_day_picks(
         else float(ev_threshold_pct)
     )
     ev_max = DEFAULT_MAJOR_EV_MAX_PCT if ev_max_pct is None else float(ev_max_pct)
-    matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+    try:
+        from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
+
+        matches, meta = get_today_matches_cached(max_age_sec=max_age_sec)
+        ml = get_ml_model()
+    except Exception:
+        matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+        ml = None
     scanned = filter_live_tracker_day_matches(matches, today_only=True)
     major_pool = filter_major_tournament_matches(scanned)
-    picks = collect_live_tracker_value_picks(major_pool, ev_threshold_pct=ev_min)
+    picks = collect_live_tracker_value_picks(major_pool, ev_threshold_pct=ev_min, ml=ml)
     picks = [
         p
         for p in picks

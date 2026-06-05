@@ -119,6 +119,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Auth web (mots de passe hashés)
+data/web_users.json
+data/web_password_reset_tokens.json
+
 # Environments
 .env
 .venv
@@ -166,11 +170,7 @@ cython_debug/
 .DS_Store
 
 # Obsidian (coffre docs/) — état UI local, pas la doc
-docs/.obsidian/workspace.json
-docs/.obsidian/workspace-mobile.json
-docs/.obsidian/hotkeys.json
-docs/.obsidian/community-plugins.json
-docs/.obsidian/plugins/
+docs/.obsidian/
 
 # --- SPECIFIQUE A BETTINGHUD ---
 data/
@@ -188,6 +188,7 @@ mannarino.html
 debug_*.txt
 debug_*.html
 debug_*.png
+train_v34.txt
 *_dump.html
 home_html.txt
 search_html.txt

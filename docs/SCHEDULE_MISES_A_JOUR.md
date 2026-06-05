@@ -16,6 +16,10 @@ Dernière mise à jour : **29 mai 2026**.
                ├─ sync algo_opportunities
                └─ Telegram Top 5 (si TELEGRAM_TOP5_AFTER_MORNING=1)
 
+04:15 Paris     CourtAlphaX — pick safe du jour (ou « pas de value »)
+10:00–23:30     CourtAlphaX — tweet résultat + BR (*/30 min)
+Dim. 20:00      CourtAlphaX — récap hebdo (lun–dim)
+
 Toute la journée (dashboard actif)
                ├─ prematch re-scrape si CSV > ~20 min
                ├─ snapshot refresh ~15 min (live-data-daemon)
@@ -152,6 +156,23 @@ Doc : [[TELEGRAM_TOP5]] · Config : `/opt/bettinghud/.env`
 
 ---
 
+## 8b. CourtAlphaX (compte public X)
+
+Doc complète : [[COURTALPHAX_X]] · modèle `.env` : `docs/env.courtalphax.example`
+
+| Événement | Quand (Paris) | Script |
+|-----------|---------------|--------|
+| Pick safe du jour | **04:15** (+ retry **04:30**, **05:00**) | `courtalphax_daily_pick.py` |
+| Vérif preflight | **04:05**, **04:10** | `courtalphax_preflight.py` |
+| Tweet résultat + BR | **10:00–23:30**, */30 min | `courtalphax_result_notify.py` |
+| Récap hebdo | **Dimanche 20:00** | `courtalphax_weekly_recap.py` |
+
+Cron : `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x` · logs : `data/logs/courtalphax_x.log`
+
+**PREPROD** : `--dry-run` uniquement (garde-fou `require_prod_for_x_post`).
+
+---
+
 ## 9. UI dashboard (refresh affichage)
 
 | Composant | Intervalle | Variable |
@@ -172,6 +193,7 @@ Ces refresh **relisent** le snapshot / la DB — ils ne remplacent pas le pipeli
 | Retrain ML hebdo | Si dashboard ouvert | Idem |
 | Daemon portefeuille | `.bat` / `--once` | `bettinghud-daemon.service` |
 | Telegram | Non | Oui |
+| CourtAlphaX (X) | `--dry-run` | Cron + tweets réels |
 | Snapshots / cache | Rebuild local fréquent | Pipeline + daemon + manuel |
 
 **Non synchronisés** entre env : `bettinghud.db`, `data/cache/`, paris réels — voir [[ENVIRONNEMENTS]].
@@ -225,5 +247,6 @@ Liste complète : [[CHANGELOG_RECENT]] · commentaires en tête de `app/dashboar
 - [[OPS_PROD_DEPANNAGE]] — cron, systemd, rebuild, incidents
 - [[ARCHITECTURE_ACTUELLE_ET_MISES]] — flux scrape → proba → Kelly
 - [[TELEGRAM_TOP5]] — bot et envoi matinal
+- [[COURTALPHAX_X]] — compte public X (pick, résultats, récap hebdo)
 - [[CHART_TOP_PROBAS_JOUR]] — top 15 + toggle EV
 - [[DAILY_TOP_PROBA_REPLAY]] — stockage replay top probas

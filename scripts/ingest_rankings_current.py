@@ -79,14 +79,14 @@ def _ingest_sqlite(df: pd.DataFrame, db_path: str) -> int:
     return len(df)
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Ingest Sackmann WTA current rankings into SQLite.")
     parser.add_argument("--db-path", default=os.path.join("data", "bettinghud.db"))
     parser.add_argument(
         "--wta-csv",
         default=os.path.join("data", "raw", "tennis_wta", "wta_rankings_current.csv"),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not os.path.isfile(args.wta_csv):
         print(f"WTA rankings : fichier {args.wta_csv} absent — skip.")

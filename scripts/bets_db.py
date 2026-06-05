@@ -54,11 +54,20 @@ _USER_BETS_TARGET_COLUMNS: tuple[tuple[str, str, Optional[str]], ...] = (
     ("result_source", "TEXT", None),
     ("notes", "TEXT", None),
     ("tracker_source", "TEXT", None),
+    ("telegram_user_id", "TEXT", None),
 )
 
 LIVE_TRACKER_META_START_BR = "live_br_start_eur"
 LIVE_TRACKER_DEFAULT_START_BR = "55"
 LIVE_TRACKER_META_MANUAL_ADJUST = "live_br_manual_adjust_eur"
+TELEGRAM_DEFAULT_START_BR = os.getenv("TELEGRAM_DEFAULT_START_BR", LIVE_TRACKER_DEFAULT_START_BR)
+
+# Sources enregistrées via l'app (Kelly / portefeuille unifié).
+APP_KELLY_TRACKER_SOURCES: tuple[str, ...] = (
+    "live_tracker",
+    "top5_proba_action",
+    "live_inplay_manual",
+)
 META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
 META_LAST_ML_TRAIN_TS = "last_ml_train_ts"
 ALGO_OPP_KELLY_BASE_FRAC = 0.5
@@ -328,8 +337,351 @@ def set_live_tracker_manual_adjust_eur(conn: sqlite3.Connection, value: float) -
     set_meta(conn, LIVE_TRACKER_META_MANUAL_ADJUST, str(float(value)))
 
 
+def _telegram_br_meta_key(telegram_user_id: str, kind: str) -> str:
+    uid = str(telegram_user_id or "").strip()
+    if not uid:
+        raise ValueError("telegram_user_id requis")
+    if kind == "start":
+        return f"telegram_br_start_{uid}"
+    if kind == "adjust":
+        return f"telegram_br_manual_adj_{uid}"
+    raise ValueError(f"meta kind inconnu: {kind}")
+
+
+def ensure_telegram_user_start_br(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+    *,
+    default_start: Optional[float] = None,
+) -> None:
+    ensure_bets_meta(conn)
+    key = _telegram_br_meta_key(telegram_user_id, "start")
+    if get_meta(conn, key) is None:
+        d = (
+            TELEGRAM_DEFAULT_START_BR
+            if default_start is None
+            else str(float(default_start))
+        )
+        set_meta(conn, key, d)
+
+
+def get_telegram_user_start_br(conn: sqlite3.Connection, telegram_user_id: str) -> float:
+    ensure_telegram_user_start_br(conn, telegram_user_id)
+    v = get_meta(conn, _telegram_br_meta_key(telegram_user_id, "start"))
+    try:
+        return float(v) if v is not None else float(TELEGRAM_DEFAULT_START_BR)
+    except ValueError:
+        return float(TELEGRAM_DEFAULT_START_BR)
+
+
+def set_telegram_user_start_br(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+    value: float,
+) -> None:
+    ensure_bets_meta(conn)
+    set_meta(conn, _telegram_br_meta_key(telegram_user_id, "start"), str(float(value)))
+
+
+def get_telegram_user_manual_adjust_eur(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> float:
+    ensure_bets_meta(conn)
+    v = get_meta(conn, _telegram_br_meta_key(telegram_user_id, "adjust"))
+    if v is None or str(v).strip() == "":
+        return 0.0
+    try:
+        return float(v)
+    except ValueError:
+        return 0.0
+
+
+def set_telegram_user_manual_adjust_eur(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+    value: float,
+) -> None:
+    ensure_bets_meta(conn)
+    set_meta(conn, _telegram_br_meta_key(telegram_user_id, "adjust"), str(float(value)))
+
+
+def link_unassigned_app_bets_to_telegram_user(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> int:
+    """Rattache à un user Telegram les paris app (Kelly) encore sans ``telegram_user_id``."""
+    ensure_user_bets_schema(conn)
+    uid = str(telegram_user_id).strip()
+    src_ph = ",".join("?" * len(APP_KELLY_TRACKER_SOURCES))
+    cur = conn.execute(
+        f"""
+        UPDATE user_bets
+        SET telegram_user_id = ?
+        WHERE (telegram_user_id IS NULL OR TRIM(telegram_user_id) = '')
+          AND (
+            tracker_source IN ({src_ph})
+            OR COALESCE(TRIM(tracker_source), '') = ''
+          )
+        """,
+        (uid, *APP_KELLY_TRACKER_SOURCES),
+    )
+    conn.commit()
+    return int(cur.rowcount or 0)
+
+
+def copy_app_kelly_meta_to_telegram_user(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> dict:
+    """Recopie capital de départ + ajustement manuel Kelly app → méta Telegram user."""
+    ensure_bets_meta(conn)
+    uid = str(telegram_user_id).strip()
+    start = get_live_tracker_start_br(conn)
+    adj = get_live_tracker_manual_adjust_eur(conn)
+    set_telegram_user_start_br(conn, uid, start)
+    set_telegram_user_manual_adjust_eur(conn, uid, adj)
+    return {"start_eur": float(start), "manual_adjust_eur": float(adj)}
+
+
+def compute_telegram_user_bankroll_eur(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> dict:
+    """Bankroll Kelly d'un utilisateur (tous ses paris : app + Telegram)."""
+    ensure_user_bets_schema(conn)
+    uid = str(telegram_user_id).strip()
+    ensure_telegram_user_start_br(conn, uid)
+    start = get_telegram_user_start_br(conn, uid)
+    cur = conn.execute(
+        """
+        SELECT COALESCE(SUM(stake), 0)
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') = 'En cours'
+        """,
+        (uid,),
+    )
+    open_stakes = float(cur.fetchone()[0] or 0.0)
+    cur2 = conn.execute(
+        """
+        SELECT COALESCE(SUM(profit), 0)
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') != 'En cours'
+        """,
+        (uid,),
+    )
+    settled_profit = float(cur2.fetchone()[0] or 0.0)
+    manual_adj = get_telegram_user_manual_adjust_eur(conn, uid)
+    avail_raw = float(start) + settled_profit - open_stakes
+    avail = avail_raw + manual_adj
+    return {
+        "telegram_user_id": uid,
+        "start_eur": float(start),
+        "available_eur": float(avail),
+        "available_raw_eur": float(avail_raw),
+        "manual_adjust_eur": float(manual_adj),
+        "committed_open_eur": float(open_stakes),
+        "equity_eur": float(avail + open_stakes),
+        "settled_profit_eur": float(settled_profit),
+    }
+
+
+_TRACKER_SOURCE_LABELS: dict[str, str] = {
+    "telegram_bet": "Telegram",
+    "live_tracker": "Live Tracker",
+    "top5_proba_action": "Paris du jour",
+    "live_inplay_manual": "In-play manuel",
+}
+
+
+def _tracker_source_label(raw: object) -> str:
+    key = str(raw or "").strip() or "_legacy"
+    if key == "_legacy":
+        return "App (legacy)"
+    return _TRACKER_SOURCE_LABELS.get(key, key)
+
+
+def compute_telegram_user_br_advanced_stats(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> dict:
+    """Statistiques portefeuille détaillées pour un utilisateur Telegram."""
+    from datetime import date, timedelta
+
+    ensure_user_bets_schema(conn)
+    uid = str(telegram_user_id).strip()
+    snap = compute_telegram_user_bankroll_eur(conn, uid)
+
+    cur = conn.execute(
+        """
+        SELECT COALESCE(TRIM(status), '') AS st, COUNT(*), COALESCE(SUM(stake), 0), COALESCE(SUM(profit), 0)
+        FROM user_bets
+        WHERE telegram_user_id = ?
+        GROUP BY COALESCE(TRIM(status), '')
+        """,
+        (uid,),
+    )
+    by_status: dict[str, dict[str, float]] = {}
+    for row in cur.fetchall():
+        st = str(row[0] or "").strip() or "En cours"
+        by_status[st] = {
+            "count": int(row[1] or 0),
+            "stake_eur": float(row[2] or 0.0),
+            "profit_eur": float(row[3] or 0.0),
+        }
+
+    open_info = by_status.get("En cours", {"count": 0, "stake_eur": 0.0, "profit_eur": 0.0})
+    wins = int(by_status.get("Gagné", {}).get("count") or 0)
+    losses = int(by_status.get("Perdu", {}).get("count") or 0)
+    voids = int(by_status.get("Annulé", {}).get("count") or 0)
+    settled_n = wins + losses + voids
+    win_rate_pct = (100.0 * wins / (wins + losses)) if (wins + losses) > 0 else None
+
+    settled_stake = 0.0
+    settled_profit = 0.0
+    for st, info in by_status.items():
+        if st == "En cours":
+            continue
+        settled_stake += float(info.get("stake_eur") or 0.0)
+        settled_profit += float(info.get("profit_eur") or 0.0)
+    roi_pct = (100.0 * settled_profit / settled_stake) if settled_stake > 0 else None
+
+    cur_src = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(TRIM(tracker_source), ''), '_legacy') AS src,
+               COUNT(*) AS n,
+               COALESCE(SUM(CASE WHEN COALESCE(TRIM(status), '') != 'En cours' THEN profit ELSE 0 END), 0) AS pl,
+               COALESCE(SUM(CASE WHEN COALESCE(TRIM(status), '') = 'En cours' THEN stake ELSE 0 END), 0) AS open_stake
+        FROM user_bets
+        WHERE telegram_user_id = ?
+        GROUP BY src
+        ORDER BY n DESC
+        """,
+        (uid,),
+    )
+    by_source = [
+        {
+            "source": str(r[0]),
+            "label": _tracker_source_label(r[0]),
+            "count": int(r[1] or 0),
+            "settled_profit_eur": float(r[2] or 0.0),
+            "open_stake_eur": float(r[3] or 0.0),
+        }
+        for r in cur_src.fetchall()
+    ]
+
+    since = (date.today() - timedelta(days=6)).isoformat()
+    cur_days = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(TRIM(match_date), ''), NULLIF(TRIM(date), '')) AS d,
+               COUNT(*) AS n,
+               COALESCE(SUM(profit), 0) AS pl,
+               COALESCE(SUM(stake), 0) AS st
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') NOT IN ('', 'En cours')
+          AND COALESCE(NULLIF(TRIM(match_date), ''), NULLIF(TRIM(date), '')) >= ?
+        GROUP BY d
+        HAVING d IS NOT NULL
+        ORDER BY d DESC
+        """,
+        (uid, since),
+    )
+    last_7_days = [
+        {
+            "date": str(r[0]),
+            "count": int(r[1] or 0),
+            "profit_eur": float(r[2] or 0.0),
+            "stake_eur": float(r[3] or 0.0),
+        }
+        for r in cur_days.fetchall()
+    ]
+
+    cur_open = conn.execute(
+        """
+        SELECT match_name, bet_on, odds, stake
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') = 'En cours'
+        ORDER BY stake DESC
+        LIMIT 5
+        """,
+        (uid,),
+    )
+    open_bets = [
+        {
+            "match_name": str(r[0] or ""),
+            "bet_on": str(r[1] or ""),
+            "odds": float(r[2] or 0.0),
+            "stake_eur": float(r[3] or 0.0),
+        }
+        for r in cur_open.fetchall()
+    ]
+
+    cur_form = conn.execute(
+        """
+        SELECT COALESCE(TRIM(status), '')
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') IN ('Gagné', 'Perdu')
+        ORDER BY COALESCE(NULLIF(TRIM(settled_ts), ''), NULLIF(TRIM(placed_ts), ''), date) DESC,
+                 id DESC
+        LIMIT 10
+        """,
+        (uid,),
+    )
+    recent_form = [str(r[0]) for r in cur_form.fetchall()]
+
+    cur_avg = conn.execute(
+        """
+        SELECT COALESCE(TRIM(status), ''), AVG(odds)
+        FROM user_bets
+        WHERE telegram_user_id = ?
+          AND COALESCE(TRIM(status), '') IN ('Gagné', 'Perdu')
+        GROUP BY COALESCE(TRIM(status), '')
+        """,
+        (uid,),
+    )
+    avg_odds: dict[str, float] = {}
+    for st, avg in cur_avg.fetchall():
+        if avg is not None:
+            avg_odds[str(st)] = float(avg)
+
+    equity = float(snap.get("equity_eur") or 0.0)
+    committed = float(snap.get("committed_open_eur") or 0.0)
+    exposure_pct = (100.0 * committed / equity) if equity > 1e-6 else None
+
+    pl_total = float(snap.get("settled_profit_eur") or 0.0)
+    start = float(snap.get("start_eur") or 0.0)
+    growth_pct = (100.0 * pl_total / start) if start > 1e-6 else None
+
+    return {
+        **snap,
+        "by_status": by_status,
+        "settled_count": settled_n,
+        "wins": wins,
+        "losses": losses,
+        "voids": voids,
+        "win_rate_pct": win_rate_pct,
+        "settled_stake_eur": settled_stake,
+        "settled_profit_eur_detail": settled_profit,
+        "roi_pct": roi_pct,
+        "by_source": by_source,
+        "last_7_days": last_7_days,
+        "open_bets": open_bets,
+        "open_count": int(open_info.get("count") or 0),
+        "recent_form": recent_form,
+        "avg_odds_won": avg_odds.get("Gagné"),
+        "avg_odds_lost": avg_odds.get("Perdu"),
+        "exposure_pct": exposure_pct,
+        "growth_on_start_pct": growth_pct,
+    }
+
+
 def compute_live_tracker_bankroll_eur(conn: sqlite3.Connection) -> dict:
-    """Available bankroll for Live Tracker staking.
+    """Available bankroll for Kelly staking (Live Tracker + Paris du jour + in-play).
 
     Ledger: start + sum(settled profits) - sum(open stakes).
 
@@ -339,22 +691,25 @@ def compute_live_tracker_bankroll_eur(conn: sqlite3.Connection) -> dict:
     """
     ensure_user_bets_schema(conn)
     start = get_live_tracker_start_br(conn)
+    src_ph = ",".join("?" * len(APP_KELLY_TRACKER_SOURCES))
     cur = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(stake), 0)
         FROM user_bets
-        WHERE tracker_source = 'live_tracker'
+        WHERE tracker_source IN ({src_ph})
           AND COALESCE(TRIM(status), '') = 'En cours'
-        """
+        """,
+        APP_KELLY_TRACKER_SOURCES,
     )
     open_stakes = float(cur.fetchone()[0] or 0.0)
     cur2 = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(profit), 0)
         FROM user_bets
-        WHERE tracker_source = 'live_tracker'
+        WHERE tracker_source IN ({src_ph})
           AND COALESCE(TRIM(status), '') != 'En cours'
-        """
+        """,
+        APP_KELLY_TRACKER_SOURCES,
     )
     settled_profit = float(cur2.fetchone()[0] or 0.0)
 
@@ -618,6 +973,7 @@ def save_bet_enriched(
     bookmaker_source: Optional[str] = None,
     notes: Optional[str] = None,
     tracker_source: Optional[str] = None,
+    telegram_user_id: Optional[str] = None,
 ) -> int:
     """Insert a bet with full decision context. Returns the new bet id.
 
@@ -645,8 +1001,9 @@ def save_bet_enriched(
                 tour, surface, tournament, match_id,
                 segment_key,
                 p_model, p_implicit, ev_at_bet,
-                bookmaker_source, placed_ts, notes, tracker_source
-            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                bookmaker_source, placed_ts, notes, tracker_source,
+                telegram_user_id
+            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 match_name,
@@ -666,6 +1023,7 @@ def save_bet_enriched(
                 datetime.utcnow().isoformat(timespec="seconds"),
                 notes,
                 tracker_source,
+                str(telegram_user_id).strip() if telegram_user_id else None,
             ),
         )
         conn.commit()

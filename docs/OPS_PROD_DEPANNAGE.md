@@ -76,9 +76,18 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 
 ### Cron
 
-- **02:00 Europe/Paris** : `scripts/morning_live_pipeline.py`
+- **02:00 Europe/Paris** : `morning_live_pipeline.py --build-only` (scrape + snapshot)
+- **04:00 Europe/Paris** : `morning_live_pipeline.py --telegram-only` (Top 5 Telegram)
 - Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
-- Logs : `data/logs/morning_pipeline_cron.log`
+- Logs : `data/logs/morning_build_cron.log`, `data/logs/morning_telegram_cron.log` (ancien monolithique : `morning_pipeline_cron.log`)
+- **Déploiement** : le fichier cron doit être en **LF** (pas CRLF Windows). Sinon la redirection `2>&1` échoue silencieusement (`^M` dans syslog). Après copie : `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-morning`
+
+**CourtAlphaX (X / Twitter)** — `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x` :
+
+- **04:15** : `courtalphax_daily_pick.py`
+- **10:00–23:30, */30** : `courtalphax_result_notify.py`
+- **Dimanche 20:00** : `courtalphax_weekly_recap.py`
+- Logs : `data/logs/courtalphax_x.log` · doc : **`docs/COURTALPHAX_X.md`**
 
 ---
 
@@ -239,6 +248,27 @@ ls -la /opt/bettinghud/data/cache/live_matches_snapshot*.joblib
 
 **Comportement normal** : pas de push automatique de `bettinghud.db`. Au premier déploiement, une copie `scp` a pu aligner les deux bases ; ensuite chaque environnement diverge si les paris ne sont saisis que d’un côté.
 
+### 6.7 CourtAlpha — 403 Forbidden sur https://courtalpha.tech/
+
+**Cause** : déploiement `frontend/dist/` via `scp` Windows → dossier en `700`, nginx (`www-data`) ne peut pas lire.
+
+**Correction** : utiliser `CourtAlpha/deploy/deploy_frontend.ps1` (fix auto) ou :
+
+```bash
+find /opt/courtalpha/frontend/dist -type d -exec chmod 755 {} +
+find /opt/courtalpha/frontend/dist -type f -exec chmod 644 {} +
+```
+
+### 6.8 Streamlit — `ImportError: APP_KELLY_TRACKER_SOURCES`
+
+**Cause** : process Streamlit long-lived garde l’ancien `bets_db.py` en mémoire après `git pull`.
+
+**Correction** :
+
+```bash
+sudo systemctl restart bettinghud-dashboard
+```
+
 ---
 
 ## 7. Checklist déploiement code (après développement PREPROD)
@@ -258,11 +288,12 @@ ls -la /opt/bettinghud/data/cache/live_matches_snapshot*.joblib
    ```bash
    sudo cp deploy/systemd/bettinghud-dashboard.service /etc/systemd/system/
    sudo cp deploy/systemd/bettinghud-telegram-bot.service /etc/systemd/system/
-   sudo cp deploy/nginx/bettinghud.conf /etc/nginx/sites-available/bettinghud
+   sudo cp deploy/nginx/bettinghud.prod.conf /etc/nginx/sites-available/bettinghud
    sudo systemctl daemon-reload
    sudo systemctl restart bettinghud-dashboard nginx
    ```
-6. [ ] Navigateur : http://192.95.30.217 — **Ctrl+Shift+R**
+   Sous-domaine Streamlit : `bash deploy/nginx/setup_admin_subdomain.sh` (DNS `admin.courtalpha.tech` requis).
+6. [ ] Navigateur : https://courtalpha.tech — **Ctrl+Shift+R**
 7. [ ] Onglet **Paramètres** : bandeau **PROD** visible
 8. [ ] Telegram : `/help` répond ; logs `telegram_bot_daemon.log` OK
 
@@ -332,6 +363,8 @@ Recommandations : restriction IP (ufw / firewall provider), basic auth nginx, ou
 | `deploy/nginx/bettinghud.conf` | Proxy nginx + WebSocket |
 | `deploy/systemd/bettinghud-telegram-bot.service` | Bot Telegram |
 | `docs/TELEGRAM_TOP5.md` | Bot Telegram — doc complète |
+| `docs/COURTALPHAX_X.md` | Compte public X CourtAlphaX — cron, tweets, runbook |
+| `deploy/cron/courtalphax-x` | Cron pick / résultats / récap hebdo X |
 | `.streamlit/config.toml` | Thème + options serveur derrière proxy |
 | `docs/ENVIRONNEMENTS.md` | Convention PREPROD / PROD |
 | `docs/DEPLOY_SERVEUR.md` | Guide d’installation pas à pas |

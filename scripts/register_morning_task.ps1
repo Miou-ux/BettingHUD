@@ -1,7 +1,9 @@
-# Crée une tâche planifiée Windows : scrape + snapshot Live à 02:00 (lun–dim, heure locale).
+# Tâches planifiées Windows (PREPROD) : build 02:00 + Telegram 04:00 (heure locale).
 param(
-    [string]$Time = "02:00",
-    [string]$TaskName = "BettingHUD-Morning-Live"
+    [string]$BuildTime = "02:00",
+    [string]$TelegramTime = "04:00",
+    [string]$BuildTaskName = "BettingHUD-Morning-Build",
+    [string]$TelegramTaskName = "BettingHUD-Morning-Telegram"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,13 +18,6 @@ if (-not (Test-Path $Script)) {
     Write-Error "Script introuvable: $Script"
 }
 
-$Action = New-ScheduledTaskAction `
-    -Execute $Python `
-    -Argument "`"$Script`"" `
-    -WorkingDirectory $Root
-
-$Trigger = New-ScheduledTaskTrigger -Daily -At $Time
-
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -31,13 +26,31 @@ $Settings = New-ScheduledTaskSettingsSet `
 
 $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $Action `
-    -Trigger $Trigger `
-    -Settings $Settings `
-    -Principal $Principal `
-    -Force | Out-Null
+function Register-DailyTask {
+    param(
+        [string]$Name,
+        [string]$At,
+        [string]$Arguments
+    )
+    $Action = New-ScheduledTaskAction `
+        -Execute $Python `
+        -Argument $Arguments `
+        -WorkingDirectory $Root
+    $Trigger = New-ScheduledTaskTrigger -Daily -At $At
+    Register-ScheduledTask `
+        -TaskName $Name `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Settings $Settings `
+        -Principal $Principal `
+        -Force | Out-Null
+    Write-Host "Tâche créée : $Name à $At"
+}
 
-Write-Host "Tâche planifiée créée : $TaskName à $Time chaque jour."
-Write-Host "Test manuel : $Python `"$Script`""
+Register-DailyTask -Name $BuildTaskName -At $BuildTime -Arguments "`"$Script`" --build-only"
+Register-DailyTask -Name $TelegramTaskName -At $TelegramTime -Arguments "`"$Script`" --telegram-only"
+
+Write-Host ""
+Write-Host "Test manuel :"
+Write-Host "  Build     : $Python `"$Script`" --build-only"
+Write-Host "  Telegram  : $Python `"$Script`" --telegram-only"

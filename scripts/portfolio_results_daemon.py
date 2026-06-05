@@ -16,6 +16,9 @@ Variables d'environnement:
   BETTINGHUD_PORTFOLIO_SCRAPE_LOCK_MAX_SEC    (défaut 1200)
   BETTINGHUD_DAILY_TOP_PROBA_DAEMON_INTERVAL_SEC  (défaut 600)
   BETTINGHUD_DAILY_TOP_PROBA_JSONL_INTERVAL_SEC   (défaut 3600)
+  BETTINGHUD_CLOSING_ODDS_ARCHIVE                 (défaut 1)
+  BETTINGHUD_CLOSING_ODDS_NIGHT_HOUR              (défaut 4, Europe/Paris)
+  BETTINGHUD_CLOSING_ODDS_TZ                      (défaut Europe/Paris)
 """
 from __future__ import annotations
 
@@ -94,6 +97,32 @@ def _run_daily_top_proba_pass(db_path: str) -> None:
         )
 
 
+def _maybe_run_closing_odds_archive() -> None:
+    """Une passe nocturne : scrape TE + CSV closing de la veille."""
+    try:
+        from scripts.closing_odds_archive import (
+            run_nightly_closing_archive,
+            should_run_nightly_archive_now,
+        )
+
+        if not should_run_nightly_archive_now():
+            return
+        LOGGER.info("Archive cotes closing (passe nocturne TE)…")
+        stats = run_nightly_closing_archive(logger=LOGGER)
+        if stats.get("skipped"):
+            LOGGER.info("Closing odds ignoré : %s", stats.get("reason") or "skip")
+        else:
+            LOGGER.info(
+                "Closing odds : date=%s ingere=%s archive=%s fichier=%s",
+                stats.get("archive_date"),
+                stats.get("ingested"),
+                stats.get("archived"),
+                stats.get("path") or "-",
+            )
+    except Exception as exc:
+        LOGGER.warning("Archive closing odds ignorée : %s", exc)
+
+
 def _sync_algo_report(db_path: str) -> None:
     from scripts.bets_db import (
         ensure_algo_opportunities_schema,
@@ -133,6 +162,8 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
     from scripts.scraper_results import ResultsScraper
 
     touch_daemon_heartbeat()
+
+    _maybe_run_closing_odds_archive()
 
     try:
         _run_daily_top_proba_pass(db_path)
