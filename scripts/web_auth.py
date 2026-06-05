@@ -201,6 +201,51 @@ def _find_user_by_email(email: str) -> dict[str, Any] | None:
     return None
 
 
+def registration_enabled() -> bool:
+    raw = (os.getenv("BETTINGHUD_WEB_REGISTRATION_OPEN") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def register_web_user(
+    username: str,
+    password: str,
+    email: str,
+    *,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    """Inscription publique — rôle user, e-mail obligatoire et unique."""
+    if not registration_enabled():
+        raise ValueError("Les inscriptions sont fermées.")
+
+    uname = str(username or "").strip().lower()
+    if not uname or len(uname) < 3 or len(uname) > 32:
+        raise ValueError("Identifiant : 3 à 32 caractères.")
+    if not all(c.isalnum() or c == "_" for c in uname):
+        raise ValueError("Identifiant : lettres minuscules, chiffres et _ uniquement.")
+
+    addr = str(email or "").strip().lower()
+    if not addr or "@" not in addr or len(addr) > 254:
+        raise ValueError("E-mail obligatoire et valide.")
+
+    pwd = str(password or "")
+    if len(pwd) < 4:
+        raise ValueError("Mot de passe : 4 caractères minimum.")
+
+    if _find_user_record(uname):
+        raise ValueError("Cet identifiant est déjà utilisé.")
+    if _find_user_by_email(addr):
+        raise ValueError("Cet e-mail est déjà associé à un compte.")
+
+    row = upsert_web_user(
+        uname,
+        pwd,
+        display_name=(display_name or uname).strip()[:80],
+        role="user",
+        email=addr,
+    )
+    return _session_payload(row)
+
+
 def authenticate(username: str, password: str) -> dict[str, Any] | None:
     sync_users_from_env()
     rec = _find_user_record(username)
