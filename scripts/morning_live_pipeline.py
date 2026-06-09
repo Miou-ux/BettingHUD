@@ -4,12 +4,15 @@
 Phases (Europe/Paris, cron PROD) :
   - **02:00** : ``--build-only`` — scrape TE, snapshot full, report algo
   - **04:00** : ``--telegram-only`` — Top 5 Telegram (``TELEGRAM_TOP5_AFTER_MORNING=1``)
+  - **07:00** : ``--build-only`` — 2e scrape + snapshot (resync cotes du matin)
+  - **07:05** : ``--telegram-only --source morning-sync`` — 2e Top 5 (aligné web live)
 
 Sans argument : build + Telegram (comportement historique, déconseillé en prod).
 
 Usage :
   py -3 scripts/morning_live_pipeline.py --build-only
   py -3 scripts/morning_live_pipeline.py --telegram-only
+  py -3 scripts/morning_live_pipeline.py --telegram-only --source morning-sync
 """
 from __future__ import annotations
 
@@ -183,7 +186,7 @@ def run_build_phase(*, _log) -> int:
         from scripts.telegram_runtime_cache import invalidate_snapshot_cache
 
         invalidate_snapshot_cache()
-        _log("Cache Telegram invalidé (snapshot à jour pour 04:00).")
+        _log("Cache Telegram invalidé (snapshot à jour).")
     except Exception as exc:
         _log(f"Invalidation cache Telegram ignorée : {exc}")
 
@@ -205,7 +208,7 @@ def run_build_phase(*, _log) -> int:
     return 0
 
 
-def run_telegram_phase(*, _log) -> int:
+def run_telegram_phase(*, _log, source: str = "morning") -> int:
     if os.getenv("TELEGRAM_TOP5_AFTER_MORNING", "").strip().lower() not in (
         "1",
         "true",
@@ -243,7 +246,7 @@ def run_telegram_phase(*, _log) -> int:
     try:
         from scripts.telegram_top5_notify import run_notify
 
-        tg = run_notify(dry_run=False, source="morning")
+        tg = run_notify(dry_run=False, source=source, interactive=True)
         n_chats = tg.get("sent") or 0
         _log(
             f"Telegram Top 5 envoyé : {tg.get('n_picks', 0)} pick(s) "
@@ -252,6 +255,14 @@ def run_telegram_phase(*, _log) -> int:
     except Exception as exc:
         _log(f"Telegram Top 5 ERREUR: {exc}")
         return 1
+
+    try:
+        from scripts.telegram_channel_notify import run_channel_notify
+
+        ch = run_channel_notify(dry_run=False)
+        _log(f"Canal Telegram public : {ch}")
+    except Exception as exc:
+        _log(f"Canal Telegram public ignoré : {exc}")
 
     _log("Phase Telegram terminée.")
     return 0
@@ -265,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         pass
 
+    os.environ.setdefault("BETTINGHUD_ENV", "prod")
+
     ap = argparse.ArgumentParser(description="Pipeline matin BettingHUD")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument(
@@ -276,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
         "--telegram-only",
         action="store_true",
         help="04:00 Paris : envoi Top 5 Telegram (snapshot déjà construit)",
+    )
+    ap.add_argument(
+        "--source",
+        default="morning",
+        choices=("morning", "morning-sync"),
+        help="Libellé Telegram pour --telegram-only (morning-sync = 2e passe 07:05)",
     )
     args = ap.parse_args(argv)
 
@@ -289,9 +308,10 @@ def main(argv: list[str] | None = None) -> int:
         return rc
 
     if args.telegram_only:
-        _log, log_path = _open_log("telegram")
-        _log("Démarrage phase Telegram (Top 5 matin).")
-        rc = run_telegram_phase(_log=_log)
+        _log, log_path = _open_log("telegram" if args.source == "morning" else "telegram-sync")
+        label = "Top 5 matin" if args.source == "morning" else "Top 5 resync matinée"
+        _log(f"Démarrage phase Telegram ({label}).")
+        rc = run_telegram_phase(_log=_log, source=args.source)
         _log(f"Fin (code {rc}). Journal : {log_path}")
         return rc
 

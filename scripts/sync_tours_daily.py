@@ -85,6 +85,30 @@ def _run_py(script_relative: str) -> int:
         return 1
 
 
+def _stamp_sync_meta(meta_key: str, iso: str | None = None) -> None:
+    try:
+        import sqlite3
+
+        sys.path.insert(0, ROOT)
+        from scripts.bets_db import DB_PATH_DEFAULT, ensure_bets_meta, set_meta
+
+        ts = iso or _dt.datetime.utcnow().isoformat(timespec="seconds")
+        dbp = (
+            os.path.join(ROOT, DB_PATH_DEFAULT)
+            if not os.path.isabs(DB_PATH_DEFAULT)
+            else DB_PATH_DEFAULT
+        )
+        conn = sqlite3.connect(dbp)
+        try:
+            ensure_bets_meta(conn)
+            set_meta(conn, meta_key, ts)
+        finally:
+            conn.close()
+        _append_log(f"bets_meta: {meta_key} enregistré.")
+    except Exception as e:
+        _append_log(f"bets_meta {meta_key}: {e}")
+
+
 def run_sync_bundle() -> int:
     """Exécute la séquence complète. Retourne 0 si aucune erreur fatale (codes partiels tolérés)."""
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -97,6 +121,7 @@ def run_sync_bundle() -> int:
         rc = 1
     else:
         _append_log("sync_tml_recent.py OK.")
+        _stamp_sync_meta("last_tml_sync_ts")
 
     pq = _run_py("pipeline_quality.py")
     if pq != 0:
@@ -104,6 +129,7 @@ def run_sync_bundle() -> int:
         rc = 1
     else:
         _append_log("pipeline_quality.py OK.")
+        _stamp_sync_meta("last_sackmann_sync_ts")
 
     _append_log(f"=== fin sync ATP+WTA rc={rc} ===")
 

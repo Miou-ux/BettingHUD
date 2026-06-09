@@ -1,5 +1,7 @@
 # CourtAlphaX — référence complète (compte public X)
 
+> **⏸ Pause publication auto (juin 2026)** : `COURTALPHAX_X_ENABLED=0` sur PROD, crons commentés (`deploy/cron/courtalphax-x`, lignes X dans `acquisition-traffic`). Les scripts restent utilisables en `--dry-run`. Pour reprendre : `=1` + décommenter les crons + redéployer.
+
 Compte dédié **CourtAlphaX** : bankroll virtuelle **100 €** (100 u), un pari « safe » par jour issu du **Top 5 proba** (Paris du jour), publication sur **X/Twitter**, puis tweet résultat + état BR + récap hebdomadaire.
 
 > Voir aussi : [[TELEGRAM_TOP5]] · [[WEB_AUTH]] · [[SCHEDULE_MISES_A_JOUR]] · [[DEPLOY_SERVEUR]] · [[OPS_PROD_DEPANNAGE]] · `docs/env.courtalphax.example`

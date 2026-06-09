@@ -477,6 +477,8 @@ def format_top5_telegram_message(
     ]
     if source == "morning":
         lines.append("🌅 Envoi matinal automatique")
+    elif source == "morning-sync":
+        lines.append("🔄 Resync matinée (cotes à jour · aligné web)")
     elif source == "manual":
         lines.append("📲 Demande manuelle")
     if snapshot_age_min is not None:
@@ -541,6 +543,8 @@ def format_top5_interactive_header(
         lines.append("📲 Demande manuelle · mode <b>Parier</b>")
     elif source == "morning":
         lines.append("🌅 Envoi matinal automatique")
+    elif source == "morning-sync":
+        lines.append("🔄 Resync matinée (cotes à jour · aligné web)")
     if snapshot_age_min is not None:
         lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
     lines.append(f"✅ <b>{n_picks}</b> pick(s) · {pool_size} match(s) analysé(s)")
@@ -1089,7 +1093,6 @@ def run_notify(
         )
 
     if interactive:
-        target_chat = target_chats[0]
         header = format_top5_interactive_header(
             calendar_date=cal_day,
             pool_size=pool_n,
@@ -1097,24 +1100,29 @@ def run_notify(
             source=source,
             n_picks=len(picks),
         )
-        if not picks:
-            send_telegram_message(
-                f"{header}\n\n😴 <i>Aucun match dans la bande EV aujourd'hui.</i>",
-                token=token,
-                chat_id=target_chat,
-            )
-            result["sent"] = 1
-        else:
-            result["sent"] = send_interactive_pick_messages(
-                picks,
-                header_text=header,
-                footer_text=_interactive_footer(),
-                token=token,
-                chat_id=target_chat,
-                list_kind="top5",
-                telegram_user_id=telegram_user_id,
-            )
-        result["chat_id"] = target_chat
+        sent = 0
+        for target_chat in target_chats:
+            user_id = telegram_user_id or str(target_chat)
+            if not picks:
+                send_telegram_message(
+                    f"{header}\n\n😴 <i>Aucun match dans la bande EV aujourd'hui.</i>",
+                    token=token,
+                    chat_id=target_chat,
+                )
+                sent += 1
+            else:
+                sent += send_interactive_pick_messages(
+                    picks,
+                    header_text=header,
+                    footer_text=_interactive_footer(),
+                    token=token,
+                    chat_id=target_chat,
+                    list_kind="top5",
+                    telegram_user_id=user_id,
+                )
+        result["sent"] = sent
+        result["chat_ids"] = target_chats
+        result["chat_id"] = target_chats[0] if len(target_chats) == 1 else None
     else:
         sent = 0
         for target_chat in target_chats:

@@ -337,6 +337,9 @@ def collect_top5_proba_picks(
         pool.append(
             {
                 **met,
+                "bet_on": met["fav_player"],
+                "opponent": met["underdog_player"],
+                "p_model_pct": float(met["p_model_fav"]) * 100.0,
                 "rank": 0,
                 "calendar_date": cal_day,
                 "tour": tour,

@@ -6,6 +6,20 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 9 juin 2026 — Déploiement PROD + Top 5 interactif
+
+| Livrable | Détail |
+|----------|--------|
+| PROD | Scripts BettingHUD + CourtAlpha déployés (`/opt/bettinghud`, `/opt/courtalpha`, `courtalpha.tech`) |
+| Telegram | Top 5 matinal **interactif** (`run_notify(..., interactive=True)`) — boutons Parier à 04:00 et 07:05 |
+| Cron | Resync matin **07:00** build + **07:05** Telegram (`--source morning-sync`) |
+| Web | `BetModal` — cote observée + **Kelly auto** sur Top 5 / Paris |
+| Web | Badge **« Déjà parié »** sur tuiles (`existing_stake_eur`) |
+| X | Tweets auto **en pause** (`COURTALPHAX_X_ENABLED=0`) |
+| Doc | `TELEGRAM_TOP5.md`, `DEPLOY_SERVEUR.md`, `WEB_AUTH.md`, `WEB_REACT.md`, `OPS_PROD_DEPANNAGE.md` |
+
+---
+
 ## 0. Mise à jour 5 juin 2026 (b) — Exclusion UI stats rang/points > 12 mois
 
 | Livrable | Détail |

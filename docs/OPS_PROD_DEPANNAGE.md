@@ -77,9 +77,11 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 ### Cron
 
 - **02:00 Europe/Paris** : `morning_live_pipeline.py --build-only` (scrape + snapshot)
-- **04:00 Europe/Paris** : `morning_live_pipeline.py --telegram-only` (Top 5 Telegram)
+- **04:00 Europe/Paris** : `morning_live_pipeline.py --telegram-only` (Top 5 Telegram **interactif**)
+- **07:00 Europe/Paris** : `morning_live_pipeline.py --build-only` (resync cotes matinées)
+- **07:05 Europe/Paris** : `morning_live_pipeline.py --telegram-only --source morning-sync` (2e Top 5 interactif)
 - Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
-- Logs : `data/logs/morning_build_cron.log`, `data/logs/morning_telegram_cron.log` (ancien monolithique : `morning_pipeline_cron.log`)
+- Logs : `morning_build_cron.log`, `morning_telegram_cron.log`, `morning_build_sync_cron.log`, `morning_telegram_sync_cron.log` (ancien monolithique : `morning_pipeline_cron.log`)
 - **Déploiement** : le fichier cron doit être en **LF** (pas CRLF Windows). Sinon la redirection `2>&1` échoue silencieusement (`^M` dans syslog). Après copie : `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-morning`
 
 **CourtAlphaX (X / Twitter)** — `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x` :

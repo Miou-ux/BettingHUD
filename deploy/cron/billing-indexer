@@ -1,0 +1,3 @@
+# Indexeur paiements ETH CourtAlpha — toutes les 2 min
+CRON_TZ=Europe/Paris
+*/2 * * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/billing_indexer.py >> /opt/bettinghud/data/logs/billing_indexer.log 2>&1

@@ -191,6 +191,16 @@ def _find_user_record(username: str) -> dict[str, Any] | None:
     return None
 
 
+def get_web_user_session(username: str) -> dict[str, Any] | None:
+    """Payload session CourtAlpha / API pour un compte existant."""
+    rec = _find_user_record(username)
+    if not rec:
+        return None
+    from scripts.web_billing import enrich_user_session
+
+    return enrich_user_session(_session_payload(rec))
+
+
 def _find_user_by_email(email: str) -> dict[str, Any] | None:
     addr = str(email or "").strip().lower()
     if not addr:
@@ -243,7 +253,16 @@ def register_web_user(
         role="user",
         email=addr,
     )
-    return _session_payload(row)
+    from scripts.telegram_access import notify_admin_web_registration
+
+    notify_admin_web_registration(
+        uname,
+        addr,
+        str(row.get("display_name") or uname),
+    )
+    from scripts.web_billing import enrich_user_session
+
+    return enrich_user_session(_session_payload(row))
 
 
 def authenticate(username: str, password: str) -> dict[str, Any] | None:
@@ -256,9 +275,9 @@ def authenticate(username: str, password: str) -> dict[str, Any] | None:
         # Tolérance espaces accidentels en bordure uniquement
         pwd_stripped = pwd.strip()
         if pwd_stripped != pwd and verify_password(pwd_stripped, str(rec.get("password_hash") or "")):
-            return _session_payload(rec)
+            return get_web_user_session(str(rec.get("username") or ""))
         return None
-    return _session_payload(rec)
+    return get_web_user_session(str(rec.get("username") or ""))
 
 
 def _avatars_dir() -> Path:
@@ -351,7 +370,7 @@ def update_user_profile(
         return None
     doc["users"] = users
     _save_users_doc(doc)
-    return _session_payload(users[i])
+    return get_web_user_session(str(users[i].get("username") or ""))
 
 
 def _session_payload(rec: dict[str, Any]) -> dict[str, Any]:

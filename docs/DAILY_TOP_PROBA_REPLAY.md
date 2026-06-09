@@ -175,7 +175,26 @@ Résolution via cache `match_results` → `status` **Gagné/Perdu** sur le **fav
 
 ---
 
+## UI web — 1 Day 1 Pick
+
+Page publique React : **`/1-day-1-pick`** (CourtAlpha, sans login).
+
+| Élément | Détail |
+|---------|--------|
+| API | `GET /api/picks/one-day-one-pick` |
+| Sélection | Chaque jour : meilleur **rank=1** entre ATP et WTA (`p_model_fav` max) |
+| Filtres | Tournois majeurs main draw 250+, EV favori 15–100 % |
+| Mise | Kelly ½ × Brier (`theoretical_stake_frac`) sur BR 100 € par défaut |
+| Résultats | `sync_daily_top_proba_from_results()` à chaque requête API |
+| Affichage | **Pick du jour** en carte + tableau historique + courbe bankroll (`curve[]`) |
+| Jour courant | Inclus par défaut ; snapshot live si pas encore persisté ; +1 ligne/jour via daemon |
+
+Service API : `CourtAlpha/api/services/one_day_one_pick.py`.
+
+---
+
 ## Liens
 
 - [[CHART_TOP_PROBAS_JOUR]] — UI top probas
+- [[WEB_REACT]] — pages publiques React
 - [[BACKTEST_TOP10_PROBA_SIMULATIONS]] — backtest historique tennis-data (comparatif)

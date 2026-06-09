@@ -1,0 +1,8 @@
+# CourtAlpha — canal Telegram public (acquisition FR)
+CRON_TZ=Europe/Paris
+# Après Top 5 matin (04:00 build déjà fait)
+10 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py >> /opt/bettinghud/data/logs/telegram_channel.log 2>&1
+# Après resync matinée (07:05 Top 5) — met à jour pick du jour si snapshot frais
+12 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py >> /opt/bettinghud/data/logs/telegram_channel.log 2>&1
+# Récap hebdomadaire — dimanche 10h Paris
+0 10 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py --weekly >> /opt/bettinghud/data/logs/telegram_channel.log 2>&1

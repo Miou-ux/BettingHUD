@@ -168,6 +168,48 @@ def format_admin_access_notification(
     return "\n".join(lines)
 
 
+def format_admin_web_registration_notification(
+    username: str,
+    email: str,
+    display_name: str,
+) -> str:
+    uname = str(username or "").strip().lower()
+    addr = str(email or "").strip().lower()
+    name = str(display_name or uname or "?").strip()
+    lines = [
+        "🔔 <b>Nouvelle inscription web</b>",
+        "",
+        f"👤 {_escape_html(name)}",
+        f"📧 <code>{_escape_html(addr)}</code>",
+        f"🔑 identifiant : <code>{_escape_html(uname)}</code>",
+    ]
+    base = (os.getenv("BETTINGHUD_WEB_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        lines.append(f"🌐 {_escape_html(base)}")
+    return "\n".join(lines)
+
+
+def notify_admin_web_registration(
+    username: str,
+    email: str,
+    display_name: str,
+) -> None:
+    from scripts.telegram_top5_notify import send_telegram_message
+
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    admin_chat = admin_notify_chat_id()
+    if not token or not admin_chat:
+        return
+    try:
+        send_telegram_message(
+            format_admin_web_registration_notification(username, email, display_name),
+            token=token,
+            chat_id=admin_chat,
+        )
+    except Exception:
+        pass
+
+
 def admin_approve_keyboard(chat_id: str) -> dict:
     cid = str(chat_id).strip()
     return {

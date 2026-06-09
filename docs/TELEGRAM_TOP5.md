@@ -19,7 +19,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
 | **`/br`**, **`/brstats`** | Commandes Telegram | Bankroll utilisateur (synthèse / stats avancées) |
-| **Parier (inline)** | Bouton sous chaque pick **`/jour`** / **`/top5`** | Cote perso → Kelly → confirmation → `user_bets` (`tracker_source=telegram_bet`) |
+| **Parier (inline)** | Bouton sous chaque pick **`/jour`**, **`/top5`** et **Top 5 matinal** | Cote perso → Kelly → confirmation → `user_bets` (`tracker_source=telegram_bet`) |
 
 ```mermaid
 flowchart LR
@@ -53,7 +53,7 @@ flowchart LR
 | `scripts/telegram_bet_flow.py` | Sessions cote/Kelly, enregistrement portefeuille depuis Telegram |
 | `scripts/live_tracker_picks.py` | Collecte headless des picks **Live Tracker (Aujourd’hui)** pour `/jour` |
 | `scripts/daily_top_proba_store.py` | `collect_top5_proba_picks` — Top 5 Paris du jour (EV 15–100 %) |
-| `scripts/morning_live_pipeline.py` | **02:00** `--build-only` · **04:00** `--telegram-only` (Top 5 si `TELEGRAM_TOP5_AFTER_MORNING=1`) |
+| `scripts/morning_live_pipeline.py` | **02:00** `--build-only` · **04:00** / **07:05** `--telegram-only` (Top 5 interactif si `TELEGRAM_TOP5_AFTER_MORNING=1`) · **07:00** resync build |
 | `deploy/systemd/bettinghud-telegram-bot.service` | Service systemd daemon commandes |
 | `deploy/install_ubuntu.sh` | Installe et active le service Telegram |
 
@@ -152,9 +152,9 @@ Aligné onglet **Paris du jour** / stratégie backtest validée :
 
 Fonction : `scripts/daily_top_proba_store.collect_top5_proba_picks`.
 
-### 3.5 Parier depuis Telegram (`/jour` et `/top5` uniquement)
+### 3.5 Parier depuis Telegram (`/jour`, `/top5`, Top 5 matinal)
 
-Sur demande via le daemon (pas sur l’envoi matinal automatique) :
+Sur demande via le daemon **ou** sur l’envoi matinal automatique (`run_notify(..., interactive=True)`) :
 
 1. Un **message par match** avec bouton **💰 Parier**
 2. Clic → le bot demande ta **cote réelle** (ex. `1.92`)
@@ -324,9 +324,13 @@ Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 |---------------|----------|-----|
 | **02:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_cron.log` |
 | **04:00** | `morning_live_pipeline.py --telegram-only` | `data/logs/morning_telegram_cron.log` |
+| **07:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_sync_cron.log` |
+| **07:05** | `morning_live_pipeline.py --telegram-only --source morning-sync` | `data/logs/morning_telegram_sync_cron.log` |
 
 - **02:00** : scrape TE, snapshot full, report algo (pas de Telegram).
-- **04:00** : si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning")` envoyé à **tous les chats validés** (`TELEGRAM_CHAT_ID` + `TELEGRAM_ALLOWED_CHAT_IDS` + `data/cache/telegram_allowed_chats.json`).
+- **04:00** : si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning", interactive=True)` : en-tête + **un message par pick avec bouton Parier**, envoyé à **chaque chat validé** (`TELEGRAM_CHAT_ID` + `TELEGRAM_ALLOWED_CHAT_IDS` + `data/cache/telegram_allowed_chats.json`). `telegram_user_id` = `chat_id` en DM privé.
+- **07:00** : 2e scrape + snapshot (resync cotes matinées, aligné web live).
+- **07:05** : 2e Top 5 Telegram interactif (`source=morning-sync`), même format que 04:00.
 
 ### 6.2 Service daemon commandes
 

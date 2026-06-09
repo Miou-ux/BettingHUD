@@ -1,9 +1,8 @@
-"""Formatage des tweets CourtAlphaX (texte plain, sans URL)."""
+"""Formatage des tweets CourtAlphaX (texte + lien track record UTM)."""
 from __future__ import annotations
 
-from scripts.courtalphax_config import COURTALPHAX_START_BR_EUR
+from scripts.courtalphax_config import COURTALPHAX_START_BR_EUR, courtalpha_track_url
 from scripts.x_client import X_MAX_CHARS
-
 DISCLAIMER = "Info — pas un conseil financier. BR virtuelle."
 
 _BRAND_HASHTAGS = ("#CourtAlpha", "#ValueBetting")
@@ -41,6 +40,32 @@ def _proba_pct(pick: dict) -> float:
     except (TypeError, ValueError):
         pass
     return float(pick.get("p_model_fav") or 0.0) * 100.0
+
+
+def _pick_player_names(row: dict) -> tuple[str, str]:
+    """Noms parié / adversaire (clés Telegram ou Paris du jour)."""
+    bet_on = str(row.get("bet_on") or row.get("fav_player") or "").strip()
+    opp = str(row.get("opponent") or row.get("underdog_player") or "").strip()
+    if not bet_on or not opp:
+        p1 = str(row.get("player1") or "").strip()
+        p2 = str(row.get("player2") or "").strip()
+        if p1 and p2:
+            if not bet_on:
+                bet_on = p1 if row.get("fav_side") in (1, "1", None) else p2
+            if not opp:
+                opp = p2 if bet_on == p1 else p1
+    return bet_on or "?", opp or "?"
+
+
+def _bet_on_display(bet: dict) -> str:
+    """Joueur parié pour tweets résultat (DB parfois sans bet_on)."""
+    name = str(bet.get("bet_on") or bet.get("fav_player") or "").strip()
+    if name:
+        return name
+    mn = str(bet.get("match_name") or "").strip()
+    if " vs " in mn:
+        return mn.split(" vs ", 1)[0].strip()
+    return "?"
 
 
 def _ev_pct(pick: dict) -> float:
@@ -96,22 +121,46 @@ def _hashtag_tags(
     return tags
 
 
-def _embed_hashtags(body: str, tags: list[str], *, limit: int = X_MAX_CHARS) -> str:
+def _embed_track_url(text: str, *, campaign: str = "daily", limit: int = X_MAX_CHARS) -> str:
+    """Ajoute le lien CourtAlpha en fin de tweet (tronque le corps si nécessaire)."""
+    url = courtalpha_track_url(campaign=campaign)
+    suffix = f"\n{url}"
+    if len(text) + len(suffix) <= limit:
+        return text + suffix
+    room = limit - len(suffix) - 1
+    if room < 40:
+        return (text[: limit - 4] + "…") if len(text) > limit else text
+    trimmed = text[:room].rstrip()
+    if "\n" in trimmed:
+        trimmed = trimmed.rsplit("\n", 1)[0].rstrip()
+    return trimmed + "…" + suffix
+
+
+def _embed_hashtags(
+    body: str,
+    tags: list[str],
+    *,
+    limit: int = X_MAX_CHARS,
+    url_campaign: str | None = "daily",
+) -> str:
     """Insère les hashtags avant le disclaimer ; retire les tags optionnels si > 280 car."""
     main, disc = body, DISCLAIMER
     if body.endswith(DISCLAIMER):
         main = body[: -len(DISCLAIMER)].rstrip()
 
     kept = list(tags)
+    url = courtalpha_track_url(campaign=url_campaign) if url_campaign else ""
+    url_suffix = f"\n{url}" if url else ""
     while kept:
-        text = f"{main}\n\n{' '.join(kept)}\n{disc}"
+        text = f"{main}\n\n{' '.join(kept)}\n{disc}{url_suffix}"
         if len(text) <= limit:
             return text
         if len(kept) <= len(_BRAND_HASHTAGS):
             break
         kept.pop()
-    # Dernier recours : texte principal sans hashtags (disclaimer intact)
     fallback = f"{main}\n{disc}"
+    if url_campaign:
+        return _embed_track_url(fallback, campaign=url_campaign, limit=limit)
     if len(fallback) <= limit:
         return fallback
     return fallback[: limit - 1].rstrip() + "…"
@@ -126,8 +175,7 @@ def format_daily_pick_tweet(
     bankroll_eur: float,
     calendar_date: str,
 ) -> str:
-    bet_on = str(pick.get("bet_on") or "?").strip()
-    opp = str(pick.get("opponent") or "?").strip()
+    bet_on, opp = _pick_player_names(pick)
     odd = float(pick.get("odd_fav") or pick.get("odd_book") or 0.0)
     p_pct = _proba_pct(pick)
     ev_pct = _ev_pct(pick)
@@ -193,7 +241,7 @@ def format_result_tweet(
     won = status == "Gagné"
     icon = "✅" if won else "❌"
     label = "Gagné" if won else "Perdu"
-    bet_on = str(bet.get("bet_on") or "?")
+    bet_on = _bet_on_display(bet)
     odd = float(bet.get("odds") or 0.0)
     stake = float(bet.get("stake") or 0.0)
     profit = float(bet.get("profit") or 0.0)
@@ -219,7 +267,7 @@ def format_result_tweet(
         tour=str(bet.get("tour") or ""),
         tournament=str(bet.get("tournament") or ""),
     )
-    return _embed_hashtags(body, tags)
+    return _embed_hashtags(body, tags, url_campaign="result")
 
 
 def _week_label_fr(week_start: str, week_end: str) -> str:
@@ -249,7 +297,7 @@ def _week_label_fr(week_start: str, week_end: str) -> str:
 def _bet_line_compact(bet: dict) -> str:
     st = str(bet.get("status") or "").strip()
     icon = "✅" if st == "Gagné" else "❌" if st == "Perdu" else "⏳"
-    bet_on = str(bet.get("bet_on") or "?")[:18]
+    bet_on = _bet_on_display(bet)[:18]
     odd = float(bet.get("odds") or 0.0)
     sched = str(bet.get("sched") or "")[-5:]
     if st in ("Gagné", "Perdu"):
@@ -305,7 +353,7 @@ def format_weekly_recap_tweet(
         DISCLAIMER,
     ])
     body = "\n".join(lines)
-    text = _embed_hashtags(body, _hashtag_tags(weekly=True), limit=X_MAX_CHARS)
+    text = _embed_hashtags(body, _hashtag_tags(weekly=True), limit=X_MAX_CHARS, url_campaign="weekly")
     if len(text) <= X_MAX_CHARS:
         return text
 
@@ -325,4 +373,4 @@ def format_weekly_recap_tweet(
         if no_pick_dates:
             compact.append(f"Sans pick : {len(no_pick_dates)} j")
     compact.extend(["", f"BR : {bankroll_eur:.2f} € ({growth:+.1f}%)", DISCLAIMER])
-    return _embed_hashtags("\n".join(compact), _hashtag_tags(weekly=True))
+    return _embed_hashtags("\n".join(compact), _hashtag_tags(weekly=True), url_campaign="weekly")

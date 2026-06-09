@@ -1,13 +1,10 @@
 # CourtAlphaX — tweets X (Europe/Paris)
+# DÉSACTIVÉ — remettre les lignes actives + COURTALPHAX_X_ENABLED=1 dans .env pour reprendre.
 CRON_TZ=Europe/Paris
-# Vérif scrape TE + snapshot avant pick (logs seulement)
-5 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_preflight.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-10 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_preflight.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-# 04:15 — pick safe (bloqué si preflight KO ; retry 04:30 / 05:00)
-15 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-30 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-# Toutes les 30 min (10h–23h) — tweet résultat une seule fois par pari (journal SQLite)
-*/30 10-23 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_result_notify.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
-# Dimanche 20:00 — récap semaine (lun–dim)
-0 20 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_weekly_recap.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#5 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_preflight.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#10 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_preflight.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#15 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#30 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#*/30 10-23 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_result_notify.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1
+#0 20 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_weekly_recap.py >> /opt/bettinghud/data/logs/courtalphax_x.log 2>&1

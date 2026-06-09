@@ -1,6 +1,10 @@
-# Pipeline matin BettingHUD — Europe/Paris (2 phases)
+# Pipeline matin BettingHUD — Europe/Paris
 CRON_TZ=Europe/Paris
 # 02:00 — scrape Tennis Explorer + snapshot full + report algo
 0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only >> /opt/bettinghud/data/logs/morning_build_cron.log 2>&1
-# 04:00 — Top 5 Telegram (TELEGRAM_TOP5_AFTER_MORNING=1, snapshot déjà prêt)
+# 04:00 — Top 5 Telegram (TELEGRAM_TOP5_AFTER_MORNING=1, snapshot 02:00)
 0 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --telegram-only >> /opt/bettinghud/data/logs/morning_telegram_cron.log 2>&1
+# 07:00 — 2e scrape + snapshot (resync cotes matinées, web reste live)
+0 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only >> /opt/bettinghud/data/logs/morning_build_sync_cron.log 2>&1
+# 07:05 — 2e Top 5 Telegram (aligné snapshot frais / page web)
+5 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --telegram-only --source morning-sync >> /opt/bettinghud/data/logs/morning_telegram_sync_cron.log 2>&1

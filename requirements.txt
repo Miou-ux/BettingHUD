@@ -60,6 +60,7 @@ toml==0.10.2
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.2
+eth-account==0.13.7
 Unidecode==1.4.0
 urllib3==2.6.3
 uvicorn==0.46.0

@@ -33,9 +33,16 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[BACKTEST_PARAM_OPTIMIZATION]] | Recherche auto EV min/max, top N (walk-forward, score composite) |
 | [[BACKTEST_RG_2026]] | **Backtest Roland-Garros 2026** — Top 5 proba vs EV vs p≥65 % |
 | [[TELEGRAM_TOP5]] | **Bot Telegram** — `/jour`, `/top5`, `/br`, `/brstats`, envoi matinal |
+| [[TELEGRAM_CHANNEL_ACQUISITION]] | **Canal Telegram public** — 1 Day 1 Pick acquisition FR |
+| [[GOOGLE_SEARCH_CONSOLE]] | **SEO** — Search Console + sitemap |
+| [[LLM_VISIBILITY]] | **LLM** — llms.txt, IndexNow, Bing |
+| [[ACQUISITION_TRAFFIC]] | **Acquisition** — crons trafic, rapports, UTM |
+| [[GSC_BING_BIO_CHECKLIST]] | **SEO ops** — GSC, Bing, bio X |
+| [[COMMUNITY_SEEDING_FR]] | **Seeding** — templates Reddit / Discord / X |
 | [[COURTALPHAX_X]] | **Compte public X (référence complète)** — CourtAlphaX, BR 100 €, picks, résultats, récap hebdo, cron, API, runbook |
 | [[WEB_AUTH]] | **Login dashboard** — compte web, reset mot de passe par e-mail |
-| [[WEB_REACT]] | **Interface React** — projet frère `CourtAlpha` (PREPROD, FastAPI + Vite) |
+| [[BILLING_ETH]] | **Premium ETH HD** — wallet dépôt, indexer, checkout `/pricing` |
+| [[WEB_REACT]] | **Interface React** — projet frère `CourtAlpha` (PROD courtalpha.tech) |
 | [[CHALLENGERS_ET_TOURNOIS]] | **Challengers / WTA 125** — filtre Live Tracker, tier TE, Top 5 main draw |
 | [[OPS_UI_QUICK_WINS]] | **Quick wins** #1 audit picks · #2 état système · #3 empty states |
 

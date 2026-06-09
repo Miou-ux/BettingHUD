@@ -44,7 +44,7 @@ Toute la doc du front React vit dans le dépôt frère :
 
 | `CourtAlpha/docs/API.md` | Endpoints REST |
 
-| `CourtAlpha/docs/CHANGELOG.md` | Historique Web (rebrand, logo, EV, typo, tuiles) |
+| `CourtAlpha/docs/CHANGELOG.md` | Historique Web (rebrand, logo, EV, typo, tuiles, **1 Day 1 Pick**) |
 | `CourtAlpha/docs/UI_DESIGN.md` | Charte couleurs, paliers EV, composants, interactions |
 
 | `CourtAlpha/AGENTS.md` | Règle : documenter chaque changement |
@@ -91,23 +91,27 @@ Streamlit reste disponible en parallèle : `streamlit run app/dashboard.py`.
 
 
 
-## Bascule prod (futur)
+## Pages CourtAlpha (PROD)
 
+| Tier | Routes |
+|------|--------|
+| **Public** | `/1-day-1-pick`, `/pricing`, `/methodo`, `/login` |
+| **Gratuit** (compte) | `/portfolio`, `/profile` |
+| **Premium** | `/live`, `/paris`, `/top5`, `/top-probas` |
 
+Admin (owner/admin) : `/backtest`, `/tracking`, `/frequentation`, `/settings`.
 
-Non activée. Quand prête :
+**Paris / Top 5 / Live** : `BetModal` — cote observée éditable, **EV + mise Kelly** recalculées à la saisie. Tuiles : badge **« Déjà X € »** si pari existant (`existing_stake_eur` API). Live : cote éditée sur `ValueBetCard`.
 
+---
 
+## Bascule prod
 
-- nginx `/` → build React
+Activée sur **https://courtalpha.tech/** :
 
-- nginx `/api` → FastAPI
-
-- nginx `/legacy` → Streamlit (temporaire)
-
-
-
-Voir `CourtAlpha/docs/ARCHITECTURE.md` phase 5.
+- nginx `/` → build React (`frontend/dist/`)
+- nginx `/api` → FastAPI (`courtalpha-api.service`)
+- Streamlit legacy : `https://admin.courtalpha.tech/`
 
 
 

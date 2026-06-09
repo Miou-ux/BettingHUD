@@ -55,6 +55,7 @@ _USER_BETS_TARGET_COLUMNS: tuple[tuple[str, str, Optional[str]], ...] = (
     ("notes", "TEXT", None),
     ("tracker_source", "TEXT", None),
     ("telegram_user_id", "TEXT", None),
+    ("web_username", "TEXT", None),
 )
 
 LIVE_TRACKER_META_START_BR = "live_br_start_eur"
@@ -69,6 +70,8 @@ APP_KELLY_TRACKER_SOURCES: tuple[str, ...] = (
     "live_inplay_manual",
 )
 META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
+META_LAST_TML_SYNC_TS = "last_tml_sync_ts"
+META_LAST_SACKMANN_SYNC_TS = "last_sackmann_sync_ts"
 META_LAST_ML_TRAIN_TS = "last_ml_train_ts"
 ALGO_OPP_KELLY_BASE_FRAC = 0.5
 ALGO_OPP_KELLY_MAX_STAKE_FRAC = 0.15
@@ -187,6 +190,8 @@ def get_data_freshness_snapshot(db_path: str = DB_PATH_DEFAULT) -> dict:
     try:
         ensure_bets_meta(conn)
         tours = get_meta(conn, META_LAST_TOURS_SYNC_TS)
+        tml = get_meta(conn, META_LAST_TML_SYNC_TS)
+        sack = get_meta(conn, META_LAST_SACKMANN_SYNC_TS)
         ml_tr = get_meta(conn, META_LAST_ML_TRAIN_TS)
         last_atp, last_wta = _fetch_last_ml_source_matches(conn)
     finally:
@@ -194,6 +199,8 @@ def get_data_freshness_snapshot(db_path: str = DB_PATH_DEFAULT) -> dict:
     mt = get_ml_bundle_mtime()
     return {
         "last_tours_sync_iso": tours,
+        "last_tml_sync_iso": tml or tours,
+        "last_sackmann_sync_iso": sack or tours,
         "last_ml_train_iso": ml_tr,
         "model_bundle_mtime": mt,
         "model_bundle_path": get_ml_bundle_abspath(),
@@ -478,6 +485,104 @@ def compute_telegram_user_bankroll_eur(
     avail = avail_raw + manual_adj
     return {
         "telegram_user_id": uid,
+        "start_eur": float(start),
+        "available_eur": float(avail),
+        "available_raw_eur": float(avail_raw),
+        "manual_adjust_eur": float(manual_adj),
+        "committed_open_eur": float(open_stakes),
+        "equity_eur": float(avail + open_stakes),
+        "settled_profit_eur": float(settled_profit),
+    }
+
+
+def _web_br_meta_key(web_username: str, kind: str) -> str:
+    uname = str(web_username or "").strip().lower()
+    if not uname:
+        raise ValueError("web_username requis")
+    if kind == "start":
+        return f"web_br_start_{uname}"
+    if kind == "adjust":
+        return f"web_br_manual_adj_{uname}"
+    raise ValueError(f"meta kind inconnu: {kind}")
+
+
+def ensure_web_user_start_br(
+    conn: sqlite3.Connection,
+    web_username: str,
+    *,
+    default_start: Optional[float] = None,
+) -> None:
+    ensure_bets_meta(conn)
+    key = _web_br_meta_key(web_username, "start")
+    if get_meta(conn, key) is None:
+        d = (
+            TELEGRAM_DEFAULT_START_BR
+            if default_start is None
+            else str(float(default_start))
+        )
+        set_meta(conn, key, d)
+
+
+def get_web_user_start_br(conn: sqlite3.Connection, web_username: str) -> float:
+    ensure_web_user_start_br(conn, web_username)
+    v = get_meta(conn, _web_br_meta_key(web_username, "start"))
+    try:
+        return float(v) if v is not None else float(TELEGRAM_DEFAULT_START_BR)
+    except ValueError:
+        return float(TELEGRAM_DEFAULT_START_BR)
+
+
+def get_web_user_manual_adjust_eur(conn: sqlite3.Connection, web_username: str) -> float:
+    ensure_bets_meta(conn)
+    v = get_meta(conn, _web_br_meta_key(web_username, "adjust"))
+    if v is None or str(v).strip() == "":
+        return 0.0
+    try:
+        return float(v)
+    except ValueError:
+        return 0.0
+
+
+def set_web_user_manual_adjust_eur(
+    conn: sqlite3.Connection,
+    web_username: str,
+    value: float,
+) -> None:
+    ensure_bets_meta(conn)
+    set_meta(conn, _web_br_meta_key(web_username, "adjust"), str(float(value)))
+
+
+def compute_web_user_bankroll_eur(conn: sqlite3.Connection, web_username: str) -> dict:
+    """Bankroll Kelly d'un compte web CourtAlpha (sans Telegram lié)."""
+    ensure_user_bets_schema(conn)
+    uname = str(web_username or "").strip().lower()
+    ensure_web_user_start_br(conn, uname)
+    start = get_web_user_start_br(conn, uname)
+    cur = conn.execute(
+        """
+        SELECT COALESCE(SUM(stake), 0)
+        FROM user_bets
+        WHERE LOWER(COALESCE(web_username, '')) = ?
+          AND COALESCE(TRIM(status), '') = 'En cours'
+        """,
+        (uname,),
+    )
+    open_stakes = float(cur.fetchone()[0] or 0.0)
+    cur2 = conn.execute(
+        """
+        SELECT COALESCE(SUM(profit), 0)
+        FROM user_bets
+        WHERE LOWER(COALESCE(web_username, '')) = ?
+          AND COALESCE(TRIM(status), '') != 'En cours'
+        """,
+        (uname,),
+    )
+    settled_profit = float(cur2.fetchone()[0] or 0.0)
+    manual_adj = get_web_user_manual_adjust_eur(conn, uname)
+    avail_raw = float(start) + settled_profit - open_stakes
+    avail = avail_raw + manual_adj
+    return {
+        "web_username": uname,
         "start_eur": float(start),
         "available_eur": float(avail),
         "available_raw_eur": float(avail_raw),
@@ -974,6 +1079,7 @@ def save_bet_enriched(
     notes: Optional[str] = None,
     tracker_source: Optional[str] = None,
     telegram_user_id: Optional[str] = None,
+    web_username: Optional[str] = None,
 ) -> int:
     """Insert a bet with full decision context. Returns the new bet id.
 
@@ -1002,8 +1108,8 @@ def save_bet_enriched(
                 segment_key,
                 p_model, p_implicit, ev_at_bet,
                 bookmaker_source, placed_ts, notes, tracker_source,
-                telegram_user_id
-            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                telegram_user_id, web_username
+            ) VALUES (date('now'), ?, ?, ?, ?, 'En cours', 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 match_name,
@@ -1024,6 +1130,7 @@ def save_bet_enriched(
                 notes,
                 tracker_source,
                 str(telegram_user_id).strip() if telegram_user_id else None,
+                str(web_username).strip().lower() if web_username else None,
             ),
         )
         conn.commit()

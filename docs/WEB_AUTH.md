@@ -72,7 +72,17 @@ L’app **CourtAlpha** réutilise les mêmes comptes (`web_users.json`) via l’
 
 Page React `/profile` ; `BETTINGHUD_WEB_AUTH_REQUIRED=1` sur PROD.
 
-**Accès CourtAlpha (PROD)** : visiteurs → Live Tracker, Paris du jour, Top 5 uniquement. Portfolio, top-probas, backtest, etc. → login. Bankroll toujours liée au `telegram_user_id` du compte connecté.
+**Sessions API** : jeton Bearer stocké côté navigateur (`localStorage`). Côté serveur, les tokens sont **persistés** dans `bettinghud.db` (`web_api_tokens`) — ils survivent aux redémarrages de `courtalpha-api`. TTL par défaut **7 jours** (`BETTINGHUD_WEB_TOKEN_TTL_SEC`), renouvelé à chaque requête authentifiée si `BETTINGHUD_WEB_TOKEN_SLIDE=1` (défaut).
+
+**Accès CourtAlpha (PROD)** :
+
+| Tier | Routes |
+|------|--------|
+| **Public** (sans login) | `/1-day-1-pick`, `/pricing`, `/methodo`, `/login` |
+| **Gratuit** (compte) | `/portfolio`, `/profile` |
+| **Premium** | `/live`, `/paris`, `/top5`, `/top-probas` |
+
+Bankroll toujours liée au `telegram_user_id` du compte connecté. Voir [[BILLING_ETH]] pour l’activation premium.
 
 **Streamlit legacy** : `https://admin.courtalpha.tech/` (ex-`:8502`). Variable `BETTINGHUD_WEB_BASE_URL` → même URL pour les liens reset mot de passe.
 
@@ -112,6 +122,8 @@ Sans SMTP, le reset par mail est indisponible ; la connexion classique reste act
 | `BETTINGHUD_WEB_PASSWORD_MIOUPPY` | — | Sync auto compte miouppy au boot |
 | `BETTINGHUD_WEB_EMAIL_MIOUPPY` | — | E-mail sync env (optionnel) |
 | `BETTINGHUD_TELEGRAM_USER_ID_MIOUPPY` | `7113749284` | Lien Telegram sync env |
+| `BETTINGHUD_WEB_TOKEN_TTL_SEC` | `604800` (7 j) | Durée de vie token API CourtAlpha |
+| `BETTINGHUD_WEB_TOKEN_SLIDE` | `1` | Prolonge le TTL à chaque requête authentifiée |
 
 ---
 

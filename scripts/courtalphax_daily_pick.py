@@ -369,11 +369,14 @@ def run_daily_pick(*, dry_run: bool = False, force: bool = False, skip_preflight
 
         posted = post_tweet(tweet, dry_run=False)
 
+        bet_on = str(pick.get("bet_on") or pick.get("fav_player") or "").strip()
+        opponent = str(pick.get("opponent") or pick.get("underdog_player") or "").strip()
+
         bet_id = save_bet_enriched(
 
-            match_name=str(pick.get("match_name") or f"{pick.get('bet_on')} vs {pick.get('opponent')}"),
+            match_name=str(pick.get("match_name") or f"{bet_on} vs {opponent}"),
 
-            bet_on=str(pick.get("bet_on") or ""),
+            bet_on=bet_on,
 
             odds=odd,
 

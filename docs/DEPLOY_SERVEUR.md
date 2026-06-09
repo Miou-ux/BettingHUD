@@ -203,11 +203,16 @@ Let’s Encrypt exige en général un nom de domaine. Alternatives :
 
 Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 
-- **02:00 Europe/Paris** chaque jour (`CRON_TZ=Europe/Paris`) : `scripts/morning_live_pipeline.py`
-- Logs : `data/logs/morning_pipeline_cron.log`
-- Si `TELEGRAM_TOP5_AFTER_MORNING=1` dans `/opt/bettinghud/.env` → envoi **Top 5 proba** en fin de pipeline
+| Heure (Paris) | Commande | Log |
+|---------------|----------|-----|
+| **02:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_cron.log` |
+| **04:00** | `morning_live_pipeline.py --telegram-only` | `data/logs/morning_telegram_cron.log` |
+| **07:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_sync_cron.log` |
+| **07:05** | `morning_live_pipeline.py --telegram-only --source morning-sync` | `data/logs/morning_telegram_sync_cron.log` |
 
-Sur Windows, équivalent : `scripts/register_morning_task.ps1` (tâche planifiée **02:00** locale).
+Si `TELEGRAM_TOP5_AFTER_MORNING=1` dans `/opt/bettinghud/.env` → Top 5 **interactif** (boutons Parier) à **04:00** et **07:05**.
+
+Sur Windows PREPROD : `scripts/register_morning_task.ps1` (tâche planifiée locale).
 
 ### Bot Telegram (commandes `/jour`, `/top5`)
 
