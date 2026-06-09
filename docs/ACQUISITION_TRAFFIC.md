@@ -6,11 +6,28 @@ Hub ops + technique pour maximiser le trafic avec automatisation (1–2 h/semain
 
 ---
 
-## Objectif KPI
+## KPI cible 60 j
 
 - **Priorité** : sessions / visiteurs uniques sur pages publiques
 - **Mesure** : admin `/frequentation` + rapport Telegram hebdo
 - **Cible 60 j** : x3 sessions/semaine vs baseline
+
+---
+
+## Statut ops (audit 2026-06-09)
+
+| Élément | Statut | Note |
+|---------|--------|------|
+| Cron `courtalpha-acquisition` | ✅ installé | `/etc/cron.d/courtalpha-acquisition` (était absent) |
+| Canal TG public | ⚠️ à vérifier | `TELEGRAM_CHANNEL_ID` / `TELEGRAM_CHANNEL_ENABLED` absents du `.env` prod repéré — voir [[TELEGRAM_CHANNEL_ACQUISITION]] |
+| X auto | ⏸ off | `COURTALPHAX_X_ENABLED=0` |
+| OG snapshot | ✅ | `frontend/dist/og-1-day-1-pick.png` présent |
+| SEO EN prerender | ✅ | Routes `/en/1-day-1-pick`, `/en/methodo`, `/en/track-record-faq` + hreflang |
+| FAQ track record | ✅ | `/track-record-faq` (FR + EN) |
+| GSC / Bing | ❌ manuel | [[GSC_BING_BIO_CHECKLIST]] — action utilisateur |
+| Baseline 7 j (2026-06-09) | 133 vues | Top : `/1-day-1-pick` (23), sources surtout direct |
+
+Baseline trafic : admin **Fréquentation** ou `web_page_views` (7 j glissants).
 
 ---
 
