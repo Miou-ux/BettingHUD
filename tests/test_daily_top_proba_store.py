@@ -79,6 +79,39 @@ def test_collect_top5_excludes_challenger():
     assert "challenger" not in str(picks[0].get("tournament") or "").lower()
 
 
+def test_collect_paris_du_jour_includes_challenger():
+    from scripts.daily_top_proba_store import collect_paris_du_jour_picks
+
+    major = _match("A", "B", 0.88, "WTA", date="2026-05-27")
+    major["true_odd_p1"] = 1.20
+    major["true_odd_p2"] = 5.00
+    major["odd_p1"] = 1.25
+    major["odd_p2"] = 4.50
+    chal = dict(major)
+    chal.update(
+        {
+            "player1": "C",
+            "player2": "D",
+            "tournament": "Foggia",
+            "tourney_winner_points": 125,
+            "feature_snapshot": {"capped_p1_prob": 0.95},
+            "true_odd_p1": 1.15,
+            "odd_p1": 1.18,
+        }
+    )
+    picks = collect_paris_du_jour_picks(
+        [chal, major],
+        limit=None,
+        ev_min_frac=0.0,
+        ev_max_frac=2.0,
+        today_only=True,
+        calendar_date="2026-05-27",
+    )
+    assert len(picks) == 2
+    assert picks[0]["fav_player"] == "C"
+    assert picks[1]["fav_player"] == "A"
+
+
 def test_filter_matches_for_daily_top_proba():
     from scripts.daily_top_proba_store import filter_matches_for_daily_top_proba
 

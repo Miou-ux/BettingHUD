@@ -1,9 +1,9 @@
-# Tâches planifiées Windows (PREPROD) : build 02:00 + Telegram 04:00 (heure locale).
+# Tâches planifiées Windows (PREPROD) : build 02:00 + publications 05:00 (heure locale).
 param(
     [string]$BuildTime = "02:00",
-    [string]$TelegramTime = "04:00",
+    [string]$PublishTime = "05:00",
     [string]$BuildTaskName = "BettingHUD-Morning-Build",
-    [string]$TelegramTaskName = "BettingHUD-Morning-Telegram"
+    [string]$PublishTaskName = "BettingHUD-Morning-Publish"
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,9 +48,9 @@ function Register-DailyTask {
 }
 
 Register-DailyTask -Name $BuildTaskName -At $BuildTime -Arguments "`"$Script`" --build-only"
-Register-DailyTask -Name $TelegramTaskName -At $TelegramTime -Arguments "`"$Script`" --telegram-only"
+Register-DailyTask -Name $PublishTaskName -At $PublishTime -Arguments "`"$Script`" --morning-publish"
 
 Write-Host ""
 Write-Host "Test manuel :"
 Write-Host "  Build     : $Python `"$Script`" --build-only"
-Write-Host "  Telegram  : $Python `"$Script`" --telegram-only"
+Write-Host "  Publish   : $Python `"$Script`" --morning-publish"

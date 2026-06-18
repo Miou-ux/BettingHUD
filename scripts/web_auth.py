@@ -373,6 +373,91 @@ def update_user_profile(
     return get_web_user_session(str(users[i].get("username") or ""))
 
 
+def public_user_record(rec: dict[str, Any]) -> dict[str, Any]:
+    """Compte web sans secrets (admin / API)."""
+    uname = str(rec.get("username") or "").lower()
+    out = {
+        "username": uname,
+        "display_name": str(rec.get("display_name") or rec.get("username") or ""),
+        "role": str(rec.get("role") or "user"),
+        "telegram_user_id": rec.get("telegram_user_id"),
+        "telegram_username": rec.get("telegram_username"),
+        "email": rec.get("email"),
+    }
+    av = avatar_api_path(uname)
+    if av:
+        out["avatar_url"] = av
+    return out
+
+
+def admin_update_user(
+    username: str,
+    *,
+    display_name: str | None = None,
+    role: str | None = None,
+    email: str | None = None,
+    telegram_user_id: str | None = None,
+    telegram_username: str | None = None,
+    clear_telegram: bool = False,
+) -> dict[str, Any] | None:
+    """Mise à jour admin (profil + rôle + e-mail)."""
+    uname = str(username or "").strip().lower()
+    if not uname:
+        return None
+    doc = _load_users_doc()
+    users: list[dict] = list(doc.get("users") or [])
+    found = False
+    for i, u in enumerate(users):
+        if str(u.get("username") or "").lower() != uname:
+            continue
+        row = dict(u)
+        if display_name is not None:
+            dn = str(display_name).strip()
+            if dn:
+                row["display_name"] = dn[:80]
+        if role is not None:
+            r = str(role).strip().lower()
+            if r not in {"user", "admin", "owner"}:
+                raise ValueError("Rôle invalide (user, admin, owner).")
+            if uname == "miouppy" and r not in ADMIN_ROLES:
+                raise ValueError("Impossible de rétrograder le compte owner.")
+            row["role"] = r
+        if email is not None:
+            addr = str(email).strip().lower()
+            if not addr or "@" not in addr:
+                raise ValueError("E-mail invalide.")
+            for other in users:
+                if str(other.get("username") or "").lower() == uname:
+                    continue
+                if str(other.get("email") or "").strip().lower() == addr:
+                    raise ValueError("Cet e-mail est déjà utilisé.")
+            row["email"] = addr
+        if clear_telegram:
+            row.pop("telegram_user_id", None)
+            row.pop("telegram_username", None)
+        else:
+            if telegram_user_id is not None:
+                tg = str(telegram_user_id).strip()
+                if tg:
+                    row["telegram_user_id"] = tg
+                else:
+                    row.pop("telegram_user_id", None)
+            if telegram_username is not None:
+                tu = str(telegram_username).strip().lstrip("@")
+                if tu:
+                    row["telegram_username"] = tu
+                else:
+                    row.pop("telegram_username", None)
+        users[i] = row
+        found = True
+        break
+    if not found:
+        return None
+    doc["users"] = users
+    _save_users_doc(doc)
+    return get_web_user_session(uname)
+
+
 def _session_payload(rec: dict[str, Any]) -> dict[str, Any]:
     uname = str(rec.get("username") or "").lower()
     out = {

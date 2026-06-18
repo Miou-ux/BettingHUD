@@ -112,6 +112,17 @@ def _match_calendar_date(m: dict) -> datetime.date | None:
         return None
 
 
+def snapshot_age_min_from_meta(meta: dict | None) -> float | None:
+    """Âge du snapshot live en minutes (None si inconnu)."""
+    built = (meta or {}).get("built_at") or (meta or {}).get("mtime")
+    if not built:
+        return None
+    try:
+        return max(0.0, (datetime.now(PARIS_TZ).timestamp() - float(built)) / 60.0)
+    except (TypeError, ValueError):
+        return None
+
+
 def is_today_paris_match(m: dict, *, today: datetime.date | None = None) -> bool:
     today = today or datetime.now(PARIS_TZ).date()
     d = _match_calendar_date(m)
@@ -154,6 +165,68 @@ def format_match_time_display(m: dict, *, ref_date: datetime.date | None = None)
 
 def _match_tour(m: dict) -> str:
     return str(m.get("tour") or m.get("category") or "").strip().upper()
+
+
+def _player_pair_key(row: dict) -> tuple[str, str]:
+    from scripts.sync_tml_recent import _norm_name
+
+    p1 = _norm_name(row.get("player1"))
+    p2 = _norm_name(row.get("player2"))
+    if not p1 or not p2:
+        mn = str(row.get("match_name") or "")
+        if " vs " in mn:
+            a, b = mn.split(" vs ", 1)
+            p1, p2 = _norm_name(a), _norm_name(b)
+        else:
+            p1 = _norm_name(row.get("fav_player"))
+            p2 = _norm_name(row.get("underdog_player"))
+    return p1, p2
+
+
+def matchup_players_key(row: dict) -> str:
+    """Paire de joueurs normalisée (sans date) — dédup replay 1D1P inter-jours."""
+    p1, p2 = _player_pair_key(row)
+    if not p1 or not p2:
+        return ""
+    return "|".join(sorted((p1, p2)))
+
+
+def _match_identity_key(row: dict) -> str:
+    """Clé stable : jour + circuit + tournoi + paire de joueurs (ordre indifférent)."""
+    from scripts.sync_tml_recent import _norm_name
+
+    p1, p2 = _player_pair_key(row)
+    if not p1 or not p2:
+        return ""
+    players = "|".join(sorted((p1, p2)))
+    tour = str(row.get("tour") or "").upper()
+    tourn = _norm_name(str(row.get("tournament") or ""))
+    cal = str(row.get("calendar_date") or row.get("match_date") or "")[:10]
+    return f"{cal}|{tour}|{tourn}|{players}"
+
+
+def dedupe_top_proba_rows_by_match(rows: list[dict]) -> list[dict]:
+    """Une entrée par match ; en cas de doublon snapshot, garde la meilleure proba puis EV."""
+    best: dict[str, dict] = {}
+    for row in rows:
+        key = _match_identity_key(row)
+        if not key:
+            continue
+        prev = best.get(key)
+        if prev is None:
+            best[key] = row
+            continue
+        cand = (
+            float(row.get("p_model_fav") or 0.0),
+            float(row.get("ev_fav") or -1e9),
+        )
+        old = (
+            float(prev.get("p_model_fav") or 0.0),
+            float(prev.get("ev_fav") or -1e9),
+        )
+        if cand > old:
+            best[key] = row
+    return list(best.values())
 
 
 def _match_favorite_metrics(m: dict) -> dict[str, Any] | None:
@@ -274,6 +347,8 @@ def collect_daily_top_proba_rows(
             }
         )
 
+    pool = dedupe_top_proba_rows_by_match(pool)
+
     rows: list[dict] = []
     for tour in tours:
         tour_u = tour.upper()
@@ -297,10 +372,16 @@ def collect_top5_proba_picks(
     ev_min_frac: float = 0.15,
     ev_max_frac: float = 1.0,
     today_only: bool = True,
+    major_only: bool = True,
+    min_proba_frac: float = 0.60,
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Top N favoris modèle du jour (EV favori dans la bande), tri proba ↓ — aligné onglet Paris du jour."""
+    """Favori modèle du jour : EV favori dans la bande, proba > min, tri proba ↓.
+
+    Top 5 : ``major_only=True``, ``limit=5``.
+    Paris du jour : ``major_only=False``, ``limit=None`` (tournois mineurs inclus).
+    """
     cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
     cal_date_obj = datetime.strptime(cal_day, "%Y-%m-%d").date()
     if ml is None:
@@ -312,10 +393,12 @@ def collect_top5_proba_picks(
     for m in matches:
         if today_only and not is_today_paris_match(m, today=cal_date_obj):
             continue
-        if not is_major_atp_wta_match(m):
+        if major_only and not is_major_atp_wta_match(m):
             continue
         met = _match_favorite_metrics(m)
         if met is None:
+            continue
+        if float(met["p_model_fav"]) <= float(min_proba_frac):
             continue
         ev_f = float(met["ev_fav"])
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
@@ -374,16 +457,45 @@ def collect_daily_ev_band_picks(
     ev_min_frac: float = 0.15,
     ev_max_frac: float = 1.0,
     today_only: bool = True,
+    major_only: bool = True,
+    min_proba_frac: float = 0.60,
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Tous les picks du jour dans la bande EV favori (tri proba ↓)."""
+    """Picks favori modèle dans la bande EV (tri proba ↓)."""
     return collect_top5_proba_picks(
         matches,
         limit=limit,
         ev_min_frac=ev_min_frac,
         ev_max_frac=ev_max_frac,
         today_only=today_only,
+        major_only=major_only,
+        min_proba_frac=min_proba_frac,
+        calendar_date=calendar_date,
+        ml=ml,
+    )
+
+
+def collect_paris_du_jour_picks(
+    matches: list[dict],
+    *,
+    limit: int | None = None,
+    ev_min_frac: float = 0.15,
+    ev_max_frac: float = 1.0,
+    today_only: bool = True,
+    min_proba_frac: float = 0.60,
+    calendar_date: str | None = None,
+    ml: TennisMLModel | None = None,
+) -> list[dict]:
+    """Paris du jour : même protocole Top 5, tournois majeurs + mineurs (Challenger, WTA 125…)."""
+    return collect_top5_proba_picks(
+        matches,
+        limit=limit,
+        ev_min_frac=ev_min_frac,
+        ev_max_frac=ev_max_frac,
+        today_only=today_only,
+        major_only=False,
+        min_proba_frac=min_proba_frac,
         calendar_date=calendar_date,
         ml=ml,
     )

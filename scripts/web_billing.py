@@ -559,3 +559,32 @@ def fulfill_order_from_deposit(
         finally:
             conn2.close()
     return True
+
+
+def list_billing_orders_for_user(
+    username: str,
+    *,
+    limit: int = 50,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    uname = str(username or "").strip().lower()
+    if not uname:
+        return []
+    conn = sqlite3.connect(_db_path(db_path))
+    try:
+        ensure_billing_schema(conn)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, plan_id, status, price_wei, chain_id, payer_address, tx_hash,
+                   created_at, expires_at, paid_at
+            FROM billing_orders
+            WHERE username = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (uname, max(1, min(int(limit), 200))),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

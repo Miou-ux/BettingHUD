@@ -1,21 +1,15 @@
 # Acquisition trafic CourtAlpha — crons PROD (Europe/Paris)
 CRON_TZ=Europe/Paris
 
-# 04:10 — canal Telegram public (pick + résultat J-1)
-10 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
+# Publications quotidiennes (Top 5, 1D1P, canal TG) : morning_live_pipeline.py --morning-publish (05:00)
 
-# 04:15 — CourtAlphaX tweet (+ URL track record) — DÉSACTIVÉ (COURTALPHAX_X_ENABLED=0)
-#15 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
-#30 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
-#0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
+# 04:55 — image OG stats (avant publications 05:00)
+55 4 * * * ubuntu cd /opt/bettinghud && COURTALPHA_ROOT=/opt/courtalpha /opt/bettinghud/venv/bin/python scripts/generate_og_snapshot.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
 
-# 07:12 — resync canal TG (snapshot matinée)
-12 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
+# CourtAlphaX tweet — DÉSACTIVÉ (COURTALPHAX_X_ENABLED=0)
+#0 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
 
-# 04:20 — image OG stats (partages sociaux)
-20 4 * * * ubuntu cd /opt/bettinghud && COURTALPHA_ROOT=/opt/courtalpha /opt/bettinghud/venv/bin/python scripts/generate_og_snapshot.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
-
-# Dimanche 10h — récap canal TG
+# Dimanche 10h — récap canal TG (doublon safe si déjà envoyé par telegram-channel cron)
 0 10 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/telegram_channel_notify.py --weekly >> /opt/bettinghud/data/logs/acquisition.log 2>&1
 
 # Dimanche 11h — brouillon Reddit → Telegram admin

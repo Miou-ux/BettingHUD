@@ -182,19 +182,23 @@ Page publique React : **`/1-day-1-pick`** (CourtAlpha, sans login).
 | Élément | Détail |
 |---------|--------|
 | API | `GET /api/picks/one-day-one-pick` |
-| Sélection | Chaque jour : meilleur **rank=1** entre ATP et WTA (`p_model_fav` max) |
+| Sélection | Par circuit : premier classé proba ↓ avec EV 15–100 % ; puis meilleur ATP vs WTA (`p_model_fav` max) |
 | Filtres | Tournois majeurs main draw 250+, EV favori 15–100 % |
 | Mise | Kelly ½ × Brier (`theoretical_stake_frac`) sur BR 100 € par défaut |
 | Résultats | `sync_daily_top_proba_from_results()` à chaque requête API |
-| Affichage | **Pick du jour** en carte + tableau historique + courbe bankroll (`curve[]`) |
+| Affichage | **Pick du jour** en carte + tableau historique (**date ↓**, récent en haut) + courbe bankroll (`curve[]`) |
 | Jour courant | Inclus par défaut ; snapshot live si pas encore persisté ; +1 ligne/jour via daemon |
+| Courbe | `curve[]` reste **chronologique** (oldest → newest) pour le calcul bankroll |
 
 Service API : `CourtAlpha/api/services/one_day_one_pick.py`.
+
+**Déduplication** (juin 2026) : avant classement top-N, `dedupe_top_proba_rows_by_match()` fusionne les doublons snapshot TE (même match, `match_id` différents). Voir [[ONE_DAY_ONE_PICK]] §4.
 
 ---
 
 ## Liens
 
+- [[ONE_DAY_ONE_PICK]] — publication TG / Discord / web
 - [[CHART_TOP_PROBAS_JOUR]] — UI top probas
 - [[WEB_REACT]] — pages publiques React
 - [[BACKTEST_TOP10_PROBA_SIMULATIONS]] — backtest historique tennis-data (comparatif)

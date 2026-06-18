@@ -4,7 +4,7 @@
 Documentation: docs/TELEGRAM_CHANNEL_ACQUISITION.md
 
 Env:
-  TELEGRAM_BOT_TOKEN       — same bot as BettingHUD (must be channel admin)
+  TELEGRAM_BOT_TOKEN       — same CourtAlpha bot (must be channel admin)
   TELEGRAM_CHANNEL_ID      — public channel id (e.g. -100xxxxxxxxxx or @channelname)
   COURTALPHA_PUBLIC_URL    — default https://courtalpha.tech
   COURTALPHA_ROOT          — path to CourtAlpha repo for one_day_one_pick service
@@ -31,6 +31,7 @@ os.environ.setdefault("BETTINGHUD_HEADLESS", "1")
 
 PARIS = ZoneInfo("Europe/Paris")
 META_DAILY_PREFIX = "tg_channel_daily_"
+META_DAILY_MSG_PREFIX = "tg_channel_daily_msg_"
 META_RESULT_PREFIX = "tg_channel_result_"
 META_WEEKLY_PREFIX = "tg_channel_weekly_"
 
@@ -158,43 +159,56 @@ def _mark_sent(conn: sqlite3.Connection, prefix: str, token: str) -> None:
 
 
 def format_daily_pick_message(pick: dict, *, today: str) -> str:
+    from scripts.comms_locale import DISCLAIMER_EN, format_calendar_date_label
+
     line = _pick_match_line(pick)
     tournoi = str(pick.get("tournament") or "").strip()
-    header = f"🎾 <b>1 Day 1 Pick</b> — {_format_date_fr(today)}"
+    header = f"🎾 <b>1 Day 1 Pick</b> — {format_calendar_date_label(today)}"
     body = f"{line}"
     if tournoi:
         body += f"\n🏆 {tournoi}"
     link = _utm_link("daily")
     footer = (
-        f'\n<a href="{link}">Historique public vérifiable</a>\n'
-        f"<i>Info — pas un conseil de pari. Jouez responsablement.</i>"
+        f'\n<a href="{link}">Public verifiable track record</a>\n'
+        f"<i>{DISCLAIMER_EN}</i>"
     )
     return header + "\n" + body + footer
 
 
 def format_no_pick_message(*, today: str) -> str:
+    from scripts.comms_locale import format_calendar_date_label
+
     link = _utm_link("daily")
     return (
-        f"🎾 <b>1 Day 1 Pick</b> — {_format_date_fr(today)}\n"
-        "Aucun majeur rank=1 dans la bande EV 15–100 % aujourd'hui.\n"
-        f'<a href="{link}">Voir le track record</a>'
+        f"🎾 <b>1 Day 1 Pick</b> — {format_calendar_date_label(today)}\n"
+        "No major pick in the EV 15–100% band today.\n"
+        f'<a href="{link}">View track record</a>'
     )
 
 
 def format_result_message(pick: dict) -> str:
+    from scripts.comms_locale import format_calendar_date_label
+
     cal = str(pick.get("calendar_date") or "")
     won = bool(pick.get("won"))
     lost = bool(pick.get("lost"))
-    emoji = "✅" if won else "❌" if lost else "⏳"
-    label = "Gagné" if won else "Perdu" if lost else str(pick.get("status") or "—")
+    void = str(pick.get("status") or "") == "Annulé" or bool(pick.get("void"))
+    if void:
+        emoji, label = "⏸️", "Void"
+    elif won:
+        emoji, label = "✅", "Won"
+    elif lost:
+        emoji, label = "❌", "Lost"
+    else:
+        emoji, label = "⏳", str(pick.get("status") or "—")
     score = pick.get("score_display") or pick.get("score_final") or "—"
     line = _pick_match_line(pick)
     link = _utm_link("result")
     return (
-        f"{emoji} <b>Résultat</b> — {_format_date_fr(cal)}\n"
+        f"{emoji} <b>Result</b> — {format_calendar_date_label(cal)}\n"
         f"{line}\n"
-        f"Score : {score} · <b>{label}</b>\n"
-        f'<a href="{link}">Track record complet</a>'
+        f"Score: {score} · <b>{label}</b>\n"
+        f'<a href="{link}">Full track record</a>'
     )
 
 
@@ -205,15 +219,15 @@ def format_weekly_recap(*, picks: list[dict], week_label: str, year_month: str) 
     pricing = f"{_public_base_url()}/pricing?utm_source=telegram&utm_medium=channel&utm_campaign=weekly"
     archive = _archive_link(year_month)
     return (
-        f"📊 <b>Récap hebdo</b> — {week_label}\n"
-        f"Picks : {len(picks)} · Terminés : {len(settled)} · Hit : <b>{hit:.1f}%</b>\n"
-        f'<a href="{archive}">Archive du mois</a>\n'
-        f'<a href="{pricing}">Outils Premium</a> (Live, Top 5…)\n'
-        f"<i>Track record public — pas de picks effacés.</i>"
+        f"📊 <b>Weekly recap</b> — {week_label}\n"
+        f"Picks: {len(picks)} · Settled: {len(settled)} · Hit rate: <b>{hit:.1f}%</b>\n"
+        f'<a href="{archive}">Monthly archive</a>\n'
+        f'<a href="{pricing}">Premium tools</a> (Live, Top 5…)\n'
+        f"<i>Public track record — no picks removed.</i>"
     )
 
 
-def run_channel_notify(*, dry_run: bool = False, weekly: bool = False) -> dict:
+def run_channel_notify(*, dry_run: bool = False, weekly: bool = False, force: bool = False) -> dict:
     from scripts.bets_db import DB_PATH_DEFAULT
     from scripts.telegram_top5_notify import send_telegram_message
 
@@ -278,7 +292,7 @@ def run_channel_notify(*, dry_run: bool = False, weekly: bool = False) -> dict:
                 sent.append(f"result:{yesterday}")
 
         # Today's pick
-        if not _already_sent(conn, META_DAILY_PREFIX, today) or dry_run:
+        if not _already_sent(conn, META_DAILY_PREFIX, today) or dry_run or force:
             if pick_today:
                 msg = format_daily_pick_message(pick_today, today=today)
             else:
@@ -287,9 +301,11 @@ def run_channel_notify(*, dry_run: bool = False, weekly: bool = False) -> dict:
                 _safe_print("--- DAILY ---")
                 _safe_print(msg)
             else:
-                send_telegram_message(msg, token=token, chat_id=channel)
-                if not dry_run:
-                    _mark_sent(conn, META_DAILY_PREFIX, today)
+                resp = send_telegram_message(msg, token=token, chat_id=channel)
+                mid = (resp.get("result") or {}).get("message_id")
+                if mid is not None:
+                    _meta_set(conn, f"{META_DAILY_MSG_PREFIX}{today}", str(mid))
+                _mark_sent(conn, META_DAILY_PREFIX, today)
             sent.append(f"daily:{today}")
     finally:
         conn.close()
@@ -308,8 +324,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="CourtAlpha public Telegram channel notify")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--weekly", action="store_true", help="Récap hebdomadaire (dimanche)")
+    ap.add_argument("--force", action="store_true", help="Repost daily même si déjà envoyé")
     args = ap.parse_args()
-    out = run_channel_notify(dry_run=args.dry_run, weekly=args.weekly)
+    out = run_channel_notify(dry_run=args.dry_run, weekly=args.weekly, force=args.force)
     print(out)
     if not out.get("ok"):
         raise SystemExit(1)

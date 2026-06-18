@@ -3,8 +3,8 @@ Mise à jour base SQLite ATP + WTA (usage manuel ou planificateur).
 
 - ATP : TennisMyLife -> `matches_recent` (scripts/sync_tml_recent.py).
 - WTA : si `data/raw/tennis_wta` est un clone Git -> `git pull` ;
-        sinon téléchargement HTTP des CSV Sackmann (scripts/fetch_wta_sackmann_raw.py).
-        Puis ingest + index (scripts/pipeline_quality.py, sans ré-entraînement ML).
+        sinon delta tennis-data : `sync_wta_delta.py` puis `enrich_wta_delta_te_stats.py` sur `data/raw/tennis_wta`.
+        Puis ingest + index (scripts/pipeline_quality.py, sans re-entrainement ML).
 
 Usage:
     python scripts/sync_tours_daily.py
@@ -59,20 +59,44 @@ def _git_pull_wta() -> None:
         _append_log(f"WTA git pull error: {e}")
 
 
+def _wta_raw_dir() -> str:
+    return os.path.join(ROOT, "data", "raw", "tennis_wta")
+
+
+def _run_wta_delta_on_raw() -> int:
+    """sync_wta_delta + enrich sur data/raw/tennis_wta (prod)."""
+    wta_dir = _wta_raw_dir()
+    os.makedirs(wta_dir, exist_ok=True)
+    extra = ["--work-dir", wta_dir]
+    try:
+        from scripts.wta_sackmann_common import DEFAULT_CUTOFF
+    except Exception:
+        DEFAULT_CUTOFF = 20260526  # type: ignore[misc, assignment]
+    extra += ["--cutoff-date", str(DEFAULT_CUTOFF)]
+    _append_log("WTA delta: lancement sync_wta_delta.py")
+    rc = _run_py_with_args("sync_wta_delta.py", extra)
+    if rc != 0:
+        _append_log("sync_wta_delta.py a echoue.")
+        return rc
+    _append_log("sync_wta_delta.py OK.")
+    _append_log("WTA delta: lancement enrich_wta_delta_te_stats.py")
+    rc = _run_py_with_args("enrich_wta_delta_te_stats.py", extra)
+    if rc != 0:
+        _append_log("enrich_wta_delta_te_stats.py a echoue.")
+    else:
+        _append_log("enrich_wta_delta_te_stats.py OK.")
+    return rc
+
+
 def _update_wta_sackmann_raw() -> int:
-    """Clone Git -> pull ; sinon téléchargement HTTP. Retourne 0 si OK pour la suite WTA."""
-    wta_dir = os.path.join(ROOT, "data", "raw", "tennis_wta")
+    """Clone Git -> pull ; sinon pipeline delta WTA sur data/raw/tennis_wta."""
+    wta_dir = _wta_raw_dir()
     git_mark = os.path.join(wta_dir, ".git")
     if os.path.isdir(git_mark):
         _git_pull_wta()
         return 0
-    _append_log("WTA sans .git : téléchargement CSV via fetch_wta_sackmann_raw.py")
-    rc = _run_py("fetch_wta_sackmann_raw.py")
-    if rc != 0:
-        _append_log("fetch_wta_sackmann_raw.py a échoué (voir sortie / réseau).")
-    else:
-        _append_log("fetch_wta_sackmann_raw.py OK.")
-    return rc
+    return _run_wta_delta_on_raw()
+
 
 
 def _run_py(script_relative: str) -> int:

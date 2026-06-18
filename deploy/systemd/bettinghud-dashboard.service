@@ -13,6 +13,7 @@ Environment=BETTINGHUD_ENV=prod
 # Ne pas définir BETTINGHUD_HEADLESS ici : ce flag désactive l’UI Streamlit (réservé aux scripts CLI).
 Environment=BETTINGHUD_LIVE_DATA_DAEMON=1
 Environment=BETTINGHUD_AUTO_SYNC_TOURS=1
+EnvironmentFile=-/opt/bettinghud/.env
 ExecStart=/opt/bettinghud/venv/bin/streamlit run app/dashboard.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true
 Restart=always
 RestartSec=10

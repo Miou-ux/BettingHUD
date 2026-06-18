@@ -1,12 +1,14 @@
 """Picks du jour alignés onglet Live Tracker (headless, PROD / Telegram).
 
-Par défaut (/jour Telegram) :
-  - matchs **Aujourd'hui** (Europe/Paris)
+Live Tracker / ``/jour`` Telegram :
+  - matchs **Aujourd'hui** (Europe/Paris), **majeurs + mineurs**
   - cotes valides + rang/points sur les deux joueurs
   - matchs à venir ou démarrés récemment (grâce configurable)
-  - **EV > 15 %** (seuil défaut, ``TELEGRAM_JOUR_EV_MIN_PCT``)
-  - **proba modèle > 60 %** (filtre affichage Telegram, ``TELEGRAM_MIN_PROBA_PCT``)
-  - tri **proba modèle** décroissante (Telegram / dashboard)
+  - **value bets EV ≥ 15 %** (``ValueDetector``, les deux côtés possibles, sans filtre proba min)
+  - tri **proba modèle** décroissante
+
+Paris du jour / Top 5 (``daily_top_proba_store``) : favori modèle uniquement — voir
+``collect_paris_du_jour_picks`` / ``collect_top5_proba_picks``.
 
 ``/jourchallenger`` :
   - tournois ATP/WTA dont le nom contient « challenger »
@@ -147,14 +149,20 @@ def filter_live_tracker_day_matches(
     matches: list[dict],
     *,
     today_only: bool = True,
+    actionable_only: bool = False,
 ) -> list[dict]:
-    """Même base que Live Tracker : hygiène données + jour + matchs encore pertinents."""
+    """Pool Live Tracker : hygiène données + jour Paris.
+
+    ``actionable_only=True`` (Telegram matin) : exclut les matchs démarrés depuis
+    > ``LIVE_STARTED_GRACE_MINUTES``. Le web affiche tous les matchs du jour calendaire
+    (aligné Paris du jour / Top 5).
+    """
     base = filter_matches_for_daily_top_proba([dict(m) for m in matches if isinstance(m, dict)])
     out: list[dict] = []
     for m in base:
         if today_only and not is_today_paris_match(m):
             continue
-        if not _is_future_or_recent_started_match(m):
+        if actionable_only and not _is_future_or_recent_started_match(m):
             continue
         out.append(m)
     return out
@@ -354,8 +362,8 @@ def load_live_tracker_day_picks(
 ) -> tuple[list[dict], dict[str, Any], int]:
     """Charge snapshot + retourne (picks, meta, n_matchs_scannés).
 
-    Telegram ``/jour`` : **value bets EV+** uniquement (seuil min en %, défaut 0).
-  """
+    Web Live Tracker : tous les matchs du jour calendaire (sans fenêtre 90 min).
+    """
     try:
         from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
 
@@ -370,7 +378,32 @@ def load_live_tracker_day_picks(
     picks = [
         p
         for p in picks
-        if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) > 0.0
+        if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) >= ev_min
+    ]
+    return sort_picks_by_model_proba_desc(picks), meta, len(scanned)
+
+
+def load_live_tracker_day_picks_telegram(
+    *,
+    ev_threshold_pct: float | None = None,
+    max_age_sec: float | None = None,
+) -> tuple[list[dict], dict[str, Any], int]:
+    """``/jour`` Telegram : même logique + fenêtre horaire (match pas terminé depuis >90 min)."""
+    try:
+        from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
+
+        matches, meta = get_today_matches_cached(max_age_sec=max_age_sec)
+        ml = get_ml_model()
+    except Exception:
+        matches, meta = load_today_matches_for_daily_top_proba(max_age_sec=max_age_sec)
+        ml = None
+    scanned = filter_live_tracker_day_matches(matches, today_only=True, actionable_only=True)
+    ev_min = 0.0 if ev_threshold_pct is None else float(ev_threshold_pct)
+    picks = collect_live_tracker_value_picks(scanned, ev_threshold_pct=ev_min, ml=ml)
+    picks = [
+        p
+        for p in picks
+        if float(p.get("ev_pct") or p.get("ev_fav_pct") or 0.0) >= ev_min
     ]
     return sort_picks_by_model_proba_desc(picks), meta, len(scanned)
 

@@ -38,6 +38,7 @@ from unidecode import unidecode
 
 from scripts.bets_db import (
     DB_PATH_DEFAULT,
+    correct_retirement_voids_user_bets,
     ensure_match_results_cache,
     ensure_user_bets_schema,
     normalize_schedule_date,
@@ -224,6 +225,122 @@ def _classify_score(score: str) -> tuple[bool, bool]:
     return retired, walkover
 
 
+def _parse_te_sets_won(res_text: str) -> tuple[int | None, bool]:
+    """Parse TE td.result: '2', '1 ret.' -> (sets_won, retirement_marker)."""
+    if not res_text:
+        return None, False
+    s = res_text.strip().lower()
+    has_ret = any(tok in s for tok in RETIRED_TOKENS)
+    m = re.search(r"(\d+)", s)
+    n = int(m.group(1)) if m else None
+    return n, has_ret
+
+
+def _is_set_complete(g1: int, g2: int) -> bool:
+    """Rough tennis set completion (6+ with 2-game margin, or 7-5 / 7-6)."""
+    hi, lo = max(g1, g2), min(g1, g2)
+    if hi < 6:
+        return False
+    if hi == 6 and lo <= 4:
+        return True
+    if hi == 7 and lo in (5, 6):
+        return True
+    return hi >= 6 and hi - lo >= 2
+
+
+def _te_last_set_game_scores(full_score: str) -> tuple[int, int] | None:
+    """TE layout: p1 games per set | p2 games per set (e.g. '6 6 | 4 4' → last set 6-4)."""
+    parts = [p.strip() for p in (full_score or "").split("|") if p.strip()]
+    if len(parts) != 2:
+        return None
+    t1, t2 = parts[0].split(), parts[1].split()
+    if not t1 or not t2:
+        return None
+    try:
+        return int(t1[-1]), int(t2[-1])
+    except ValueError:
+        return None
+
+
+def _last_te_set_incomplete(full_score: str) -> bool:
+    last = _te_last_set_game_scores(full_score)
+    if not last:
+        return False
+    g1, g2 = last
+    return (g1 > 0 or g2 > 0) and not _is_set_complete(g1, g2)
+
+
+def _winner_from_incomplete_last_set(
+    full_score: str, p1_name: str, p2_name: str
+) -> str | None:
+    """When a match ends mid-set, the player ahead in the last set wins."""
+    last = _te_last_set_game_scores(full_score)
+    if not last:
+        return None
+    g1, g2 = last
+    if g1 == g2:
+        return None
+    return p1_name if g1 > g2 else p2_name
+
+
+def match_result_effective_retired(
+    *,
+    retired: bool,
+    walkover: bool,
+    score: str | None,
+) -> bool:
+    """Ne pas faire confiance au flag DB seul — valider via le score TE."""
+    if walkover:
+        return False
+    sc = score or ""
+    explicit, _ = _classify_score(sc)
+    if explicit:
+        return True
+    return score_suggests_retirement(sc)
+
+
+def score_suggests_retirement(score: str) -> bool:
+    """Infer retirement from score when TE omits 'ret.' (e.g. '6 3 | 2 4')."""
+    if not score:
+        return False
+    retired, walkover = _classify_score(score)
+    if walkover:
+        return False
+    if retired:
+        return True
+    return _last_te_set_incomplete(score)
+
+
+def _infer_te_retirement(
+    *,
+    p1_res: str,
+    p2_res: str,
+    full_score: str,
+    sets_p1: int | None,
+    sets_p2: int | None,
+) -> bool:
+    """TE often omits 'ret.' in score cells — infer from result columns / partial sets."""
+    retired, walkover = _classify_score(full_score)
+    if walkover:
+        return False
+    if retired:
+        return True
+    _, ret1 = _parse_te_sets_won(p1_res)
+    _, ret2 = _parse_te_sets_won(p2_res)
+    if ret1 or ret2:
+        return True
+    if _classify_score(f"{p1_res} {p2_res}")[0]:
+        return True
+    if (
+        sets_p1 is not None
+        and sets_p2 is not None
+        and sets_p1 == sets_p2
+        and sets_p1 > 0
+    ):
+        return _last_te_set_incomplete(full_score)
+    return _last_te_set_incomplete(full_score)
+
+
 # ---------------------------------------------------------------------------
 # Tennis Explorer scraper (with retries)
 # ---------------------------------------------------------------------------
@@ -284,18 +401,32 @@ async def _scrape_te_day(page, target_date: str) -> list[dict]:
                 p1 = current["p1_name"]
                 p1_res = current["p1_score"]
                 p2_res = res
-                # winner is whoever has higher numeric "result" (sets won)
-                try:
-                    s1 = int(p1_res) if p1_res.isdigit() else None
-                    s2 = int(p2_res) if p2_res.isdigit() else None
-                except Exception:
-                    s1 = s2 = None
+                s1, ret1 = _parse_te_sets_won(p1_res)
+                s2, ret2 = _parse_te_sets_won(p2_res)
+                full_score = f"{current.get('p1_sets', '')} | {score_str}".strip(" |")
+                _, walkover = _classify_score(full_score)
+                retired = (
+                    False
+                    if walkover
+                    else _infer_te_retirement(
+                        p1_res=p1_res,
+                        p2_res=p2_res,
+                        full_score=full_score,
+                        sets_p1=s1,
+                        sets_p2=s2,
+                    )
+                )
                 if s1 is not None and s2 is not None and s1 != s2:
                     winner_name = p1 if s1 > s2 else p2_name
+                elif retired:
+                    winner_name = _winner_from_incomplete_last_set(full_score, p1, p2_name)
+                    if not winner_name:
+                        if ret1 and not ret2:
+                            winner_name = p2_name
+                        elif ret2 and not ret1:
+                            winner_name = p1
                 else:
                     winner_name = None
-                full_score = f"{current.get('p1_sets', '')} | {score_str}".strip(" |")
-                retired, walkover = _classify_score(full_score)
                 out.append(
                     {
                         "p1_name": p1,
@@ -513,6 +644,7 @@ class ResultsScraper:
 
     async def _run(self) -> int:
         conn = sqlite3.connect(self.db_path)
+        updated = 0
         try:
             ensure_user_bets_schema(conn)
             ensure_match_results_cache(conn)
@@ -526,186 +658,215 @@ class ResultsScraper:
             pending = cur.fetchall()
             if not pending:
                 LOGGER.info("No pending bets to resolve")
-                return 0
+            else:
+                today = datetime.now().date()
+                cutoff = today - timedelta(days=self.window_days)
+                lookup_upper = today + timedelta(days=LOOKUP_UPPER_EXTRA_DAYS)
+                target_dates: set[str] = set()
+                for row in pending:
+                    placement_date = row[1]
+                    raw_sched = row[6]
+                    resolve_date = normalize_schedule_date(raw_sched) or placement_date
+                    try:
+                        d = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    if d < cutoff or d > today:
+                        continue
+                    target_dates.add(d.isoformat())
+                    for off in NEARBY_DAY_OFFSETS:
+                        adj = d + timedelta(days=off)
+                        if cutoff <= adj <= lookup_upper:
+                            target_dates.add(adj.isoformat())
 
-            today = datetime.now().date()
-            cutoff = today - timedelta(days=self.window_days)
-            lookup_upper = today + timedelta(days=LOOKUP_UPPER_EXTRA_DAYS)
-            target_dates: set[str] = set()
-            for row in pending:
-                placement_date = row[1]
-                raw_sched = row[6]
-                resolve_date = normalize_schedule_date(raw_sched) or placement_date
-                try:
-                    d = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
-                except Exception:
-                    continue
-                if d < cutoff or d > today:
-                    continue
-                target_dates.add(d.isoformat())
-                for off in NEARBY_DAY_OFFSETS:
-                    adj = d + timedelta(days=off)
-                    if cutoff <= adj <= lookup_upper:
-                        target_dates.add(adj.isoformat())
-
-            if not target_dates:
-                LOGGER.info("Pending bets all outside window (%dd) — nothing to do", self.window_days)
-                return 0
-
-            # 1) load cache
-            cache = read_cached_results(conn, target_dates)
-
-            # 2) determine which dates we still need to scrape on Tennis Explorer
-            dates_needing_te: set[str] = set()
-            pending_dates: set[str] = set()
-            for row in pending:
-                placement_date = row[1]
-                raw_sched = row[6]
-                eff = normalize_schedule_date(raw_sched) or placement_date
-                if isinstance(eff, str) and eff in target_dates:
-                    pending_dates.add(eff)
-            for d_iso in sorted(target_dates):
-                bucket = cache.get(d_iso) or {}
-                try:
-                    d_obj = datetime.strptime(d_iso, "%Y-%m-%d").date()
-                except ValueError:
-                    continue
-                # Tennis Explorer buckets can be +1/+2 calendar days vs the booked date;
-                # keep refreshing future buckets in expanded range until they become past days.
-                if d_obj > today:
-                    dates_needing_te.add(d_iso)
-                    continue
-                # always re-scrape today (live data); skip past days that already
-                # have a tennisexplorer entry in cache
-                if d_iso == today.isoformat():
-                    dates_needing_te.add(d_iso)
-                    continue
-                # If there are still pending bets on that date, force a fresh
-                # TE pass to avoid stale cache locking unresolved bets forever.
-                if d_iso in pending_dates:
-                    dates_needing_te.add(d_iso)
-                    continue
-                has_te_entry = any(
-                    v.get("source") == "tennisexplorer" for v in bucket.values()
-                )
-                if not has_te_entry:
-                    dates_needing_te.add(d_iso)
-
-            dates_te_list = sorted(dates_needing_te)
-            te_results: dict[str, list[dict]] = {}
-            if dates_te_list:
-                try:
-                    te_results = await _scrape_te_dates(dates_te_list)
-                    n_te = _store_te_results_in_cache(conn, te_results)
+                if not target_dates:
                     LOGGER.info(
-                        "Tennis Explorer: cached %d entries across %d dates",
-                        n_te,
-                        len(dates_te_list),
-                    )
-                except Exception as exc:
-                    LOGGER.error("Tennis Explorer scraping failed entirely: %s", exc)
-
-            # 3) Sackmann fallback (always run for window — adds redundancy &
-            #    catches WTA mismatches). Lightweight: cached CSV per tour/year.
-            try:
-                sackmann_rows = load_sackmann_results(target_dates)
-                if sackmann_rows:
-                    n_sk = _store_sackmann_results_in_cache(conn, sackmann_rows)
-                    LOGGER.info("Sackmann: cached %d entries", n_sk)
-            except Exception as exc:
-                LOGGER.warning("Sackmann fallback failed: %s", exc)
-
-            # 4) Re-read cache (now potentially enriched)
-            cache = read_cached_results(conn, target_dates)
-
-            # 5) Resolve pending bets
-            updated = 0
-            for bet_id, placement_date, match_name, bet_on, odds, stake, raw_sched in pending:
-                resolve_date = normalize_schedule_date(raw_sched) or placement_date
-                try:
-                    bd = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
-                except Exception:
-                    continue
-                if bd < cutoff or bd > today:
-                    continue
-
-                parts = (match_name or "").split(" vs ")
-                if len(parts) != 2:
-                    LOGGER.warning("Bet %s has invalid match_name format: %r", bet_id, match_name)
-                    continue
-                p1_raw, p2_raw = parts[0], parts[1]
-                # search NEARBY_DAY_OFFSETS on [cutoff, lookup_upper] for rescheduling / TE buckets
-                nearby = [
-                    (bd + timedelta(days=k)).isoformat()
-                    for k in NEARBY_DAY_OFFSETS
-                    if cutoff <= bd + timedelta(days=k) <= lookup_upper
-                ]
-                hit = _lookup_in_cache(
-                    cache,
-                    bet_date=str(resolve_date),
-                    bet_p1=p1_raw,
-                    bet_p2=p2_raw,
-                    nearby_dates=nearby,
-                )
-                if not hit:
-                    continue
-
-                # Walkover or cancellation -> stake refunded
-                if hit.get("walkover"):
-                    settle_bet(
-                        conn,
-                        bet_id=bet_id,
-                        status="Annulé",
-                        profit=0.0,
-                        score_final=hit.get("score"),
-                        result_source=hit.get("source"),
-                    )
-                    LOGGER.info("Bet %s annulé (walkover) source=%s", bet_id, hit.get("source"))
-                    updated += 1
-                    continue
-
-                winner = hit.get("winner_canonical")
-                if not winner:
-                    # match in cache but no winner yet (live or unknown)
-                    continue
-
-                bet_on_canon = canonical_player(bet_on)
-                won = names_match(bet_on_canon, winner)
-                # Retired matches are settled normally based on whoever was
-                # ahead when the opponent retired (winner_canonical from TE/Sackmann)
-                if won:
-                    profit = float(odds - 1.0) * float(stake)
-                    settle_bet(
-                        conn,
-                        bet_id=bet_id,
-                        status="Gagné",
-                        profit=profit,
-                        winner_resolved=winner,
-                        score_final=hit.get("score"),
-                        result_source=hit.get("source"),
+                        "Pending bets all outside window (%dd) — nothing to do",
+                        self.window_days,
                     )
                 else:
-                    profit = -float(stake)
-                    settle_bet(
-                        conn,
-                        bet_id=bet_id,
-                        status="Perdu",
-                        profit=profit,
-                        winner_resolved=winner,
-                        score_final=hit.get("score"),
-                        result_source=hit.get("source"),
-                    )
-                LOGGER.info(
-                    "Bet %s settled %s (winner=%s, source=%s, retired=%s)",
-                    bet_id,
-                    "Gagné" if won else "Perdu",
-                    winner,
-                    hit.get("source"),
-                    hit.get("retired"),
-                )
-                updated += 1
+                    # 1) load cache
+                    cache = read_cached_results(conn, target_dates)
 
-            LOGGER.info("Resolution pass done — %d bets settled", updated)
+                    # 2) determine which dates we still need to scrape on Tennis Explorer
+                    dates_needing_te: set[str] = set()
+                    pending_dates: set[str] = set()
+                    for row in pending:
+                        placement_date = row[1]
+                        raw_sched = row[6]
+                        eff = normalize_schedule_date(raw_sched) or placement_date
+                        if isinstance(eff, str) and eff in target_dates:
+                            pending_dates.add(eff)
+                    for d_iso in sorted(target_dates):
+                        bucket = cache.get(d_iso) or {}
+                        try:
+                            d_obj = datetime.strptime(d_iso, "%Y-%m-%d").date()
+                        except ValueError:
+                            continue
+                        # Tennis Explorer buckets can be +1/+2 calendar days vs the booked date;
+                        # keep refreshing future buckets in expanded range until they become past days.
+                        if d_obj > today:
+                            dates_needing_te.add(d_iso)
+                            continue
+                        # always re-scrape today (live data); skip past days that already
+                        # have a tennisexplorer entry in cache
+                        if d_iso == today.isoformat():
+                            dates_needing_te.add(d_iso)
+                            continue
+                        # If there are still pending bets on that date, force a fresh
+                        # TE pass to avoid stale cache locking unresolved bets forever.
+                        if d_iso in pending_dates:
+                            dates_needing_te.add(d_iso)
+                            continue
+                        has_te_entry = any(
+                            v.get("source") == "tennisexplorer" for v in bucket.values()
+                        )
+                        if not has_te_entry:
+                            dates_needing_te.add(d_iso)
+
+                    dates_te_list = sorted(dates_needing_te)
+                    te_results: dict[str, list[dict]] = {}
+                    if dates_te_list:
+                        try:
+                            te_results = await _scrape_te_dates(dates_te_list)
+                            n_te = _store_te_results_in_cache(conn, te_results)
+                            LOGGER.info(
+                                "Tennis Explorer: cached %d entries across %d dates",
+                                n_te,
+                                len(dates_te_list),
+                            )
+                        except Exception as exc:
+                            LOGGER.error("Tennis Explorer scraping failed entirely: %s", exc)
+
+                    # 3) Sackmann fallback (always run for window — adds redundancy &
+                    #    catches WTA mismatches). Lightweight: cached CSV per tour/year.
+                    try:
+                        sackmann_rows = load_sackmann_results(target_dates)
+                        if sackmann_rows:
+                            n_sk = _store_sackmann_results_in_cache(conn, sackmann_rows)
+                            LOGGER.info("Sackmann: cached %d entries", n_sk)
+                    except Exception as exc:
+                        LOGGER.warning("Sackmann fallback failed: %s", exc)
+
+                    # 4) Re-read cache (now potentially enriched)
+                    cache = read_cached_results(conn, target_dates)
+
+                    # 5) Resolve pending bets
+                    for bet_id, placement_date, match_name, bet_on, odds, stake, raw_sched in pending:
+                        resolve_date = normalize_schedule_date(raw_sched) or placement_date
+                        try:
+                            bd = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
+                        except Exception:
+                            continue
+                        if bd < cutoff or bd > today:
+                            continue
+
+                        parts = (match_name or "").split(" vs ")
+                        if len(parts) != 2:
+                            LOGGER.warning(
+                                "Bet %s has invalid match_name format: %r", bet_id, match_name
+                            )
+                            continue
+                        p1_raw, p2_raw = parts[0], parts[1]
+                        # search NEARBY_DAY_OFFSETS on [cutoff, lookup_upper] for rescheduling / TE buckets
+                        nearby = [
+                            (bd + timedelta(days=k)).isoformat()
+                            for k in NEARBY_DAY_OFFSETS
+                            if cutoff <= bd + timedelta(days=k) <= lookup_upper
+                        ]
+                        hit = _lookup_in_cache(
+                            cache,
+                            bet_date=str(resolve_date),
+                            bet_p1=p1_raw,
+                            bet_p2=p2_raw,
+                            nearby_dates=nearby,
+                        )
+                        if not hit:
+                            continue
+
+                        # Walkover or cancellation -> stake refunded
+                        if hit.get("walkover"):
+                            settle_bet(
+                                conn,
+                                bet_id=bet_id,
+                                status="Annulé",
+                                profit=0.0,
+                                score_final=hit.get("score"),
+                                result_source=hit.get("source"),
+                            )
+                            LOGGER.info(
+                                "Bet %s annulé (walkover) source=%s", bet_id, hit.get("source")
+                            )
+                            updated += 1
+                            continue
+
+                        winner = hit.get("winner_canonical")
+                        if not winner:
+                            # match in cache but no winner yet (live or unknown)
+                            continue
+
+                        bet_on_canon = canonical_player(bet_on)
+                        won = names_match(bet_on_canon, winner)
+                        score_text = hit.get("score") or ""
+                        retired_eff = match_result_effective_retired(
+                            retired=bool(hit.get("retired")),
+                            walkover=bool(hit.get("walkover")),
+                            score=score_text,
+                        )
+                        if retired_eff and not won:
+                            settle_bet(
+                                conn,
+                                bet_id=bet_id,
+                                status="Annulé",
+                                profit=0.0,
+                                winner_resolved=winner,
+                                score_final=hit.get("score"),
+                                result_source=hit.get("source"),
+                            )
+                            LOGGER.info(
+                                "Bet %s annulé (retired) source=%s",
+                                bet_id,
+                                hit.get("source"),
+                            )
+                            updated += 1
+                            continue
+                        if won:
+                            profit = float(odds - 1.0) * float(stake)
+                            settle_bet(
+                                conn,
+                                bet_id=bet_id,
+                                status="Gagné",
+                                profit=profit,
+                                winner_resolved=winner,
+                                score_final=hit.get("score"),
+                                result_source=hit.get("source"),
+                            )
+                        else:
+                            profit = -float(stake)
+                            settle_bet(
+                                conn,
+                                bet_id=bet_id,
+                                status="Perdu",
+                                profit=profit,
+                                winner_resolved=winner,
+                                score_final=hit.get("score"),
+                                result_source=hit.get("source"),
+                            )
+                        LOGGER.info(
+                            "Bet %s settled %s (winner=%s, source=%s, retired=%s)",
+                            bet_id,
+                            "Gagné" if won else "Perdu",
+                            winner,
+                            hit.get("source"),
+                            hit.get("retired"),
+                        )
+                        updated += 1
+
+                    LOGGER.info("Resolution pass done — %d bets settled", updated)
+
+            n_void = correct_retirement_voids_user_bets(conn)
+            if n_void:
+                LOGGER.info("Retirement void correction: %d user_bets fixed", n_void)
             return updated
         finally:
             conn.close()

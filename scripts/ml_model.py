@@ -584,6 +584,17 @@ class TennisMLModel:
             return default
 
     @staticmethod
+    def _safe_float(val, default: float = 0.0) -> float:
+        try:
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                return default
+            if hasattr(val, "item"):  # numpy scalar
+                val = val.item()
+            return float(val)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     def _inactivity_decay(days_rest):
         d = max(0.0, float(days_rest))
         if d <= 45.0:
@@ -1522,13 +1533,21 @@ class TennisMLModel:
             # winner hold on own serve, winner break on loser serve
             w_hold, _ = _hold_break(row.w_SvGms, row.w_bpFaced, row.w_bpSaved, row.l_SvGms)
             # breaks made by winner derived from loser faced/saved
-            loser_breaks_suffered = max(0.0, (float(row.l_bpFaced) if pd.notna(row.l_bpFaced) else 0.0) - (float(row.l_bpSaved) if pd.notna(row.l_bpSaved) else 0.0))
-            w_break = (loser_breaks_suffered / float(row.l_SvGms)) if pd.notna(row.l_SvGms) and float(row.l_SvGms) > 0 else 0.20
+            loser_breaks_suffered = max(
+                0.0,
+                self._safe_float(row.l_bpFaced) - self._safe_float(row.l_bpSaved),
+            )
+            l_sv_gms = self._safe_float(row.l_SvGms)
+            w_break = (loser_breaks_suffered / l_sv_gms) if l_sv_gms > 0 else 0.20
             w_break = max(0.0, min(1.0, w_break))
 
             l_hold, _ = _hold_break(row.l_SvGms, row.l_bpFaced, row.l_bpSaved, row.w_SvGms)
-            winner_breaks_suffered = max(0.0, (float(row.w_bpFaced) if pd.notna(row.w_bpFaced) else 0.0) - (float(row.w_bpSaved) if pd.notna(row.w_bpSaved) else 0.0))
-            l_break = (winner_breaks_suffered / float(row.w_SvGms)) if pd.notna(row.w_SvGms) and float(row.w_SvGms) > 0 else 0.20
+            winner_breaks_suffered = max(
+                0.0,
+                self._safe_float(row.w_bpFaced) - self._safe_float(row.w_bpSaved),
+            )
+            w_sv_gms = self._safe_float(row.w_SvGms)
+            l_break = (winner_breaks_suffered / w_sv_gms) if w_sv_gms > 0 else 0.20
             l_break = max(0.0, min(1.0, l_break))
 
             round_depth = self._round_depth(getattr(row, "round", None))

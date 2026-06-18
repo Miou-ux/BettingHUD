@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -28,6 +29,7 @@ REGISTRY_PATH = os.path.join(ROOT, "data", "cache", "telegram_pick_registry.json
 SESSION_PATH = os.path.join(ROOT, "data", "cache", "telegram_bet_sessions.json")
 REGISTRY_TTL_SEC = 86400
 TOKEN_LEN = 10
+_JSON_IO_LOCK = threading.Lock()
 
 _CB_BET = "bp:"  # démarrer pari
 _CB_CONFIRM = "by:"  # confirmer
@@ -150,29 +152,31 @@ def register_picks(
     telegram_user_id: str,
 ) -> list[str]:
     """Enregistre les picks ; retourne un token par pick (même ordre)."""
-    registry = _purge_registry(_load_json(REGISTRY_PATH))
-    tokens: list[str] = []
-    now = time.time()
-    uid = str(telegram_user_id).strip()
-    for row in picks:
-        norm = _normalize_pick_row(row, list_kind=list_kind)
-        tok = secrets.token_urlsafe(8)[:TOKEN_LEN]
-        while tok in registry:
+    with _JSON_IO_LOCK:
+        registry = _purge_registry(_load_json(REGISTRY_PATH))
+        tokens: list[str] = []
+        now = time.time()
+        uid = str(telegram_user_id).strip()
+        for row in picks:
+            norm = _normalize_pick_row(row, list_kind=list_kind)
             tok = secrets.token_urlsafe(8)[:TOKEN_LEN]
-        registry[tok] = {
-            "created_ts": now,
-            "chat_id": str(chat_id),
-            "telegram_user_id": uid,
-            "pick": norm,
-        }
-        tokens.append(tok)
-    _save_json(REGISTRY_PATH, registry)
+            while tok in registry:
+                tok = secrets.token_urlsafe(8)[:TOKEN_LEN]
+            registry[tok] = {
+                "created_ts": now,
+                "chat_id": str(chat_id),
+                "telegram_user_id": uid,
+                "pick": norm,
+            }
+            tokens.append(tok)
+        _save_json(REGISTRY_PATH, registry)
     return tokens
 
 
 def get_pick_by_token(token: str, *, telegram_user_id: str | None = None) -> dict | None:
-    registry = _purge_registry(_load_json(REGISTRY_PATH))
-    row = registry.get(str(token))
+    with _JSON_IO_LOCK:
+        registry = _purge_registry(_load_json(REGISTRY_PATH))
+        row = registry.get(str(token))
     if not row:
         return None
     if telegram_user_id is not None:
@@ -188,19 +192,21 @@ def _session_key(telegram_user_id: str) -> str:
 
 
 def _get_session(telegram_user_id: str) -> dict | None:
-    data = _load_json(SESSION_PATH)
-    row = data.get(_session_key(telegram_user_id))
+    with _JSON_IO_LOCK:
+        data = _load_json(SESSION_PATH)
+        row = data.get(_session_key(telegram_user_id))
     return dict(row) if isinstance(row, dict) else None
 
 
 def _set_session(telegram_user_id: str, session: dict | None) -> None:
-    data = _load_json(SESSION_PATH)
-    key = _session_key(telegram_user_id)
-    if session is None:
-        data.pop(key, None)
-    else:
-        data[key] = session
-    _save_json(SESSION_PATH, data)
+    with _JSON_IO_LOCK:
+        data = _load_json(SESSION_PATH)
+        key = _session_key(telegram_user_id)
+        if session is None:
+            data.pop(key, None)
+        else:
+            data[key] = session
+        _save_json(SESSION_PATH, data)
 
 
 def get_telegram_user_bankroll_snapshot(
@@ -227,29 +233,64 @@ def format_telegram_user_br_message(
     *,
     username: str | None = None,
 ) -> str:
+    from scripts.comms_locale import tg
+
     snap = get_telegram_user_bankroll_snapshot(telegram_user_id)
     label = _escape_html(username) if username else f"id <code>{_escape_html(telegram_user_id)}</code>"
     pl = float(snap.get("settled_profit_eur") or 0.0)
     pl_sign = "+" if pl >= 0 else ""
     return "\n".join(
         [
-            f"💼 <b>Ta bankroll Telegram</b> · {label}",
+            tg(
+                f"💼 <b>Your Telegram bankroll</b> · {label}",
+                f"💼 <b>Ta bankroll Telegram</b> · {label}",
+            ),
             "",
-            f"Capital de départ : <b>{snap['start_eur']:.2f} €</b>",
-            f"BR disponible : <b>{snap['available_eur']:.2f} €</b>",
-            f"Engagé (en cours) : <b>{snap['committed_open_eur']:.2f} €</b>",
-            f"Capital total : <b>{snap['equity_eur']:.2f} €</b>",
-            f"P/L réglé : <b>{pl_sign}{pl:.2f} €</b>",
+            tg(
+                f"Starting capital: <b>{snap['start_eur']:.2f} €</b>",
+                f"Capital de départ : <b>{snap['start_eur']:.2f} €</b>",
+            ),
+            tg(
+                f"Available BR: <b>{snap['available_eur']:.2f} €</b>",
+                f"BR disponible : <b>{snap['available_eur']:.2f} €</b>",
+            ),
+            tg(
+                f"Committed (open): <b>{snap['committed_open_eur']:.2f} €</b>",
+                f"Engagé (en cours) : <b>{snap['committed_open_eur']:.2f} €</b>",
+            ),
+            tg(
+                f"Total equity: <b>{snap['equity_eur']:.2f} €</b>",
+                f"Capital total : <b>{snap['equity_eur']:.2f} €</b>",
+            ),
+            tg(
+                f"Settled P/L: <b>{pl_sign}{pl:.2f} €</b>",
+                f"P/L réglé : <b>{pl_sign}{pl:.2f} €</b>",
+            ),
             (
-                f"Ajustement manuel : <b>{snap['manual_adjust_eur']:+.2f} €</b>"
+                tg(
+                    f"Manual adjustment: <b>{snap['manual_adjust_eur']:+.2f} €</b>",
+                    f"Ajustement manuel : <b>{snap['manual_adjust_eur']:+.2f} €</b>",
+                )
                 if abs(float(snap.get("manual_adjust_eur") or 0)) > 1e-6
                 else ""
             ),
             "",
-            "<i>Kelly : tous tes paris rattachés (dashboard + Telegram).</i>",
-            "Modifier le capital de départ : <code>/brset 80</code>",
-            "Ajustement ponctuel : <code>/brajust +10</code> ou <code>/brajust -5</code>",
-            "Stats détaillées : <code>/brstats</code>",
+            tg(
+                "<i>Kelly: all bets linked to your account (web + Telegram).</i>",
+                "<i>Kelly : tous tes paris rattachés (dashboard + Telegram).</i>",
+            ),
+            tg(
+                "Set starting capital: <code>/brset 80</code>",
+                "Modifier le capital de départ : <code>/brset 80</code>",
+            ),
+            tg(
+                "One-off adjustment: <code>/brajust +10</code> or <code>/brajust -5</code>",
+                "Ajustement ponctuel : <code>/brajust +10</code> ou <code>/brajust -5</code>",
+            ),
+            tg(
+                "Detailed stats: <code>/brstats</code>",
+                "Stats détaillées : <code>/brstats</code>",
+            ),
         ]
     ).replace("\n\n\n", "\n\n")
 
@@ -275,6 +316,8 @@ def format_telegram_user_br_advanced_message(
     *,
     username: str | None = None,
 ) -> str:
+    from scripts.comms_locale import tg
+
     conn = sqlite3.connect("data/bettinghud.db")
     try:
         stats = compute_telegram_user_br_advanced_stats(conn, str(telegram_user_id))
@@ -283,78 +326,135 @@ def format_telegram_user_br_advanced_message(
 
     label = _escape_html(username) if username else f"id <code>{_escape_html(telegram_user_id)}</code>"
     pl = float(stats.get("settled_profit_eur") or 0.0)
+    open_count = int(stats.get("open_count") or 0)
+    committed_line = tg(
+        f"Committed: <b>{stats['committed_open_eur']:.2f} €</b>",
+        f"Engagé : <b>{stats['committed_open_eur']:.2f} €</b>",
+    )
+    if open_count:
+        committed_line += tg(
+            f" ({open_count} bet(s) · {_fmt_pct(stats.get('exposure_pct'))} of equity)",
+            f" ({open_count} pari(s) · {_fmt_pct(stats.get('exposure_pct'))} du capital)",
+        )
+
     lines: list[str] = [
-        f"📊 <b>Bankroll avancée</b> · {label}",
-        "",
-        "<b>💼 Synthèse</b>",
-        f"Capital de départ : <b>{stats['start_eur']:.2f} €</b>",
-        f"BR disponible : <b>{stats['available_eur']:.2f} €</b>",
-        f"Engagé : <b>{stats['committed_open_eur']:.2f} €</b>"
-        + (
-            f" ({int(stats.get('open_count') or 0)} pari(s) · {_fmt_pct(stats.get('exposure_pct'))} du capital)"
-            if stats.get("open_count")
-            else ""
+        tg(
+            f"📊 <b>Advanced bankroll</b> · {label}",
+            f"📊 <b>Bankroll avancée</b> · {label}",
         ),
-        f"Capital total : <b>{stats['equity_eur']:.2f} €</b>",
-        f"P/L réglé : <b>{_fmt_eur(pl, signed=True)}</b>",
+        "",
+        tg("<b>💼 Overview</b>", "<b>💼 Synthèse</b>"),
+        tg(
+            f"Starting capital: <b>{stats['start_eur']:.2f} €</b>",
+            f"Capital de départ : <b>{stats['start_eur']:.2f} €</b>",
+        ),
+        tg(
+            f"Available BR: <b>{stats['available_eur']:.2f} €</b>",
+            f"BR disponible : <b>{stats['available_eur']:.2f} €</b>",
+        ),
+        committed_line,
+        tg(
+            f"Total equity: <b>{stats['equity_eur']:.2f} €</b>",
+            f"Capital total : <b>{stats['equity_eur']:.2f} €</b>",
+        ),
+        tg(
+            f"Settled P/L: <b>{_fmt_eur(pl, signed=True)}</b>",
+            f"P/L réglé : <b>{_fmt_eur(pl, signed=True)}</b>",
+        ),
     ]
     if stats.get("growth_on_start_pct") is not None:
         lines.append(
-            f"Vs capital départ : <b>{_fmt_pct(stats['growth_on_start_pct'], signed=True)}</b>"
+            tg(
+                f"Vs starting capital: <b>{_fmt_pct(stats['growth_on_start_pct'], signed=True)}</b>",
+                f"Vs capital départ : <b>{_fmt_pct(stats['growth_on_start_pct'], signed=True)}</b>",
+            )
         )
     if abs(float(stats.get("manual_adjust_eur") or 0)) > 1e-6:
-        lines.append(f"Ajustement manuel : <b>{stats['manual_adjust_eur']:+.2f} €</b>")
+        lines.append(
+            tg(
+                f"Manual adjustment: <b>{stats['manual_adjust_eur']:+.2f} €</b>",
+                f"Ajustement manuel : <b>{stats['manual_adjust_eur']:+.2f} €</b>",
+            )
+        )
 
-    lines.extend(["", "<b>📈 Performance (paris réglés)</b>"])
+    lines.extend(
+        [
+            "",
+            tg("<b>📈 Performance (settled)</b>", "<b>📈 Performance (paris réglés)</b>"),
+        ]
+    )
     w, l, v = int(stats.get("wins") or 0), int(stats.get("losses") or 0), int(stats.get("voids") or 0)
-    lines.append(f"Volume : <b>{w + l + v}</b> paris · <b>{w}G</b> · <b>{l}P</b>" + (f" · <b>{v}A</b>" if v else ""))
-    if stats.get("win_rate_pct") is not None:
-        lines.append(f"Win rate : <b>{stats['win_rate_pct']:.1f} %</b>")
+    void_suffix = tg(f" · <b>{v}V</b>", f" · <b>{v}A</b>") if v else ""
     lines.append(
-        f"Mises réglées : <b>{float(stats.get('settled_stake_eur') or 0):.2f} €</b> · "
-        f"ROI : <b>{_fmt_pct(stats.get('roi_pct'), signed=True)}</b>"
+        tg(
+            f"Volume: <b>{w + l + v}</b> bets · <b>{w}W</b> · <b>{l}L</b>{void_suffix}",
+            f"Volume : <b>{w + l + v}</b> paris · <b>{w}G</b> · <b>{l}P</b>{void_suffix}",
+        )
+    )
+    if stats.get("win_rate_pct") is not None:
+        lines.append(f"Win rate: <b>{stats['win_rate_pct']:.1f}%</b>")
+    lines.append(
+        tg(
+            f"Settled stakes: <b>{float(stats.get('settled_stake_eur') or 0):.2f} €</b> · "
+            f"ROI: <b>{_fmt_pct(stats.get('roi_pct'), signed=True)}</b>",
+            f"Mises réglées : <b>{float(stats.get('settled_stake_eur') or 0):.2f} €</b> · "
+            f"ROI : <b>{_fmt_pct(stats.get('roi_pct'), signed=True)}</b>",
+        )
     )
     if stats.get("avg_odds_won") is not None or stats.get("avg_odds_lost") is not None:
         ow = stats.get("avg_odds_won")
         ol = stats.get("avg_odds_lost")
         parts = []
         if ow is not None:
-            parts.append(f"gagnés @ {ow:.2f}")
+            parts.append(tg(f"won @ {ow:.2f}", f"gagnés @ {ow:.2f}"))
         if ol is not None:
-            parts.append(f"perdus @ {ol:.2f}")
-        lines.append(f"Cote moy. : {' · '.join(parts)}")
+            parts.append(tg(f"lost @ {ol:.2f}", f"perdus @ {ol:.2f}"))
+        lines.append(tg(f"Avg odds: {' · '.join(parts)}", f"Cote moy. : {' · '.join(parts)}"))
 
     form = list(stats.get("recent_form") or [])
     if form:
-        icons = "".join("✅" if s == "Gagné" else "❌" for s in form)
-        lines.append(f"Forme (10 dern.) : {icons}")
+        icons = "".join(
+            "✅" if str(s).startswith("Gagn") else ("➖" if "Annul" in str(s) else "❌") for s in form
+        )
+        lines.append(tg(f"Form (last 10): {icons}", f"Forme (10 dern.) : {icons}"))
 
     by_source = list(stats.get("by_source") or [])
     if by_source:
-        lines.extend(["", "<b>📦 Par source</b>"])
+        lines.extend(["", tg("<b>📦 By source</b>", "<b>📦 Par source</b>")])
         for row in by_source[:8]:
             pl_s = float(row.get("settled_profit_eur") or 0.0)
             open_s = float(row.get("open_stake_eur") or 0.0)
-            extra = f" · engagé {open_s:.2f} €" if open_s > 0 else ""
+            extra = (
+                tg(f" · open {open_s:.2f} €", f" · engagé {open_s:.2f} €") if open_s > 0 else ""
+            )
             lines.append(
-                f"• <b>{_escape_html(row.get('label') or row.get('source'))}</b> : "
+                f"• <b>{_escape_html(row.get('label') or row.get('source'))}</b>: "
                 f"{int(row.get('count') or 0)} · {_fmt_eur(pl_s, signed=True)}{extra}"
             )
 
     days = list(stats.get("last_7_days") or [])
     if days:
-        lines.extend(["", "<b>📅 7 derniers jours</b>"])
+        lines.extend(["", tg("<b>📅 Last 7 days</b>", "<b>📅 7 derniers jours</b>")])
         for d in days[:7]:
             pl_d = float(d.get("profit_eur") or 0.0)
             lines.append(
-                f"• <code>{_escape_html(d.get('date') or '')}</code> : "
-                f"<b>{_fmt_eur(pl_d, signed=True)}</b> "
-                f"({int(d.get('count') or 0)} · {float(d.get('stake_eur') or 0):.2f} € mises)"
+                tg(
+                    (
+                        f"• <code>{_escape_html(d.get('date') or '')}</code>: "
+                        f"<b>{_fmt_eur(pl_d, signed=True)}</b> "
+                        f"({int(d.get('count') or 0)} · {float(d.get('stake_eur') or 0):.2f} € staked)"
+                    ),
+                    (
+                        f"• <code>{_escape_html(d.get('date') or '')}</code> : "
+                        f"<b>{_fmt_eur(pl_d, signed=True)}</b> "
+                        f"({int(d.get('count') or 0)} · {float(d.get('stake_eur') or 0):.2f} € mises)"
+                    ),
+                )
             )
 
     open_bets = list(stats.get("open_bets") or [])
     if open_bets:
-        lines.extend(["", "<b>🎯 En cours (top mises)</b>"])
+        lines.extend(["", tg("<b>🎯 Open (top stakes)</b>", "<b>🎯 En cours (top mises)</b>")])
         for ob in open_bets[:5]:
             match = _escape_html(str(ob.get("match_name") or "—")[:48])
             player = _escape_html(str(ob.get("bet_on") or ""))
@@ -365,7 +465,10 @@ def format_telegram_user_br_advanced_message(
     lines.extend(
         [
             "",
-            "<i>Tous les paris rattachés à ton compte (app + Telegram).</i>",
+            tg(
+                "<i>All bets linked to your account (web + Telegram).</i>",
+                "<i>Tous les paris rattachés à ton compte (app + Telegram).</i>",
+            ),
             "<code>/br</code> · <code>/brset</code> · <code>/brajust</code>",
         ]
     )
@@ -401,7 +504,7 @@ def parse_brajust_delta(text: str) -> float | None:
 def apply_telegram_brset(telegram_user_id: str, amount: float) -> None:
     conn = sqlite3.connect("data/bettinghud.db")
     try:
-        set_telegram_user_start_br(conn, telegram_user_id, float(amount))
+        set_telegram_user_start_br(conn, telegram_user_id, float(amount), user_custom=True)
     finally:
         conn.close()
 
@@ -418,8 +521,13 @@ def apply_telegram_brajust(telegram_user_id: str, delta: float) -> None:
 
 
 def format_user_br_caption(telegram_user_id: str) -> str:
+    from scripts.comms_locale import tg
+
     avail = get_telegram_user_available_eur(telegram_user_id)
-    return f"💼 Ta BR Telegram : <b>{avail:.2f} €</b> dispo · <code>/br</code> pour le détail"
+    return tg(
+        f"💼 Your Telegram bankroll: <b>{avail:.2f} €</b> available · <code>/br</code> for details",
+        f"💼 Ta BR Telegram : <b>{avail:.2f} €</b> dispo · <code>/br</code> pour le détail",
+    )
 
 
 def kelly_stake_for_pick(
@@ -443,18 +551,47 @@ def existing_stake_eur(
     telegram_user_id: str,
     db_path: str = "data/bettinghud.db",
 ) -> float:
+    stakes = existing_stakes_eur_for_picks(
+        [{"match_name": match_name, "bet_on": bet_on}],
+        telegram_user_id=telegram_user_id,
+        db_path=db_path,
+    )
+    return float(stakes.get((match_name, bet_on)) or 0.0)
+
+
+def existing_stakes_eur_for_picks(
+    picks: list[dict],
+    *,
+    telegram_user_id: str,
+    db_path: str = "data/bettinghud.db",
+) -> dict[tuple[str, str], float]:
+    """Somme des mises déjà posées par (match_name, bet_on) — une requête SQL."""
+    uid = str(telegram_user_id).strip()
+    keys: list[tuple[str, str]] = []
+    for row in picks:
+        mn = str(row.get("match_name") or "").strip()
+        bo = str(row.get("bet_on") or row.get("fav_player") or "").strip()
+        if mn and bo:
+            keys.append((mn, bo))
+    if not uid or not keys:
+        return {}
     conn = sqlite3.connect(db_path)
     try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(SUM(stake), 0)
+        placeholders = " OR ".join("(match_name = ? AND bet_on = ?)" for _ in keys)
+        params: list[str] = []
+        for mn, bo in keys:
+            params.extend([mn, bo])
+        rows = conn.execute(
+            f"""
+            SELECT match_name, bet_on, COALESCE(SUM(stake), 0)
             FROM user_bets
-            WHERE match_name = ? AND bet_on = ?
-              AND telegram_user_id = ?
+            WHERE telegram_user_id = ?
+              AND ({placeholders})
+            GROUP BY match_name, bet_on
             """,
-            (match_name, bet_on, str(telegram_user_id).strip()),
-        ).fetchone()
-        return float(row[0] or 0.0) if row else 0.0
+            [uid, *params],
+        ).fetchall()
+        return {(str(mn), str(bo)): float(st or 0.0) for mn, bo, st in rows}
     finally:
         conn.close()
 
@@ -500,27 +637,32 @@ def callback_token(data: str, prefix: str) -> str | None:
 
 
 def inline_keyboard_parier(token: str) -> dict:
+    from scripts.comms_locale import tg
+
     return {
         "inline_keyboard": [
-            [{"text": "💰 Parier", "callback_data": f"{_CB_BET}{token}"}],
+            [{"text": tg("💰 Bet", "💰 Parier"), "callback_data": f"{_CB_BET}{token}"}],
         ]
     }
 
 
 def inline_keyboard_confirm(token: str, stake_eur: float) -> dict:
+    from scripts.comms_locale import tg
+
     try:
         stake = round(float(stake_eur), 2)
     except (TypeError, ValueError):
         stake = 0.0
-    confirm_label = f"✅ {stake:.2f} €" if stake >= 0.01 else "✅ Confirmer"
+    confirm_fallback = tg("✅ Confirm", "✅ Confirmer")
+    confirm_label = f"✅ {stake:.2f} €" if stake >= 0.01 else confirm_fallback
     if len(confirm_label) > 64:
-        confirm_label = "✅ Confirmer"
+        confirm_label = confirm_fallback
     return {
         "inline_keyboard": [
             [{"text": confirm_label, "callback_data": f"{_CB_CONFIRM}{token}"}],
             [
-                {"text": "✏️ Autre mise", "callback_data": f"{_CB_CUSTOM_STAKE}{token}"},
-                {"text": "❌ Annuler", "callback_data": f"{_CB_CANCEL}{token}"},
+                {"text": tg("✏️ Custom stake", "✏️ Autre mise"), "callback_data": f"{_CB_CUSTOM_STAKE}{token}"},
+                {"text": tg("❌ Cancel", "❌ Annuler"), "callback_data": f"{_CB_CANCEL}{token}"},
             ],
         ]
     }
@@ -538,22 +680,40 @@ def _present_confirm_screen(
     token: str,
     send_message,
 ) -> None:
+    from scripts.comms_locale import tg
+
     bet_on = _escape_html(pick.get("bet_on") or "?")
     custom = abs(float(stake_eur) - float(kelly_eur)) > 0.02
     stake_line = (
-        f"Mise : <b>{stake_eur:.2f} €</b> <i>(personnalisée)</i>"
+        tg(
+            f"Stake: <b>{stake_eur:.2f} €</b> <i>(custom)</i>",
+            f"Mise : <b>{stake_eur:.2f} €</b> <i>(personnalisée)</i>",
+        )
         if custom
-        else f"Mise Kelly : <b>{stake_eur:.2f} €</b> ({stake_pct:.1f}% BR)"
+        else tg(
+            f"Kelly stake: <b>{stake_eur:.2f} €</b> ({stake_pct:.1f}% BR)",
+            f"Mise Kelly : <b>{stake_eur:.2f} €</b> ({stake_pct:.1f}% BR)",
+        )
     )
     send_message(
         chat_id,
-        (
-            f"💰 <b>Récap</b> — {bet_on}\n"
-            f"Cote : <b>{odd:.2f}</b>\n"
-            f"{stake_line}\n"
-            f"BR dispo : <b>{br_avail:.2f} €</b>\n\n"
-            "Confirmer, modifier la mise (<b>✏️ Autre mise</b>) ou envoyer un montant en € "
-            "(ex. <code>2.50</code>)."
+        tg(
+            (
+                f"💰 <b>Summary</b> — {bet_on}\n"
+                f"Odds: <b>{odd:.2f}</b>\n"
+                f"{stake_line}\n"
+                f"BR available: <b>{br_avail:.2f} €</b>\n\n"
+                "Confirm, tap <b>✏️ Custom stake</b>, or send an amount in € "
+                "(e.g. <code>2.50</code>)."
+            ),
+            (
+                f"💰 <b>Récap</b> — {bet_on}\n"
+                f"Cote : <b>{odd:.2f}</b>\n"
+                f"{stake_line}\n"
+                f"BR dispo : <b>{br_avail:.2f} €</b>\n\n"
+                "Confirmer, modifier la mise (<b>✏️ Autre mise</b>) ou envoyer un montant en € "
+                "(ex. <code>2.50</code>)."
+            ),
         ),
         reply_markup=inline_keyboard_confirm(token, stake_eur),
     )
@@ -581,12 +741,20 @@ def format_pick_telegram_card(pick: dict, *, already_stake: float = 0.0) -> str:
         meta.append(when)
     if meta:
         lines.append(" · ".join(meta))
+    from scripts.comms_locale import tg
+
     lines.append(
-        f"📊 Proba <b>{p_pct:.1f}%</b> · EV <b>{ev_pct:+.1f}%</b> · Book <b>@{odd:.2f}</b>"
+        tg(
+            f"📊 Model proba <b>{p_pct:.1f}%</b> · EV <b>{ev_pct:+.1f}%</b> · Book <b>@{odd:.2f}</b>",
+            f"📊 Proba <b>{p_pct:.1f}%</b> · EV <b>{ev_pct:+.1f}%</b> · Book <b>@{odd:.2f}</b>",
+        )
     )
     if already_stake > 0:
         lines.append(
-            f"📌 Déjà <b>{already_stake:.2f} €</b> sur ce pick — tu peux <b>ajouter</b> une mise"
+            tg(
+                f"📌 Already <b>{already_stake:.2f} €</b> on this pick — you can <b>add</b> more",
+                f"📌 Déjà <b>{already_stake:.2f} €</b> sur ce pick — tu peux <b>ajouter</b> une mise",
+            )
         )
     return "\n".join(lines) + "\n"
 
@@ -640,10 +808,20 @@ def handle_callback_query(
 
     tok_bet = callback_token(data, _CB_BET)
     if tok_bet:
+        from scripts.comms_locale import tg
+
         pick = get_pick_by_token(tok_bet, telegram_user_id=telegram_user_id)
         if not pick:
-            answer_callback(cq, "Pick expiré — relance /jour ou /top5", alert=True)
+            answer_callback(
+                cq,
+                tg(
+                    "Pick expired — run /today, /top5 or /1pick1day again",
+                    "Pick expiré — relance /jour ou /top5",
+                ),
+                alert=True,
+            )
             return True
+        answer_callback(cq, tg("Waiting for your odds…", "En attente de ta cote…"))
         already = existing_stake_eur(
             pick["match_name"],
             pick["bet_on"],
@@ -657,28 +835,42 @@ def handle_callback_query(
                 "user": str(user_label),
             },
         )
-        answer_callback(cq, "En attente de ta cote…")
         bet_on = _escape_html(pick.get("bet_on") or "?")
         try:
             odd_book = float(pick.get("odd_book") or 0)
         except (TypeError, ValueError):
             odd_book = 0.0
         book_hint = (
-            f" <b>@ {odd_book:.2f}</b> <i>(cote book snapshot)</i>"
+            tg(
+                f" <b>@ {odd_book:.2f}</b> <i>(book snapshot)</i>",
+                f" <b>@ {odd_book:.2f}</b> <i>(cote book snapshot)</i>",
+            )
             if odd_book > 1.0
             else ""
         )
         extra = ""
         if already > 0:
-            extra = f"\n📌 Portefeuille : déjà <b>{already:.2f} €</b> sur ce pick (cumul autorisé).\n"
+            extra = tg(
+                f"\n📌 Portfolio: already <b>{already:.2f} €</b> on this pick (stacking allowed).\n",
+                f"\n📌 Portefeuille : déjà <b>{already:.2f} €</b> sur ce pick (cumul autorisé).\n",
+            )
         send_message(
             chat_id,
-            (
-                f"📝 <b>Cote réelle</b> — <b>{bet_on}</b>{book_hint}\n"
-                f"{extra}\n"
-                "Envoie la cote obtenue chez ton bookmaker "
-                "(ex. <code>1.92</code> — tu peux reprendre la cote book si identique).\n"
-                "Annuler : <code>/annuler</code>"
+            tg(
+                (
+                    f"📝 <b>Your odds</b> — <b>{bet_on}</b>{book_hint}\n"
+                    f"{extra}\n"
+                    "Send the odds from your bookmaker "
+                    "(e.g. <code>1.92</code> — you can reuse the snapshot odd if unchanged).\n"
+                    "Cancel: <code>/cancel</code>"
+                ),
+                (
+                    f"📝 <b>Cote réelle</b> — <b>{bet_on}</b>{book_hint}\n"
+                    f"{extra}\n"
+                    "Envoie la cote obtenue chez ton bookmaker "
+                    "(ex. <code>1.92</code> — tu peux reprendre la cote book si identique).\n"
+                    "Annuler : <code>/annuler</code>"
+                ),
             ),
         )
         return True
@@ -686,23 +878,26 @@ def handle_callback_query(
     tok_confirm = callback_token(data, _CB_CONFIRM)
     if tok_confirm:
         sess = _get_session(telegram_user_id)
+        from scripts.comms_locale import tg
+
         if not sess or sess.get("state") != "await_confirm" or sess.get("token") != tok_confirm:
-            answer_callback(cq, "Session expirée — recommence", alert=True)
+            answer_callback(cq, tg("Session expired — start again", "Session expirée — recommence"), alert=True)
             return True
         pick = get_pick_by_token(tok_confirm, telegram_user_id=telegram_user_id)
         if not pick:
             _set_session(telegram_user_id, None)
-            answer_callback(cq, "Pick expiré", alert=True)
+            answer_callback(cq, tg("Pick expired", "Pick expiré"), alert=True)
             return True
         odd = float(sess.get("odd") or 0)
         stake = float(sess.get("stake_eur") or 0)
         if stake < 0.01:
-            answer_callback(cq, "Mise nulle — vérifie la cote", alert=True)
+            answer_callback(cq, tg("Zero stake — check your odds", "Mise nulle — vérifie la cote"), alert=True)
             return True
         br = get_telegram_user_available_eur(telegram_user_id)
         if stake > br + 1e-6:
-            answer_callback(cq, "BR insuffisante", alert=True)
+            answer_callback(cq, tg("Insufficient bankroll", "BR insuffisante"), alert=True)
             return True
+        answer_callback(cq, tg("Saving…", "Enregistrement…"))
         try:
             bet_id = save_telegram_bet(
                 pick,
@@ -711,19 +906,32 @@ def handle_callback_query(
                 telegram_user_id=telegram_user_id,
             )
         except Exception as exc:
-            answer_callback(cq, "Erreur enregistrement", alert=True)
-            send_message(chat_id, f"⚠️ Échec portefeuille : <code>{_escape_html(str(exc))[:200]}</code>")
+            send_message(
+                chat_id,
+                tg(
+                    f"⚠️ Portfolio error: <code>{_escape_html(str(exc))[:200]}</code>",
+                    f"⚠️ Échec portefeuille : <code>{_escape_html(str(exc))[:200]}</code>",
+                ),
+            )
             return True
         _set_session(telegram_user_id, None)
-        answer_callback(cq, "Pari enregistré ✓")
         send_message(
             chat_id,
-            (
-                f"✅ <b>Pari #{bet_id} enregistré</b>\n"
-                f"{_escape_html(pick.get('match_name') or '')}\n"
-                f"→ <b>{_escape_html(pick.get('bet_on') or '')}</b> @ <b>{odd:.2f}</b> · "
-                f"<b>{stake:.2f} €</b>\n"
-                f"<i>Visible dans le portefeuille (sync résultats auto).</i>"
+            tg(
+                (
+                    f"✅ <b>Bet #{bet_id} saved</b>\n"
+                    f"{_escape_html(pick.get('match_name') or '')}\n"
+                    f"→ <b>{_escape_html(pick.get('bet_on') or '')}</b> @ <b>{odd:.2f}</b> · "
+                    f"<b>{stake:.2f} €</b>\n"
+                    f"<i>Visible in your portfolio (results sync automatically).</i>"
+                ),
+                (
+                    f"✅ <b>Pari #{bet_id} enregistré</b>\n"
+                    f"{_escape_html(pick.get('match_name') or '')}\n"
+                    f"→ <b>{_escape_html(pick.get('bet_on') or '')}</b> @ <b>{odd:.2f}</b> · "
+                    f"<b>{stake:.2f} €</b>\n"
+                    f"<i>Visible dans le portefeuille (sync résultats auto).</i>"
+                ),
             ),
         )
         return True
@@ -731,28 +939,40 @@ def handle_callback_query(
     tok_stake = callback_token(data, _CB_CUSTOM_STAKE)
     if tok_stake:
         sess = _get_session(telegram_user_id)
+        from scripts.comms_locale import tg
+
         if not sess or sess.get("token") != tok_stake:
-            answer_callback(cq, "Session expirée", alert=True)
+            answer_callback(cq, tg("Session expired", "Session expirée"), alert=True)
             return True
         pick = get_pick_by_token(tok_stake, telegram_user_id=telegram_user_id)
         if not pick:
             _set_session(telegram_user_id, None)
-            answer_callback(cq, "Pick expiré", alert=True)
+            answer_callback(cq, tg("Pick expired", "Pick expiré"), alert=True)
             return True
         br = float(sess.get("br_avail") or get_telegram_user_available_eur(telegram_user_id))
         sess["state"] = "await_custom_stake"
         sess["br_avail"] = br
         _set_session(telegram_user_id, sess)
-        answer_callback(cq, "Saisis ta mise…")
+        answer_callback(cq, tg("Enter your stake…", "Saisis ta mise…"))
         send_message(
             chat_id,
-            (
-                f"✏️ <b>Mise en euros</b> pour {_escape_html(pick.get('bet_on') or '?')}\n"
-                f"Cote : <b>{float(sess.get('odd') or 0):.2f}</b> · "
-                f"Kelly suggéré : <b>{float(sess.get('kelly_eur') or 0):.2f} €</b>\n"
-                f"BR dispo : <b>{br:.2f} €</b>\n\n"
-                "Envoie un montant (ex. <code>2.50</code> ou <code>5</code>).\n"
-                "Annuler : <code>/annuler</code>"
+            tg(
+                (
+                    f"✏️ <b>Stake in euros</b> for {_escape_html(pick.get('bet_on') or '?')}\n"
+                    f"Odds: <b>{float(sess.get('odd') or 0):.2f}</b> · "
+                    f"Kelly suggested: <b>{float(sess.get('kelly_eur') or 0):.2f} €</b>\n"
+                    f"BR available: <b>{br:.2f} €</b>\n\n"
+                    "Send an amount (e.g. <code>2.50</code> or <code>5</code>).\n"
+                    "Cancel: <code>/cancel</code>"
+                ),
+                (
+                    f"✏️ <b>Mise en euros</b> pour {_escape_html(pick.get('bet_on') or '?')}\n"
+                    f"Cote : <b>{float(sess.get('odd') or 0):.2f}</b> · "
+                    f"Kelly suggéré : <b>{float(sess.get('kelly_eur') or 0):.2f} €</b>\n"
+                    f"BR dispo : <b>{br:.2f} €</b>\n\n"
+                    "Envoie un montant (ex. <code>2.50</code> ou <code>5</code>).\n"
+                    "Annuler : <code>/annuler</code>"
+                ),
             ),
         )
         return True
@@ -760,8 +980,10 @@ def handle_callback_query(
     tok_cancel = callback_token(data, _CB_CANCEL)
     if tok_cancel:
         _set_session(telegram_user_id, None)
-        answer_callback(cq, "Annulé")
-        send_message(chat_id, "❌ Pari annulé.")
+        from scripts.comms_locale import tg
+
+        answer_callback(cq, tg("Cancelled", "Annulé"))
+        send_message(chat_id, tg("❌ Bet cancelled.", "❌ Pari annulé."))
         return True
 
     return False
@@ -784,9 +1006,13 @@ def handle_text_message(
     if cmd in ("/annuler", "/cancel"):
         if _get_session(telegram_user_id):
             _set_session(telegram_user_id, None)
-            send_message(chat_id, "❌ Session annulée.")
+            from scripts.comms_locale import tg
+
+            send_message(chat_id, tg("❌ Session cancelled.", "❌ Session annulée."))
             return True
         return False
+
+    from scripts.comms_locale import tg
 
     sess = _get_session(telegram_user_id)
     if not sess:
@@ -797,7 +1023,13 @@ def handle_text_message(
     pick = get_pick_by_token(tok, telegram_user_id=telegram_user_id) if tok else None
     if not pick:
         _set_session(telegram_user_id, None)
-        send_message(chat_id, "⚠️ Pick expiré — relance <b>/jour</b> ou <b>/top5</b>.")
+        send_message(
+            chat_id,
+            tg(
+                "⚠️ Pick expired — run <b>/today</b>, <b>/top5</b> or <b>/1pick1day</b> again.",
+                "⚠️ Pick expiré — relance <b>/jour</b> ou <b>/top5</b>.",
+            ),
+        )
         return True
 
     if state == "await_custom_stake":
@@ -805,14 +1037,20 @@ def handle_text_message(
         if stake is None:
             send_message(
                 chat_id,
-                "⚠️ Mise invalide. Exemple : <code>2.50</code> ou <code>5</code> (min 0.01 €).",
+                tg(
+                    "⚠️ Invalid stake. Example: <code>2.50</code> or <code>5</code> (min 0.01 €).",
+                    "⚠️ Mise invalide. Exemple : <code>2.50</code> ou <code>5</code> (min 0.01 €).",
+                ),
             )
             return True
         br = float(sess.get("br_avail") or get_telegram_user_available_eur(telegram_user_id))
         if stake > br + 1e-6:
             send_message(
                 chat_id,
-                f"⚠️ Mise <b>{stake:.2f} €</b> &gt; BR dispo (<b>{br:.2f} €</b>).",
+                tg(
+                    f"⚠️ Stake <b>{stake:.2f} €</b> &gt; available BR (<b>{br:.2f} €</b>).",
+                    f"⚠️ Mise <b>{stake:.2f} €</b> &gt; BR dispo (<b>{br:.2f} €</b>).",
+                ),
             )
             return True
         odd = float(sess.get("odd") or 0)
@@ -847,7 +1085,10 @@ def handle_text_message(
         if stake > br + 1e-6:
             send_message(
                 chat_id,
-                f"⚠️ Mise <b>{stake:.2f} €</b> &gt; BR dispo (<b>{br:.2f} €</b>).",
+                tg(
+                    f"⚠️ Stake <b>{stake:.2f} €</b> &gt; available BR (<b>{br:.2f} €</b>).",
+                    f"⚠️ Mise <b>{stake:.2f} €</b> &gt; BR dispo (<b>{br:.2f} €</b>).",
+                ),
             )
             return True
         odd = float(sess.get("odd") or 0)
@@ -876,7 +1117,10 @@ def handle_text_message(
     if odd is None:
         send_message(
             chat_id,
-            "⚠️ Cote invalide. Exemple : <code>1.85</code> (entre 1.01 et 100).",
+            tg(
+                "⚠️ Invalid odds. Example: <code>1.85</code> (between 1.01 and 100).",
+                "⚠️ Cote invalide. Exemple : <code>1.85</code> (entre 1.01 et 100).",
+            ),
         )
         return True
 
@@ -885,7 +1129,10 @@ def handle_text_message(
     if stake_eur < 0.01:
         send_message(
             chat_id,
-            f"ℹ️ Kelly = 0 € avec cote <b>{odd:.2f}</b> (EV ou BR insuffisante).",
+            tg(
+                f"ℹ️ Kelly = €0 at odds <b>{odd:.2f}</b> (no edge or insufficient bankroll).",
+                f"ℹ️ Kelly = 0 € avec cote <b>{odd:.2f}</b> (EV ou BR insuffisante).",
+            ),
         )
         _set_session(telegram_user_id, None)
         return True

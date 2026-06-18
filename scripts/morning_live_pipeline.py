@@ -2,16 +2,16 @@
 """Pipeline matinal BettingHUD (scrape + snapshot, notifications Telegram séparées).
 
 Phases (Europe/Paris, cron PROD) :
-  - **02:00** : ``--build-only`` — scrape TE, snapshot full, report algo
-  - **04:00** : ``--telegram-only`` — Top 5 Telegram (``TELEGRAM_TOP5_AFTER_MORNING=1``)
-  - **07:00** : ``--build-only`` — 2e scrape + snapshot (resync cotes du matin)
-  - **07:05** : ``--telegram-only --source morning-sync`` — 2e Top 5 (aligné web live)
+  - **02:00** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
+  - **05:00** : ``--morning-publish`` — build + publications (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
 
-Sans argument : build + Telegram (comportement historique, déconseillé en prod).
+Modes manuels :
+  - ``--telegram-only`` / ``--telegram-only --source morning-sync`` — envoi sans rebuild
+  - sans argument : build + Telegram ``morning`` (historique, déconseillé en prod)
 
 Usage :
   py -3 scripts/morning_live_pipeline.py --build-only
-  py -3 scripts/morning_live_pipeline.py --telegram-only
+  py -3 scripts/morning_live_pipeline.py --morning-publish
   py -3 scripts/morning_live_pipeline.py --telegram-only --source morning-sync
 """
 from __future__ import annotations
@@ -183,12 +183,14 @@ def run_build_phase(*, _log) -> int:
         _log(f"Sync report algo ignorée : {exc}")
 
     try:
-        from scripts.telegram_runtime_cache import invalidate_snapshot_cache
+        from scripts.telegram_runtime_cache import invalidate_snapshot_cache, warm_telegram_runtime_cache
 
         invalidate_snapshot_cache()
         _log("Cache Telegram invalidé (snapshot à jour).")
+        warm_telegram_runtime_cache()
+        _log("Cache Telegram pré-chargé (ML + picks /top5 /today).")
     except Exception as exc:
-        _log(f"Invalidation cache Telegram ignorée : {exc}")
+        _log(f"Cache Telegram ignoré : {exc}")
 
     try:
         from scripts.live_snapshot import load_latest_live_snapshot
@@ -209,17 +211,26 @@ def run_build_phase(*, _log) -> int:
 
 
 def run_telegram_phase(*, _log, source: str = "morning") -> int:
+    env_name = (os.getenv("BETTINGHUD_ENV") or "preprod").strip().lower()
+    if env_name != "prod":
+        _log("Phase Telegram ignorée (PREPROD — envoi réservé à PROD).")
+        return 0
+
+    if source == "morning-sync":
+        try:
+            from scripts.od1p_publish import publish_1d1p_morning
+
+            od1p = publish_1d1p_morning(source=source)
+            _log(f"1 Day 1 Pick (TG + Discord) : {od1p}")
+        except Exception as exc:
+            _log(f"1 Day 1 Pick ERREUR : {exc}")
+
     if os.getenv("TELEGRAM_TOP5_AFTER_MORNING", "").strip().lower() not in (
         "1",
         "true",
         "yes",
     ):
-        _log("TELEGRAM_TOP5_AFTER_MORNING désactivé — rien à envoyer.")
-        return 0
-
-    env_name = (os.getenv("BETTINGHUD_ENV") or "preprod").strip().lower()
-    if env_name != "prod":
-        _log("Telegram Top 5 ignoré (PREPROD — envoi réservé à PROD).")
+        _log("TELEGRAM_TOP5_AFTER_MORNING désactivé — Top 5 non envoyé.")
         return 0
 
     from scripts.live_snapshot import load_latest_live_snapshot
@@ -288,13 +299,18 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--telegram-only",
         action="store_true",
-        help="04:00 Paris : envoi Top 5 Telegram (snapshot déjà construit)",
+        help="Envoi Top 5 / 1D1P / canal (snapshot déjà construit)",
+    )
+    mode.add_argument(
+        "--morning-publish",
+        action="store_true",
+        help="05:00 Paris : build + toutes les publications matinales",
     )
     ap.add_argument(
         "--source",
         default="morning",
         choices=("morning", "morning-sync"),
-        help="Libellé Telegram pour --telegram-only (morning-sync = 2e passe 07:05)",
+        help="Libellé Telegram pour --telegram-only (morning-sync = passe 05:00)",
     )
     args = ap.parse_args(argv)
 
@@ -309,11 +325,23 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.telegram_only:
         _log, log_path = _open_log("telegram" if args.source == "morning" else "telegram-sync")
-        label = "Top 5 matin" if args.source == "morning" else "Top 5 resync matinée"
+        label = "Top 5 matin" if args.source == "morning" else "Publications matin 05:00"
         _log(f"Démarrage phase Telegram ({label}).")
         rc = run_telegram_phase(_log=_log, source=args.source)
         _log(f"Fin (code {rc}). Journal : {log_path}")
         return rc
+
+    if args.morning_publish:
+        _log, log_path = _open_log("morning-publish")
+        _log("Démarrage publications matin 05:00 (build + Telegram/Discord/canal).")
+        rc = run_build_phase(_log=_log)
+        if rc != 0:
+            _log(f"Build échoué (code {rc}) — publications non lancées.")
+            _log(f"Fin (code {rc}). Journal : {log_path}")
+            return rc
+        rc_tg = run_telegram_phase(_log=_log, source="morning-sync")
+        _log(f"Fin (build OK, publications code {rc_tg}). Journal : {log_path}")
+        return rc_tg if rc_tg != 0 else 0
 
     # Comportement historique : tout en une passe
     _log, log_path = _open_log("full")

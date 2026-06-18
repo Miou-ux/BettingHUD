@@ -1,8 +1,10 @@
-# Bot Telegram BettingHUD — documentation complète
+# Bot Telegram CourtAlpha — documentation complète
 
-Bot **@BettingHUDbot** : notifications et commandes sur le **serveur PROD uniquement**.  
+Bot **CourtAlpha** (display name) · username **@CourtAlphabot** : notifications et commandes sur le **serveur PROD uniquement**.  
 PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi réel.
 
+> **1 Day 1 Pick (auto + manuel)** : [[ONE_DAY_ONE_PICK]] — publication **05:00** + résultats daemon.  
+> **Langue des messages** : **anglais** (Telegram bot + canal public). Voir [[COMMS_LOCALE]].  
 > Voir aussi : [[ENVIRONNEMENTS]] · [[DEPLOY_SERVEUR]] · [[OPS_PROD_DEPANNAGE]] · [[ARCHITECTURE_ACTUELLE_ET_MISES]]
 
 ---
@@ -11,8 +13,10 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
-| **Top 5 matinal** | Fin du pipeline matin (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV favori **+15 % → +100 %** · tri proba ↓ (onglet **Paris du jour**) |
-| **`/jour`** | Commande Telegram | Matchs **Aujourd’hui** · **proba > 60 %** · **EV > 15 %** (tri proba ↓) |
+| **1 Day 1 Pick matinal** | **05:00** `od1p_publish` (`TELEGRAM_1D1P_ENABLED=1`) | Pick unique/jour · broadcast · bouton **Bet** · résultats via daemon |
+| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 proba · EV **≥ 15 % → 100 %** · tri proba ↓ |
+| **`/1pick1day`** · **`/1d1p`** | Commande ou menu **🎯 1 Day 1 Pick** | Même pick que web · interactif + Bet |
+| **`/jour`** · **`/today`** | Menu **📅 Today** ou commande | Matchs **Aujourd’hui** · **proba > 60 %** · **EV ≥ 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/jourmajor`** | Commande Telegram | Tournois **main draw 250+** du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
@@ -48,12 +52,16 @@ flowchart LR
 
 | Fichier | Rôle |
 |---------|------|
-| `scripts/telegram_top5_notify.py` | Formatage HTML, envoi messages, `run_notify`, `run_daily_picks_notify` |
-| `scripts/telegram_bot_daemon.py` | Long polling `getUpdates`, commandes + callbacks « Parier » |
-| `scripts/telegram_bet_flow.py` | Sessions cote/Kelly, enregistrement portefeuille depuis Telegram |
+| `scripts/telegram_top5_notify.py` | Formatage HTML, envoi messages, `run_notify`, `run_1d1p_notify`, menu clavier |
+| `scripts/telegram_1d1p_notify.py` | Publication auto 1D1P (matin + résultats broadcast) |
+| `scripts/telegram_1d1p_post_log.py` | Journal anti-doublon `telegram_1d1p_posts` |
+| `scripts/od1p_publish.py` | Orchestration 1D1P Telegram + Discord |
+| `scripts/telegram_bot_daemon.py` | Long polling `getUpdates`, commandes + callbacks « Parier » + `setMyCommands` |
+| `scripts/telegram_access.py` | Demandes d'accès, onboarding, broadcast chats |
+| `scripts/telegram_bet_flow.py` | Sessions cote/Kelly, registre picks (`threading.Lock`) |
 | `scripts/live_tracker_picks.py` | Collecte headless des picks **Live Tracker (Aujourd’hui)** pour `/jour` |
 | `scripts/daily_top_proba_store.py` | `collect_top5_proba_picks` — Top 5 Paris du jour (EV 15–100 %) |
-| `scripts/morning_live_pipeline.py` | **02:00** `--build-only` · **04:00** / **07:05** `--telegram-only` (Top 5 interactif si `TELEGRAM_TOP5_AFTER_MORNING=1`) · **07:00** resync build |
+| `scripts/morning_live_pipeline.py` | **02:00** `--build-only` · **05:00** `--morning-publish` (Top 5 + 1D1P + canal si flags activés) |
 | `deploy/systemd/bettinghud-telegram-bot.service` | Service systemd daemon commandes |
 | `deploy/install_ubuntu.sh` | Installe et active le service Telegram |
 
@@ -247,7 +255,7 @@ Données : `compute_telegram_user_br_advanced_stats` dans `scripts/bets_db.py`.
 ### 5.1 Créer le bot
 
 1. Telegram → **@BotFather**
-2. `/newbot` → nom + username (ex. `@BettingHUDbot`)
+2. `/newbot` → nom + username (ex. `@CourtAlphabot`)
 3. Copier le **token** (ne jamais le committer)
 
 ### 5.2 Obtenir le chat ID
@@ -265,6 +273,7 @@ BETTINGHUD_ENV=prod
 
 # Obligatoire
 TELEGRAM_BOT_TOKEN=123456789:AA...
+TELEGRAM_BOT_USERNAMES=CourtAlphabot
 TELEGRAM_CHAT_ID=123456789
 
 # Envoi Top 5 après pipeline matin
@@ -293,9 +302,10 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 | Variable | Défaut | Usage |
 |----------|--------|--------|
 | `TELEGRAM_BOT_TOKEN` | — | Token @BotFather |
+| `TELEGRAM_BOT_USERNAMES` | `CourtAlphabot` | Username(s) pour liens `t.me` et commandes en groupe |
 | `TELEGRAM_CHAT_ID` | — | Chat principal (notifications + commandes) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | — | Liste additionnelle de chats autorisés |
-| `TELEGRAM_TOP5_AFTER_MORNING` | `0` | `1` = Top 5 à **04:00** via `morning_live_pipeline.py --telegram-only` |
+| `TELEGRAM_TOP5_AFTER_MORNING` | `0` | `1` = Top 5 à **05:00** via `morning_live_pipeline.py --morning-publish` |
 | `TELEGRAM_TOP5_LIMIT` | `5` | Nombre de picks Top 5 |
 | `TELEGRAM_TOP5_EV_MIN_PCT` | `15` | EV min favori (Top 5) |
 | `TELEGRAM_TOP5_EV_MAX_PCT` | `100` | EV max favori (Top 5) |
@@ -323,14 +333,10 @@ Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
 | Heure (Paris) | Commande | Log |
 |---------------|----------|-----|
 | **02:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_cron.log` |
-| **04:00** | `morning_live_pipeline.py --telegram-only` | `data/logs/morning_telegram_cron.log` |
-| **07:00** | `morning_live_pipeline.py --build-only` | `data/logs/morning_build_sync_cron.log` |
-| **07:05** | `morning_live_pipeline.py --telegram-only --source morning-sync` | `data/logs/morning_telegram_sync_cron.log` |
+| **05:00** | `morning_live_pipeline.py --morning-publish` | `data/logs/morning_publish_cron.log` |
 
-- **02:00** : scrape TE, snapshot full, report algo (pas de Telegram).
-- **04:00** : si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning", interactive=True)` : en-tête + **un message par pick avec bouton Parier**, envoyé à **chaque chat validé** (`TELEGRAM_CHAT_ID` + `TELEGRAM_ALLOWED_CHAT_IDS` + `data/cache/telegram_allowed_chats.json`). `telegram_user_id` = `chat_id` en DM privé.
-- **07:00** : 2e scrape + snapshot (resync cotes matinées, aligné web live).
-- **07:05** : 2e Top 5 Telegram interactif (`source=morning-sync`), même format que 04:00.
+- **02:00** : scrape TE, snapshot full, report algo (pas de publication).
+- **05:00** : `--morning-publish` — build + si `TELEGRAM_TOP5_AFTER_MORNING=1` et `BETTINGHUD_ENV=prod` → `run_notify(source="morning-sync", interactive=True)` : Top 5 interactif + 1D1P + canal public.
 
 ### 6.2 Service daemon commandes
 

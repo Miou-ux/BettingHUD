@@ -23,8 +23,10 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[CHANGELOG_RECENT]] | Évolutions récentes (mai 2026) |
 | [[ENVIRONNEMENTS]] | **PREPROD** (PC local) vs **PROD** (serveur) — règles et workflow |
 | [[SCHEDULE_MISES_A_JOUR]] | **Planning** scrape, snapshot, ML train, daemon, Telegram (PREPROD/PROD) |
+| [[CRONS_SEMAINE]] | **Crons PROD** — vue hebdomadaire synthétique (matin, sync, dimanche) |
 | [[DEPLOY_SERVEUR]] | **Hébergement Ubuntu** (systemd, nginx, SSH, git pull) |
 | [[OPS_PROD_DEPANNAGE]] | **Ops & dépannage PROD** (sync données, HEADLESS, incidents, checklist) |
+| [[WTA_SACKMANN_ARCHIVE]] | **Archive WTA Sackmann** — backup, delta prod, Brier, restauration |
 | [[PROD_RESILIENCE]] | **Redémarrage auto** serveur + app (systemd, boot, crash) |
 | [[PROD_AUDIT]] | **Audit PROD** résilience & sécurité (checklist améliorations) |
 | [[PREDICTION_ET_MISE]] | Probabilités, EV, Kelly, backtest |
@@ -32,8 +34,11 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[BACKTEST_TOP5_PROBA_VS_EV]] | Top **5** proba vs top **5** EV · grille EV min 5–20 % (2024–2026) |
 | [[BACKTEST_PARAM_OPTIMIZATION]] | Recherche auto EV min/max, top N (walk-forward, score composite) |
 | [[BACKTEST_RG_2026]] | **Backtest Roland-Garros 2026** — Top 5 proba vs EV vs p≥65 % |
-| [[TELEGRAM_TOP5]] | **Bot Telegram** — `/jour`, `/top5`, `/br`, `/brstats`, envoi matinal |
-| [[TELEGRAM_CHANNEL_ACQUISITION]] | **Canal Telegram public** — 1 Day 1 Pick acquisition FR |
+| [[COMMS_LOCALE]] | **Langue TG & Discord** — communications publiques en **anglais** |
+| [[ONE_DAY_ONE_PICK]] | **1 Day 1 Pick** — sélection, web, TG, Discord, cron, dépannage |
+| [[TELEGRAM_TOP5]] | **Bot Telegram** — `/today`, `/top5`, `/1pick1day`, envoi matinal (EN) |
+| [[TELEGRAM_CHANNEL_ACQUISITION]] | **Canal Telegram public** — 1 Day 1 Pick acquisition (EN) |
+| [[DISCORD_1D1P]] | **Discord** — webhook 1 Day 1 Pick (EN) |
 | [[GOOGLE_SEARCH_CONSOLE]] | **SEO** — Search Console + sitemap |
 | [[LLM_VISIBILITY]] | **LLM** — llms.txt, IndexNow, Bing |
 | [[ACQUISITION_TRAFFIC]] | **Acquisition** — crons trafic, rapports, UTM |

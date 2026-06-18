@@ -1,6 +1,6 @@
 # Ops production & dépannage (PROD)
 
-Dernière mise à jour : **28 mai 2026**.
+Dernière mise à jour : **18 juin 2026**.
 
 Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d’environnement, incidents rencontrés en mise en production et procédures de correction.
 
@@ -76,20 +76,23 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 
 ### Cron
 
-- **02:00 Europe/Paris** : `morning_live_pipeline.py --build-only` (scrape + snapshot)
-- **04:00 Europe/Paris** : `morning_live_pipeline.py --telegram-only` (Top 5 Telegram **interactif**)
-- **07:00 Europe/Paris** : `morning_live_pipeline.py --build-only` (resync cotes matinées)
-- **07:05 Europe/Paris** : `morning_live_pipeline.py --telegram-only --source morning-sync` (2e Top 5 interactif)
-- Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
-- Logs : `morning_build_cron.log`, `morning_telegram_cron.log`, `morning_build_sync_cron.log`, `morning_telegram_sync_cron.log` (ancien monolithique : `morning_pipeline_cron.log`)
-- **Déploiement** : le fichier cron doit être en **LF** (pas CRLF Windows). Sinon la redirection `2>&1` échoue silencieusement (`^M` dans syslog). Après copie : `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-morning`
+**Vue complète** : [[CRONS_SEMAINE]] (tableau hebdomadaire).
 
-**CourtAlphaX (X / Twitter)** — `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x` :
+| Créneau (Paris) | Fichier cron | Rôle |
+|-----------------|--------------|------|
+| **02:00** · **05:00** | `bettinghud-morning` | Build snapshot · publications TG/Discord |
+| **03:30** quotidien | `bettinghud-data-sync` | Sync ATP + **WTA delta** + ingest |
+| **04:00** dimanche | `bettinghud-data-sync` | Retrain ML hebdo |
+| **02:15** dimanche | `bettinghud-wta-backup` | Backup archive WTA |
+| **08:00** lundi | `bettinghud-ml-weekly` | Rapport Brier WTA → admin Telegram |
+| **04:55** quotidien | `bettinghud-acquisition-traffic` | Image OG stats |
+| ***/2 min** | `bettinghud-billing` | Indexeur ETH |
 
-- **04:15** : `courtalphax_daily_pick.py`
-- **10:00–23:30, */30** : `courtalphax_result_notify.py`
-- **Dimanche 20:00** : `courtalphax_weekly_recap.py`
-- Logs : `data/logs/courtalphax_x.log` · doc : **`docs/COURTALPHAX_X.md`**
+Logs : `morning_build_cron.log`, `morning_publish_cron.log`, `tours_auto_sync.log`, `ml_train_cron.log`, `ml_weekly_telegram.log`.
+
+**Déploiement** : fichiers cron en **LF** (pas CRLF). `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-<nom>`
+
+**CourtAlphaX (X)** — **pause juin 2026** (crons commentés) · [[COURTALPHAX_X]]
 
 ---
 
@@ -209,16 +212,34 @@ Le fichier source corrigé : `deploy/systemd/bettinghud-dashboard.service`.
 | `No module named scripts.portfolio_results_daemon` | Lancement avec `-m scripts...` sans package | `ExecStart=.../python .../scripts/portfolio_results_daemon.py` + `PYTHONPATH=/opt/bettinghud` |
 | Script absent | `git pull` non fait | `git pull` sur `/opt/bettinghud` |
 
-### 6.4 WTA « figée » en avril
+### 6.4 WTA Sackmann — archive & delta prod
 
-Ingest WTA nécessite **`sqlalchemy`** :
+Le dépôt GitHub **JeffSackmann/tennis_wta** est **indisponible** (404, juin 2026). L’archive sous `data/raw/tennis_wta/` sur prod est enrichie par le **pipeline delta** (tennis-data + stats Flashscore).
+
+**Documentation complète :** [[WTA_SACKMANN_ARCHIVE]] · crons : [[CRONS_SEMAINE]]
+
+**État prod (18/06/2026)** : delta déployé · max match WTA **2026-06-14** · Brier global **0.1749** · rollback modèle : `xgb_model_tml_v47_pre_wta_delta.pkl`.
+
+**Backup** :
+
+```powershell
+py scripts/backup_wta_sackmann_archive.py --remote bettinghud --retain 12
+```
+
+Cron hebdo : `deploy/cron/wta-sackmann-backup` (dimanche **02:15**).
+
+**Sync quotidien (03:30)** : `sync_tours_daily.py` → `sync_wta_delta` + `enrich_wta_delta_te_stats` — **plus** `fetch_wta_sackmann_raw.py`.
+
+**Ingest manuel** (si besoin) :
 
 ```bash
 cd /opt/bettinghud
-./venv/bin/pip install sqlalchemy
-./venv/bin/python scripts/fetch_wta_sackmann_raw.py
 ./venv/bin/python scripts/ingest_sackmann_wta.py
 ```
+
+**Santé ML** : rapport admin chaque **lundi 08:00** (`ml_weekly_telegram_notify.py`) · gate Brier : `check_wta_brier_j6.py`.
+
+Checklist delta : `scripts/_wta_delta_acceptance.md` · plan Brier : `scripts/_wta_delta_brier_plan.md`.
 
 ### 6.5 Paris du jour vide (« Aucun match du jour »)
 

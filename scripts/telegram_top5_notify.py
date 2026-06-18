@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Envoie des notifications Telegram BettingHUD (Top 5 et /jour Live Tracker).
+"""Envoie des notifications Telegram CourtAlpha (Top 5 et /jour Live Tracker).
 
 Documentation : docs/TELEGRAM_TOP5.md
 
@@ -12,9 +12,9 @@ Optionnel :
   TELEGRAM_TOP5_EV_MIN_PCT     (defaut 15)
   TELEGRAM_TOP5_EV_MAX_PCT     (defaut 100)
   TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les picks EV+ /jour)
-  TELEGRAM_JOUR_EV_MIN_PCT     (defaut 15 = EV strictement > 15 %)
+  TELEGRAM_JOUR_EV_MIN_PCT     (defaut 15 = EV >= 15 %)
   TELEGRAM_MIN_PROBA_PCT       (defaut 60 = proba modèle strictement > 60 %)
-  TELEGRAM_MIN_EV_PCT          (defaut 15 = EV strictement > 15 %, filtre affichage)
+  TELEGRAM_MIN_EV_PCT          (defaut 15 = EV >= 15 %, filtre affichage)
   TELEGRAM_JOURCHALLENGER_EV_MIN_PCT  (defaut 15)
   TELEGRAM_JOURCHALLENGER_EV_MAX_PCT  (defaut 100)
   TELEGRAM_TOP5_AFTER_MORNING  (pipeline matin)
@@ -40,8 +40,10 @@ os.environ.setdefault("BETTINGHUD_HEADLESS", "1")
 
 import requests
 
+from scripts.comms_locale import BRAND_NAME, PUBLIC_SITE_URL, comms_disclaimer, tg
 from scripts.daily_top_proba_store import (
     collect_daily_ev_band_picks,
+    collect_paris_du_jour_picks,
     load_today_matches_for_daily_top_proba,
 )
 from scripts.live_tracker_picks import (
@@ -121,29 +123,31 @@ def filter_telegram_display_picks(
     *,
     min_proba_pct: float | None = None,
     min_ev_pct: float | None = None,
+    apply_proba_filter: bool = True,
 ) -> list[dict]:
-    """Filtre commun Telegram : proba modèle et EV strictement au-dessus des seuils."""
+    """Filtre affichage Telegram : EV >= seuil (aligné web/Discord) ; proba optionnelle."""
     mp = _telegram_min_proba_pct() if min_proba_pct is None else float(min_proba_pct)
     me = _telegram_min_ev_pct() if min_ev_pct is None else float(min_ev_pct)
-    kept = [
-        p
-        for p in picks
-        if _pick_proba_pct(p) > mp and _pick_ev_pct(p) > me
-    ]
+    kept: list[dict] = []
+    for p in picks:
+        if apply_proba_filter and _pick_proba_pct(p) <= mp:
+            continue
+        if _pick_ev_pct(p) < me:
+            continue
+        kept.append(p)
     for rank, row in enumerate(kept, start=1):
         row["rank"] = rank
     return kept
 
 
 def _telegram_pick_criteria_line(*, ev_max_pct: float | None = 100.0) -> str:
-    mp = _telegram_min_proba_pct()
-    me = _telegram_min_ev_pct()
-    ev_part = (
-        f"EV <code>&gt;{me:.0f}%</code> → <code>+{ev_max_pct:.0f}%</code>"
-        if ev_max_pct is not None
-        else f"EV <code>&gt;{me:.0f}%</code>"
+    from scripts.comms_locale import telegram_pick_criteria_line
+
+    return telegram_pick_criteria_line(
+        min_proba_pct=_telegram_min_proba_pct(),
+        min_ev_pct=_telegram_min_ev_pct(),
+        ev_max_pct=ev_max_pct,
     )
-    return f"📊 Proba <code>&gt;{mp:.0f}%</code> · {ev_part} · tri proba modèle ↓"
 
 
 def _escape_html(text: str) -> str:
@@ -156,17 +160,10 @@ def _escape_html(text: str) -> str:
 
 
 def _format_date_label(calendar_date: str) -> str:
-    try:
-        d = date.fromisoformat(str(calendar_date)[:10])
-        from scripts.daily_top_proba_store import PARIS_TZ
+    from scripts.comms_locale import format_calendar_date_label
 
-        today = datetime.now(PARIS_TZ).date()
-        base = f"{_WD_FR[d.weekday()]} {d.day} {_MO_FR[d.month - 1]} {d.year}"
-        if d == today:
-            return f"Aujourd'hui · {base}"
-        if d == today + timedelta(days=1):
-            return f"Demain · {base}"
-        return base
+    try:
+        return format_calendar_date_label(str(calendar_date)[:10])
     except ValueError:
         return _escape_html(calendar_date)
 
@@ -284,13 +281,106 @@ def format_telegram_error_message(title: str, exc: BaseException) -> str:
 
 
 def _snapshot_age_min(meta: dict) -> float | None:
-    built = meta.get("built_at") or meta.get("mtime")
-    if not built:
-        return None
+    from scripts.daily_top_proba_store import snapshot_age_min_from_meta
+
+    return snapshot_age_min_from_meta(meta)
+
+
+def format_snapshot_freshness_line(snapshot_age_min: float | None) -> str:
+    """Ligne visible sur l'âge des cotes (alerte si snapshot ancien)."""
+    if snapshot_age_min is None:
+        return "🕐 <i>Odds age unknown — always verify live odds at your bookmaker.</i>"
+    age = float(snapshot_age_min)
+    if age <= 45:
+        return (
+            f"🕐 Odds data · <b>{age:.0f} min ago</b> — verify live odds before betting"
+        )
+    if age <= 120:
+        return (
+            f"⚠️ Odds data · <b>{age:.0f} min ago</b> — may be outdated; "
+            "use menu <b>Top 5</b> or <b>Today</b> to refresh"
+        )
+    return (
+        f"🔴 Odds data · <b>{age:.0f} min ago</b> — stale; "
+        "refresh via menu <b>Top 5</b> / <b>Today</b> before betting"
+    )
+
+
+_MENU_BUTTON_TO_COMMAND: dict[str, str] = {
+    "🎯 1 day 1 pick": "/1pick1day",
+    "📊 top 5": "/top5",
+    "📅 today": "/today",
+    "💰 bankroll": "/br",
+    "❓ help": "/help",
+    "📖 strategy": "/strategy",
+}
+
+
+def resolve_menu_button_text(text: str) -> str | None:
+    """Mappe un libellé du clavier reply vers une commande slash."""
+    key = (text or "").strip().lower()
+    return _MENU_BUTTON_TO_COMMAND.get(key)
+
+
+def main_menu_reply_keyboard() -> dict:
+    """Clavier reply persistant — évite de mémoriser les commandes."""
+    return {
+        "keyboard": [
+            [
+                {"text": "🎯 1 Day 1 Pick"},
+                {"text": "📊 Top 5"},
+            ],
+            [
+                {"text": "📅 Today"},
+                {"text": "💰 Bankroll"},
+            ],
+            [
+                {"text": "❓ Help"},
+                {"text": "📖 Strategy"},
+            ],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def register_bot_commands(token: str) -> bool:
+    """Enregistre le menu « / » natif Telegram (BotFather-style)."""
+    tok = (token or "").strip()
+    if not tok:
+        return False
+    commands = [
+        {"command": "start", "description": "Welcome & keyboard menu"},
+        {"command": "1pick1day", "description": "One pick per day (majors)"},
+        {"command": "top5", "description": "Top 5 model proba"},
+        {"command": "today", "description": "Today's value picks"},
+        {"command": "br", "description": "Bankroll summary"},
+        {"command": "help", "description": "Full command list"},
+        {"command": "strategy", "description": "Selection & Kelly staking"},
+    ]
     try:
-        return max(0.0, (datetime.now(PARIS_TZ).timestamp() - float(built)) / 60.0)
-    except (TypeError, ValueError):
-        return None
+        resp = requests.post(
+            f"https://api.telegram.org/bot{tok}/setMyCommands",
+            json={"commands": commands},
+            timeout=15,
+        )
+        return resp.ok
+    except requests.RequestException:
+        return False
+
+
+def pending_access_inline_keyboard() -> dict:
+    """Bouton web pour les utilisateurs en attente d'approbation."""
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📊 1 Day 1 Pick (free track record)",
+                    "url": f"{PUBLIC_SITE_URL}/1-day-1-pick",
+                }
+            ],
+        ]
+    }
 
 
 def _count_today_pool(matches: list) -> int:
@@ -306,50 +396,51 @@ def _count_today_pool(matches: list) -> int:
 
 
 def format_bot_invite_start_message() -> str:
-    """Premier contact / bot ajouté : inviter à lancer /start."""
+    """First contact — prompt /start."""
     return "\n".join(
         [
-            "👋 <b>Bienvenue sur BettingHUD Bot</b>",
+            f"👋 <b>Welcome to {BRAND_NAME} Bot</b>",
             "",
-            "Pour <b>demander l'accès</b>, envoie maintenant :",
+            "To <b>request access</b>, send:",
             "",
             "👉 <code>/start</code>",
             "",
-            "💡 Sur Telegram, le bouton bleu <b>« Démarrer »</b> en bas de l'écran "
-            "envoie aussi <code>/start</code>.",
+            "💡 On Telegram, the blue <b>Start</b> button also sends <code>/start</code>.",
             "",
-            "Dès que l'admin valide, tu recevras un guide pour utiliser le bot.",
+            "Once an admin approves you, you'll get a short setup guide.",
         ]
     )
 
 
 def format_bot_onboarding_after_approval() -> str:
-    """Guide pratique envoyé après approbation admin."""
+    """Post-approval onboarding (English)."""
+    from scripts.comms_locale import DISCLAIMER_EN
+
     return "\n".join(
         [
-            "🚀 <b>Par où commencer</b>",
+            "🚀 <b>Getting started</b>",
             "",
-            "<b>1. Ta bankroll</b>",
-            "  <code>/brset 80</code> — fixe ton capital de départ (€)",
-            "  <code>/br</code> — voir BR dispo · <code>/brstats</code> — stats détaillées",
+            "<b>1. Bankroll</b>",
+            "  <code>/brset 80</code> — set starting capital (€)",
+            "  <code>/br</code> — available BR · <code>/brstats</code> — detailed stats",
             "",
-            "<b>2. Les picks du jour</b>",
-            "  <code>/top5</code> — Top 5 proba (Paris du jour)",
-            "  <code>/jour</code> — value bets (proba &gt;60 %, EV &gt;15 %)",
-            "  <code>/jourchallenger</code> · <code>/jourmajor</code> — autres pools",
+            "<b>2. Daily picks</b>",
+            "  <code>/top5</code> — Top 5 model proba",
+            "  <code>/today</code> — Today's Pick (value bets EV ≥15%)",
+            "  <code>/1pick1day</code> — one pick per day (same as the website)",
             "",
-            "<b>3. Parier un match</b>",
-            "  Sous chaque pick : bouton <b>💰 Parier</b>",
-            "  → saisis ta <b>cote réelle</b> → mise Kelly → <b>Confirmer</b>",
-            "  (<code>/annuler</code> pour annuler une saisie en cours)",
+            "<b>3. Place a bet</b>",
+            "  Under each pick: <b>💰 Bet</b> button",
+            "  → enter your <b>real odds</b> → Kelly stake → <b>Confirm</b>",
+            "  (<code>/cancel</code> to abort a flow in progress)",
             "",
-            "<b>4. Aller plus loin</b>",
-            "  <code>/strategie</code> — comment on sélectionne et mise (Kelly ½ × Brier)",
-            "  <code>/help</code> — aide complète de toutes les commandes",
+            "<b>4. Learn more</b>",
+            "  <code>/strategy</code> — selection & staking (½ Kelly × Brier)",
+            "  <code>/help</code> — full command list",
             "",
-            "🌅 Chaque matin (~04:00 Paris, après rebuild 02:00) : envoi auto du <code>/top5</code>.",
+            "🌅 Every morning (~05:00 Paris): auto <code>/top5</code>.",
             "",
-            "ℹ️ <i>Information — pas un conseil de pari.</i>",
+            f"ℹ️ <i>{DISCLAIMER_EN}</i>",
         ]
     )
 
@@ -357,64 +448,55 @@ def format_bot_onboarding_after_approval() -> str:
 def format_bot_welcome_message() -> str:
     return "\n".join(
         [
-            "👋 <b>Bienvenue sur BettingHUD Bot</b>",
+            f"👋 <b>Welcome to {BRAND_NAME} Bot</b>",
             "",
-            "Je t'envoie chaque matin le <b>Top 5 proba</b> (proba &gt;60 %, EV &gt;15 % → +100 %).",
+            "I send the <b>Top 5</b> each morning (model proba &gt;60%, EV 15–100%).",
             "",
-            "📌 <b>Commandes</b>",
-            "  /top5 — Top 5 proba (Paris du jour, bouton Parier)",
-            "  /jour — Picks (proba &gt;60 %, EV &gt;15 %, bouton Parier)",
-            "  /jourchallenger · /jourmajor — mêmes filtres proba / EV",
-            "  /strategie — Comment on sélectionne et mise",
-            "  /br — Bankroll · /brstats — stats avancées",
-            "  /help — Aide",
+            "📌 <b>Quick menu</b> — use the buttons below or type commands",
+            "  🎯 1 Day 1 Pick · 📊 Top 5 · 📅 Today",
+            "  💰 Bankroll · ❓ Help · 📖 Strategy",
             "",
-            "🌐 Dashboard : serveur PROD BettingHUD",
+            "Slash commands still work: <code>/1pick1day</code> <code>/top5</code> <code>/today</code>",
+            "",
+            f"🌐 {PUBLIC_SITE_URL.replace('https://', '')}",
         ]
     )
 
 
 def format_bot_strategy_message() -> str:
-    """Résumé synthétique stratégie BettingHUD + mise (commande /strategie)."""
+    """Strategy summary (/strategy)."""
+    from scripts.comms_locale import DISCLAIMER_EN
+
     return "\n".join(
         [
-            "📖 <b>BettingHUD — Stratégie</b>",
+            f"📖 <b>{BRAND_NAME} — Strategy</b>",
             "",
-            "<b>1. Principe</b>",
-            "Modèle ML tennis (ATP/WTA) : probabilité de victoire calibrée "
-            "à partir du classement, de la forme, du contexte (surface, tournoi…).",
-            "On ne retient un pari que si le modèle voit un <b>edge</b> vs la cote book "
-            "(EV = espérance de gain &gt; 0).",
+            "<b>1. Principle</b>",
+            "ML tennis model (ATP/WTA): calibrated win probability from rankings, "
+            "form, surface, tournament context.",
+            "We only flag a bet when the model shows <b>edge</b> vs book odds (positive EV).",
             "",
-            "<b>2. Sélection des picks</b>",
-            "• Matchs du <b>jour</b> (Europe/Paris), cotes valides",
-            "• <b>Favori modèle</b> = joueur avec la plus forte proba",
-            "• Filtres Telegram : <b>proba modèle &gt; 60 %</b> et <b>EV &gt; 15 %</b>",
-            "• Bande EV max +100 % (Top 5 / majors / challengers)",
-            "• Tri : proba modèle décroissante → <b>Top 5</b>",
+            "<b>2. Pick selection</b>",
+            "• <b>Today</b> matches (Europe/Paris), valid odds",
+            "• <b>Model favorite</b> = highest model probability",
+            "• <b>/top5</b>: model favorite, proba &gt;60%, EV 15–100%, majors, top 5 by proba",
+            "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
+            "• <b>/1pick1day</b>: best EV-eligible pick per circuit (proba ↓), ATP vs WTA, majors",
             "",
-            "<b>/top5</b> = Top 5 proba (Paris du jour)",
-            "<b>/jour</b> = value bets du jour (mêmes seuils proba / EV)",
-            "<b>/jourchallenger</b> · <b>/jourmajor</b> = pools dédiés, mêmes filtres",
+            "<b>3. Staking (Kelly)</b>",
+            "• <b>½ Kelly</b> (conservative vs full Kelly)",
+            "• <b>Brier</b> adjustment by segment (surface / tour)",
+            "• <b>15% cap</b> of available bankroll per bet",
             "",
-            "<b>3. Stratégie de mise (Kelly)</b>",
-            "• <b>½ Kelly</b> (mise prudente vs Kelly plein)",
-            "• Ajustement <b>Brier</b> : réduction si le segment "
-            "(surface / circuit) est moins bien calibré historiquement",
-            "• <b>Plafond 15 %</b> de la bankroll disponible par pari",
-            "• Mise reco = fraction finale × BR dispo (dashboard / messages)",
+            "<b>4. Bet from Telegram</b>",
+            "Under each <b>/today</b> or <b>/top5</b> pick: <b>Bet</b> → your odds → Kelly → Confirm.",
             "",
-            "<b>4. Parier depuis Telegram</b>",
-            "Sous chaque pick <b>/jour</b> ou <b>/top5</b> : bouton <b>Parier</b> → "
-            "ta cote → mise Kelly → <b>Confirmer</b> → portefeuille.",
+            "<b>5. In practice</b>",
+            "1️⃣ Check /top5, /today or /1pick1day",
+            "2️⃣ Verify <b>real odds</b> at your bookmaker",
+            "3️⃣ Stake at most the Kelly suggestion",
             "",
-            "<b>5. En pratique</b>",
-            "1️⃣ Consulter /top5 ou /jour",
-            "2️⃣ Vérifier la <b>cote réelle</b> chez le bookmaker",
-            "3️⃣ Miser au plus la reco Kelly (ou moins si tu veux)",
-            "",
-            "ℹ️ <i>Information — pas un conseil de pari. "
-            "Les performances passées ne garantissent pas les résultats futurs.</i>",
+            f"ℹ️ <i>{DISCLAIMER_EN} Past results do not guarantee future performance.</i>",
         ]
     )
 
@@ -422,41 +504,40 @@ def format_bot_strategy_message() -> str:
 def format_bot_help_message() -> str:
     return "\n".join(
         [
-            "ℹ️ <b>Aide BettingHUD Bot</b>",
+            f"ℹ️ <b>{BRAND_NAME} Bot — Help</b>",
+            "",
+            "<b>/1pick1day</b> · /1d1p",
+            "  One pick per day · best EV-eligible per circuit · EV 15–100% · majors.",
             "",
             "<b>/top5</b> · /top",
-            "  Top 5 proba · <b>proba &gt;60 %</b> · <b>EV &gt;15 %</b> → +100 %.",
-            "  Bouton <b>Parier</b> sous chaque match.",
+            "  Top 5 model proba · <b>proba &gt;60%</b> · <b>EV 15–100%</b> · ATP/WTA 250+.",
+            "  <b>Bet</b> button under each match.",
             "",
-            "<b>/jour</b> · /picks · /picksdujour",
-            "  Matchs <b>Aujourd'hui</b> · <b>proba &gt;60 %</b> · <b>EV &gt;15 %</b>.",
-            "  Bouton <b>Parier</b> sous chaque match.",
+            "<b>/today</b>",
+            "  Today's Pick · value bets <b>EV ≥15%</b> · majors + minors.",
+            "  Same as web · <b>Bet</b> button under each match.",
             "",
-            "<b>/jourchallenger</b>",
-            "  Challengers ATP/WTA · <b>proba &gt;60 %</b> · <b>EV &gt;15 %</b> → +100 %.",
+            "<i>/jour · /picks → alias /today</i>",
             "",
-            "<b>/jourmajor</b> · /majors",
-            "  Main draw 250+ · <b>proba &gt;60 %</b> · <b>EV &gt;15 %</b> → +100 %.",
-            "",
-            "<b>/annuler</b>",
-            "  Annule une saisie de cote en cours.",
+            "<b>/cancel</b> · /annuler",
+            "  Cancel an in-progress odds entry.",
             "",
             "<b>/br</b>",
-            "  Bankroll : dispo, engagée, P/L (app + Telegram).",
+            "  Bankroll: available, committed, P/L.",
             "<b>/brstats</b> · /bradv",
-            "  Stats avancées : ROI, win rate, forme, 7 j, par source, paris en cours.",
+            "  Advanced stats: ROI, win rate, form, open bets.",
             "<b>/brset 80</b>",
-            "  Capital de départ (€).",
+            "  Starting capital (€).",
             "<b>/brajust +10</b>",
-            "  Ajustement manuel de la BR.",
+            "  Manual bankroll adjustment.",
             "",
-            "<b>/strategie</b> · /strategy",
-            "  Résumé : sélection des picks + Kelly / Brier / plafond 15 %.",
+            "<b>/strategy</b> · /strategie",
+            "  Pick selection + Kelly / Brier / 15% cap.",
             "",
             "<b>/start</b>",
-            "  Message de bienvenue.",
+            "  Welcome message.",
             "",
-            "🌅 Envoi automatique /top5 (~04:00 Paris, snapshot prêt depuis 02:00).",
+            "🌅 Auto /top5 ~05:00 Paris.",
         ]
     )
 
@@ -470,35 +551,37 @@ def format_top5_telegram_message(
     source: str = "morning",
 ) -> str:
     lines = [
-        "🎾 <b>BettingHUD</b> · Top 5 Proba",
+        f"🎾 <b>{BRAND_NAME}</b> · Top 5 Proba",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
         _telegram_pick_criteria_line(),
     ]
     if source == "morning":
-        lines.append("🌅 Envoi matinal automatique")
+        lines.append("🌅 Morning auto-send")
     elif source == "morning-sync":
-        lines.append("🔄 Resync matinée (cotes à jour · aligné web)")
+        lines.append("🔄 Morning resync (fresh odds · web-aligned)")
     elif source == "manual":
-        lines.append("📲 Demande manuelle")
-    if snapshot_age_min is not None:
-        lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
+        lines.append("📲 On-demand")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     if not picks:
         lines.extend(
             [
                 "",
-                "😴 <i>Aucun match au-dessus des seuils proba / EV aujourd'hui.</i>",
+                "😴 <i>No matches above proba / EV thresholds today.</i>",
             ]
         )
         if pool_size > 0:
             lines.append(
-                f"🔍 {pool_size} match(s) analysé(s) hors bande ou sans cotes."
+                tg(
+                    f"🔍 {pool_size} match(es) scanned outside thresholds or without odds.",
+                    f"🔍 {pool_size} match(s) analysé(s) hors bande ou sans cotes.",
+                )
             )
         lines.append("")
         lines.append(
-            "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>"
+            f"ℹ️ <i>{comms_disclaimer()} Check odds before betting.</i>"
         )
         return "\n".join(lines)
 
@@ -509,7 +592,7 @@ def format_top5_telegram_message(
         [
             "",
             "━━━━━━━━━━━━━━━━━━━━",
-            "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+            f"ℹ️ <i>{comms_disclaimer()} Check odds before betting.</i>",
         ]
     )
     return "\n".join(lines).strip()
@@ -519,8 +602,8 @@ def _interactive_footer() -> str:
     return "\n".join(
         [
             "━━━━━━━━━━━━━━━━━━━━",
-            "👆 <b>Parier</b> : bouton sous chaque match → ta cote → mise Kelly → portefeuille",
-            "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+            "👆 <b>Bet</b>: button under each match → your odds → Kelly stake → portfolio",
+            f"ℹ️ <i>{comms_disclaimer()}</i>",
         ]
     )
 
@@ -534,22 +617,26 @@ def format_top5_interactive_header(
     n_picks: int = 0,
 ) -> str:
     lines = [
-        "🎾 <b>BettingHUD</b> · Top 5 Proba",
+        f"🎾 <b>{BRAND_NAME}</b> · Top 5 Proba",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
         _telegram_pick_criteria_line(),
     ]
     if source == "manual":
-        lines.append("📲 Demande manuelle · mode <b>Parier</b>")
+        lines.append("📲 On-demand · <b>Bet</b> mode")
     elif source == "morning":
-        lines.append("🌅 Envoi matinal automatique")
+        lines.append("🌅 Morning auto-send")
     elif source == "morning-sync":
-        lines.append("🔄 Resync matinée (cotes à jour · aligné web)")
-    if snapshot_age_min is not None:
-        lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
-    lines.append(f"✅ <b>{n_picks}</b> pick(s) · {pool_size} match(s) analysé(s)")
+        lines.append("🔄 Morning resync (fresh odds · web-aligned)")
+    lines.append(
+        tg(
+            f"✅ <b>{n_picks}</b> pick(s) · {pool_size} match(es) scanned",
+            f"✅ <b>{n_picks}</b> pick(s) · {pool_size} match(s) analysé(s)",
+        )
+    )
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("👇 Un message par match — bouton <b>Parier</b> ci-dessous")
+    lines.append("👇 One message per match — <b>Bet</b> button below")
     return "\n".join(lines).strip()
 
 
@@ -562,18 +649,17 @@ def format_daily_interactive_header(
     n_picks: int = 0,
 ) -> str:
     lines = [
-        "📋 <b>BettingHUD</b> · Live Tracker (Aujourd'hui)",
+        f"📋 <b>{BRAND_NAME}</b> · Today's Pick",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
-        f"{_telegram_pick_criteria_line(ev_max_pct=None)} · mode <b>Parier</b>",
+        format_snapshot_freshness_line(snapshot_age_min),
+        f"{_telegram_pick_criteria_line(ev_max_pct=None)} · <b>Bet</b> mode",
     ]
     if source == "manual":
-        lines.append("📲 Demande manuelle")
-    if snapshot_age_min is not None:
-        lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
-    lines.append(f"✅ <b>{n_picks}</b> match(s) · {pool_size} scanné(s) au total")
+        lines.append("📲 On-demand")
+    lines.append(f"✅ <b>{n_picks}</b> pick(s) · {pool_size} match(es) scanned")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("👇 Un message par match — bouton <b>Parier</b> ci-dessous")
+    lines.append("👇 One message per match — <b>Bet</b> button below")
     return "\n".join(lines).strip()
 
 
@@ -586,33 +672,32 @@ def format_daily_picks_telegram_messages(
     source: str = "manual",
 ) -> list[str]:
     header_lines = [
-        "📋 <b>BettingHUD</b> · Live Tracker (Aujourd'hui)",
+        f"📋 <b>{BRAND_NAME}</b> · Today's Pick",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
         _telegram_pick_criteria_line(ev_max_pct=None),
     ]
     if source == "manual":
-        header_lines.append("📲 Demande manuelle")
+        header_lines.append("📲 On-demand")
     elif source == "morning":
-        header_lines.append("🌅 Envoi matinal automatique")
-    if snapshot_age_min is not None:
-        header_lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
-    header_lines.append(f"✅ <b>{len(picks)}</b> match(s) · {pool_size} scanné(s) au total")
+        header_lines.append("🌅 Morning auto-send")
+    header_lines.append(f"✅ <b>{len(picks)}</b> pick(s) · {pool_size} match(es) scanned")
     header_lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     if not picks:
         empty = header_lines + [
             "",
-            "😴 <i>Aucun match scanné pour aujourd'hui.</i>",
+            "😴 <i>No matches scanned for today.</i>",
         ]
         if pool_size > 0:
             empty.append(
-                f"🔍 {pool_size} match(s) scanné(s) — aucun pick proba / EV aujourd'hui."
+                f"🔍 {pool_size} match(es) scanned — no proba / EV picks today."
             )
         empty.extend(
             [
                 "",
-                "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+                f"ℹ️ <i>{comms_disclaimer()} Check odds before betting.</i>",
             ]
         )
         return ["\n".join(empty).strip()]
@@ -622,7 +707,7 @@ def format_daily_picks_telegram_messages(
     footer = "\n".join(
         [
             "━━━━━━━━━━━━━━━━━━━━",
-            "ℹ️ <i>Info — pas un conseil de pari. Vérifier les cotes avant mise.</i>",
+            f"ℹ️ <i>{comms_disclaimer()}</i>",
         ]
     )
     header = "\n".join(header_lines).strip()
@@ -640,15 +725,14 @@ def format_challenger_daily_picks_telegram_messages(
     ev_max_pct: float = 100.0,
 ) -> list[str]:
     header_lines = [
-        "🏆 <b>BettingHUD</b> · Challengers (Aujourd'hui)",
+        f"🏆 <b>{BRAND_NAME}</b> · Challengers (Today)",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
         _telegram_pick_criteria_line(ev_max_pct=ev_max_pct),
     ]
     if source == "manual":
         header_lines.append("📲 Demande manuelle")
-    if snapshot_age_min is not None:
-        header_lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
     header_lines.append(
         f"✅ <b>{len(picks)}</b> pick(s) · {pool_size} Challenger(s) scanné(s)"
     )
@@ -694,15 +778,14 @@ def format_major_daily_picks_telegram_messages(
     ev_max_pct: float = 100.0,
 ) -> list[str]:
     header_lines = [
-        "🎾 <b>BettingHUD</b> · Majors 250+ (Aujourd'hui)",
+        f"🎾 <b>{BRAND_NAME}</b> · Majors 250+ (Today)",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
         _telegram_pick_criteria_line(ev_max_pct=ev_max_pct),
     ]
     if source == "manual":
         header_lines.append("📲 Demande manuelle")
-    if snapshot_age_min is not None:
-        header_lines.append(f"🕐 Snapshot ~{snapshot_age_min:.0f} min")
     header_lines.append(
         f"✅ <b>{len(picks)}</b> pick(s) · {pool_size} major(s) scanné(s)"
     )
@@ -813,7 +896,7 @@ def send_interactive_pick_messages(
     """Envoie en-tête + un message par pick avec bouton « Parier »."""
     from scripts.telegram_bet_flow import (
         _normalize_pick_row,
-        existing_stake_eur,
+        existing_stakes_eur_for_picks,
         format_pick_telegram_card,
         format_user_br_caption,
         inline_keyboard_parier,
@@ -831,21 +914,22 @@ def send_interactive_pick_messages(
     if not telegram_user_id:
         raise ValueError("telegram_user_id requis pour le mode Parier interactif")
 
+    ordered = sorted(picks, key=lambda r: int(r.get("rank") or 0))
     tokens = register_picks(
-        picks,
+        ordered,
         list_kind=list_kind,
         chat_id=chat_id,
         telegram_user_id=str(telegram_user_id),
     )
-    max_workers = max(1, int(os.getenv("TELEGRAM_SEND_PARALLEL", "4")))
+    stakes_by_key = existing_stakes_eur_for_picks(
+        ordered,
+        telegram_user_id=str(telegram_user_id),
+    )
 
-    def _send_one(row: dict, tok: str) -> None:
+    for row, tok in zip(ordered, tokens):
         pick = _normalize_pick_row(row, list_kind=list_kind)
-        already = existing_stake_eur(
-            pick["match_name"],
-            pick["bet_on"],
-            telegram_user_id=str(telegram_user_id),
-        )
+        key = (pick["match_name"], pick["bet_on"])
+        already = float(stakes_by_key.get(key) or 0.0)
         body = format_pick_telegram_card(pick, already_stake=already)
         send_telegram_message(
             body,
@@ -853,21 +937,7 @@ def send_interactive_pick_messages(
             chat_id=chat_id,
             reply_markup=inline_keyboard_parier(tok),
         )
-
-    if len(picks) <= 1:
-        for row, tok in zip(picks, tokens):
-            _send_one(row, tok)
-            sent += 1
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [
-                pool.submit(_send_one, row, tok) for row, tok in zip(picks, tokens)
-            ]
-            for fut in as_completed(futures):
-                fut.result()
-                sent += 1
+        sent += 1
 
     if str(footer_text or "").strip():
         send_telegram_message(footer_text.strip(), token=token, chat_id=chat_id)
@@ -922,14 +992,28 @@ def _load_live_tracker_jour_context(
     limit: int | None,
     ev_threshold_pct: float | None = None,
 ) -> tuple[list[dict], dict, str, int, float | None]:
-    picks, meta, scanned = load_live_tracker_day_picks(ev_threshold_pct=ev_threshold_pct)
-    picks = filter_telegram_display_picks(picks)
-    cal_day = datetime.now(PARIS_TZ).date().isoformat()
-    if limit is not None and limit > 0:
-        picks = picks[: int(limit)]
-        for i, row in enumerate(picks, start=1):
-            row["rank"] = i
-    return picks, meta, cal_day, scanned, _snapshot_age_min(meta)
+    """Today's Pick (``/today``) : aligné web Live Tracker — value bets EV ≥ seuil."""
+    from scripts.pick_modes import Channel, PickMode, load_picks
+
+    ev_min = 15.0 if ev_threshold_pct is None else float(ev_threshold_pct)
+    res = load_picks(
+        PickMode.TODAY,
+        channel=Channel.TELEGRAM,
+        limit=limit,
+        ev_min_pct=ev_min,
+    )
+    return res.picks, res.meta, res.calendar_date, res.pool_n, res.snapshot_age_min
+
+
+def _load_paris_du_jour_context(
+    *,
+    limit: int | None = None,
+    ev_min_pct: float = 15.0,
+    ev_max_pct: float = 100.0,
+) -> tuple[list[dict], dict, str, int, float | None]:
+    """Alias historique API ``/picks/jour`` → Today's Pick (Live Tracker web)."""
+    _ = ev_max_pct
+    return _load_live_tracker_jour_context(limit=limit, ev_threshold_pct=ev_min_pct)
 
 
 def _load_challenger_jour_context(
@@ -990,27 +1074,16 @@ def _load_top5_context(
     ev_min_pct: float,
     ev_max_pct: float,
 ) -> tuple[list[dict], dict, str, int, float | None]:
-    try:
-        from scripts.telegram_runtime_cache import get_ml_model, get_today_matches_cached
+    from scripts.pick_modes import Channel, PickMode, load_picks
 
-        matches, meta = get_today_matches_cached()
-        ml = get_ml_model()
-    except Exception:
-        matches, meta = load_today_matches_for_daily_top_proba()
-        ml = None
-    cal_day = datetime.now(PARIS_TZ).date().isoformat()
-    picks = collect_daily_ev_band_picks(
-        matches,
-        limit=None,
-        ev_min_frac=ev_min_pct / 100.0,
-        ev_max_frac=ev_max_pct / 100.0,
-        calendar_date=cal_day,
-        ml=ml,
+    res = load_picks(
+        PickMode.TOP5,
+        channel=Channel.TELEGRAM,
+        limit=limit,
+        ev_min_pct=ev_min_pct,
+        ev_max_pct=ev_max_pct,
     )
-    picks = filter_telegram_display_picks(picks)
-    if limit > 0:
-        picks = picks[: int(limit)]
-    return picks, meta, cal_day, _count_today_pool(matches), _snapshot_age_min(meta)
+    return res.picks, res.meta, res.calendar_date, res.pool_n, res.snapshot_age_min
 
 
 def _is_prod_env() -> bool:
@@ -1104,8 +1177,9 @@ def run_notify(
         for target_chat in target_chats:
             user_id = telegram_user_id or str(target_chat)
             if not picks:
+                no_picks_msg = tg("No matches in the EV band today.", "Aucun match dans la bande EV aujourd'hui.")
                 send_telegram_message(
-                    f"{header}\n\n😴 <i>Aucun match dans la bande EV aujourd'hui.</i>",
+                    f"{header}\n\n😴 <i>{no_picks_msg}</i>",
                     token=token,
                     chat_id=target_chat,
                 )
@@ -1131,6 +1205,216 @@ def run_notify(
         result["sent"] = sent
         result["chat_ids"] = target_chats
         result["chat_id"] = target_chats[0] if len(target_chats) == 1 else None
+    return result
+
+
+def format_1d1p_telegram_message(
+    pick: dict | None,
+    *,
+    calendar_date: str,
+    pool_size: int = 0,
+    snapshot_age_min: float | None = None,
+) -> str:
+    lines = [
+        f"🎯 <b>{BRAND_NAME}</b> · 1 Day 1 Pick",
+        "",
+        f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
+        tg(
+            "Majors 250+ · best EV-eligible pick per circuit · EV 15–100%",
+            "Majeurs 250+ · meilleur candidat EV par circuit · EV 15–100 %",
+        ),
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not pick:
+        lines.extend(
+            [
+                "",
+                tg("😴 <i>No value pick today.</i>", "😴 <i>Pas de pick value aujourd'hui.</i>"),
+                tg(
+                    f"<i>{pool_size} major match(es) scanned in EV band.</i>",
+                    f"<i>{pool_size} match(s) majeur(s) dans la bande EV scanné(s).</i>",
+                ),
+            ]
+        )
+        return "\n".join(lines)
+    bet_on = str(pick.get("fav_player") or pick.get("bet_on") or "?")
+    opp = str(pick.get("underdog_player") or pick.get("opponent") or "?")
+    p_pct = _pick_proba_pct(pick)
+    ev_pct = _pick_ev_pct(pick)
+    odd = float(pick.get("odd_fav") or pick.get("odd_book") or 0.0)
+    stake_pct = float(pick.get("theoretical_stake_frac") or 0.0) * 100.0
+    tour = str(pick.get("tour") or "").upper()
+    tourn = str(pick.get("tournament") or "")
+    lines.extend(
+        [
+            "",
+            f"<b>{bet_on}</b> vs {opp}",
+            tg(
+                f"Model proba {p_pct:.1f}% · EV {ev_pct:+.1f}% · @{odd:.2f}",
+                f"Proba {p_pct:.1f} % · EV {ev_pct:+.1f} % · @{odd:.2f}",
+            ),
+            tg(
+                f"Theoretical Kelly {stake_pct:.1f}% BR · {tour} · {tourn}",
+                f"Mise Kelly th. {stake_pct:.1f} % BR · {tour} · {tourn}",
+            ),
+            "",
+            f"🔗 {PUBLIC_SITE_URL.replace('https://', '')}/1-day-1-pick",
+            "",
+            f"ℹ️ <i>{comms_disclaimer()}</i>",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_1d1p_result_telegram_message(pick: dict) -> str:
+    from scripts.score_display import format_tennis_score_display
+
+    status = str(pick.get("status") or "En cours")
+    cal = str(pick.get("calendar_date") or "")[:10]
+    bet_on = str(pick.get("fav_player") or pick.get("bet_on") or "?")
+    opp = str(pick.get("underdog_player") or pick.get("opponent") or "?")
+    score = format_tennis_score_display(pick.get("score_final")) or str(
+        pick.get("score_final") or "—"
+    )
+    try:
+        profit_frac = float(pick.get("theoretical_profit") or 0.0)
+    except (TypeError, ValueError):
+        profit_frac = 0.0
+    profit_pct = profit_frac * 100.0
+
+    if status == "Gagné":
+        headline = "✅ Won"
+    elif status == "Perdu":
+        headline = "❌ Lost"
+    elif status == "Annulé":
+        headline = "⏸️ Void (retirement / walkover)"
+    else:
+        headline = status
+
+    pnl = (
+        f"{profit_pct:+.2f}% BR (theo.)"
+        if status != "Annulé"
+        else "Stake refunded (0% BR)"
+    )
+
+    return "\n".join(
+        [
+            f"🎯 <b>{BRAND_NAME}</b> · 1D1P result",
+            "",
+            f"📅 {_format_date_label(cal)}",
+            f"<b>{bet_on}</b> vs {opp}",
+            headline,
+            f"Score: <code>{_escape_html(score)}</code>",
+            f"Theo. P/L: <b>{pnl}</b>",
+            "",
+            f"🔗 {PUBLIC_SITE_URL.replace('https://', '')}/1-day-1-pick",
+            f"ℹ️ <i>{comms_disclaimer()}</i>",
+        ]
+    )
+
+
+def format_1d1p_interactive_header(
+    *,
+    calendar_date: str,
+    pool_size: int = 0,
+    source: str = "manual",
+    n_picks: int = 0,
+    snapshot_age_min: float | None = None,
+) -> str:
+    lines = [
+        f"🎯 <b>{BRAND_NAME}</b> · 1 Day 1 Pick",
+        "",
+        f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
+        format_snapshot_freshness_line(snapshot_age_min),
+        tg(
+            "Majors 250+ · best EV-eligible pick per circuit · EV 15–100% · <b>Bet</b> mode",
+            "Majeurs 250+ · meilleur candidat EV par circuit · EV 15–100 % · mode Parier",
+        ),
+    ]
+    if source == "manual":
+        lines.append(tg("📲 On-demand", "📲 Demande manuelle"))
+    lines.append(
+        tg(
+            f"✅ <b>{n_picks}</b> pick(s) · {pool_size} major match(es) scanned",
+            f"✅ <b>{n_picks}</b> pick(s) · {pool_size} major(s) scanné(s)",
+        )
+    )
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if n_picks:
+        lines.append(tg("👇 Match below — <b>Bet</b> button", "👇 Match ci-dessous — bouton Parier"))
+    return "\n".join(lines).strip()
+
+
+def run_1d1p_notify(
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    chat_id: str | None = None,
+    source: str = "manual",
+    interactive: bool = False,
+    telegram_user_id: str | None = None,
+) -> dict:
+    _require_prod_for_send(force=force, dry_run=dry_run)
+    from scripts.pick_modes import PickMode, load_picks
+
+    res = load_picks(PickMode.ONE_PICK_ONE_DAY)
+    pick = res.pick_today
+    text = format_1d1p_telegram_message(
+        pick,
+        calendar_date=res.calendar_date,
+        pool_size=res.pool_n,
+        snapshot_age_min=res.snapshot_age_min,
+    )
+    result = {
+        "calendar_date": res.calendar_date,
+        "n_picks": 1 if pick else 0,
+        "dry_run": dry_run,
+        "message_preview": text[:500],
+        "source": source,
+    }
+    if dry_run:
+        print(text)
+        return result
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if not token or not target_chat:
+        raise SystemExit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID required.")
+
+    if interactive:
+        if not telegram_user_id:
+            raise ValueError("telegram_user_id required for interactive Bet mode")
+        header = format_1d1p_interactive_header(
+            calendar_date=res.calendar_date,
+            pool_size=res.pool_n,
+            source=source,
+            n_picks=1 if pick else 0,
+            snapshot_age_min=res.snapshot_age_min,
+        )
+        if not pick:
+            no_val = tg("No value pick today.", "Pas de pick value aujourd'hui.")
+            send_telegram_message(
+                f"{header}\n\n😴 <i>{no_val}</i>",
+                token=token,
+                chat_id=target_chat,
+            )
+            result["sent"] = 1
+        else:
+            pick_row = dict(pick)
+            pick_row.setdefault("rank", 1)
+            result["sent"] = send_interactive_pick_messages(
+                [pick_row],
+                header_text=header,
+                footer_text=_interactive_footer(),
+                token=token,
+                chat_id=target_chat,
+                list_kind="1d1p",
+                telegram_user_id=telegram_user_id,
+            )
+    else:
+        send_telegram_message(text, token=token, chat_id=target_chat)
+        result["sent"] = 1
+    result["chat_id"] = target_chat
     return result
 
 
@@ -1203,8 +1487,9 @@ def run_daily_picks_notify(
             n_picks=len(picks),
         )
         if not picks:
+            no_pe = tg("No proba / EV picks today.", "Aucun pick proba / EV aujourd'hui.")
             send_telegram_message(
-                f"{header}\n\n😴 <i>Aucun pick proba / EV aujourd'hui.</i>",
+                f"{header}\n\n😴 <i>{no_pe}</i>",
                 token=token,
                 chat_id=target_chat,
             )

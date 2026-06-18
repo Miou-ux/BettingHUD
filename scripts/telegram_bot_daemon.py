@@ -43,12 +43,17 @@ from scripts.telegram_bet_flow import (
     parse_brset_amount,
     telegram_user_id_from_update,
 )
+from scripts.comms_locale import telegram_command_aliases
 from scripts.telegram_top5_notify import (
     answer_telegram_callback_query,
     format_bot_help_message,
     format_bot_strategy_message,
     format_bot_welcome_message,
     format_telegram_error_message,
+    main_menu_reply_keyboard,
+    register_bot_commands,
+    resolve_menu_button_text,
+    run_1d1p_notify,
     run_challenger_daily_picks_notify,
     run_daily_picks_notify,
     run_major_daily_picks_notify,
@@ -61,49 +66,26 @@ LOG_DIR = os.path.join(ROOT, "data", "logs")
 LOG_PATH = os.path.join(LOG_DIR, "telegram_bot_daemon.log")
 OFFSET_PATH = os.path.join(ROOT, "data", "cache", ".telegram_bot_offset")
 
-TOP5_COMMANDS = frozenset({"/top5", "/top", "/top5@bettinghudbot"})
-DAILY_PICKS_COMMANDS = frozenset({
-    "/jour",
-    "/picks",
-    "/picksdujour",
-    "/jour@bettinghudbot",
-    "/picks@bettinghudbot",
-})
-CHALLENGER_PICKS_COMMANDS = frozenset({
-    "/jourchallenger",
-    "/challengers",
-    "/jourchallenger@bettinghudbot",
-    "/challengers@bettinghudbot",
-})
-MAJOR_PICKS_COMMANDS = frozenset({
-    "/jourmajor",
-    "/majors",
-    "/jourmajor@bettinghudbot",
-    "/majors@bettinghudbot",
-})
-HELP_COMMANDS = frozenset({"/help", "/help@bettinghudbot"})
-STRATEGY_COMMANDS = frozenset({
-    "/strategie",
-    "/strategy",
-    "/strategie@bettinghudbot",
-    "/strategy@bettinghudbot",
-})
-START_COMMANDS = frozenset({"/start", "/start@bettinghudbot"})
+ONE_PICK_ONE_DAY_COMMANDS = telegram_command_aliases("/1pick1day", "/1d1p")
+TOP5_COMMANDS = telegram_command_aliases("/top5", "/top")
+TODAY_COMMANDS = telegram_command_aliases("/today", "/jour", "/picks", "/picksdujour")
+# Alias historiques → redirigés vers /top5 ou /today
+CHALLENGER_PICKS_COMMANDS = telegram_command_aliases("/jourchallenger", "/challengers")
+MAJOR_PICKS_COMMANDS = telegram_command_aliases("/jourmajor", "/majors")
+DAILY_PICKS_COMMANDS = TODAY_COMMANDS
+HELP_COMMANDS = telegram_command_aliases("/help")
+STRATEGY_COMMANDS = telegram_command_aliases("/strategie", "/strategy")
+START_COMMANDS = telegram_command_aliases("/start")
 CANCEL_COMMANDS = frozenset({"/annuler", "/cancel"})
-BR_COMMANDS = frozenset({"/br", "/br@bettinghudbot"})
-BRSTATS_COMMANDS = frozenset({
-    "/brstats",
-    "/bradv",
-    "/brdetail",
-    "/brstats@bettinghudbot",
-    "/bradv@bettinghudbot",
-})
-BRSET_COMMANDS = frozenset({"/brset", "/brset@bettinghudbot"})
-BRAJUST_COMMANDS = frozenset({"/brajust", "/brajust@bettinghudbot"})
+BR_COMMANDS = telegram_command_aliases("/br")
+BRSTATS_COMMANDS = telegram_command_aliases("/brstats", "/bradv", "/brdetail")
+BRSET_COMMANDS = telegram_command_aliases("/brset")
+BRAJUST_COMMANDS = telegram_command_aliases("/brajust")
 # Commandes lourdes (snapshot + ML + envoi multi-messages) → file d'attente.
 SLOW_COMMANDS = frozenset(
-    TOP5_COMMANDS
-    | DAILY_PICKS_COMMANDS
+    ONE_PICK_ONE_DAY_COMMANDS
+    | TOP5_COMMANDS
+    | TODAY_COMMANDS
     | CHALLENGER_PICKS_COMMANDS
     | MAJOR_PICKS_COMMANDS
 )
@@ -356,6 +338,10 @@ def _handle_message(
     if _handle_bet_flow_text(msg, token=token, allowed=allowed):
         return
 
+    menu_cmd = resolve_menu_button_text(text)
+    if menu_cmd:
+        text = menu_cmd
+
     cmd = _normalize_command(text)
 
     if chat_id not in allowed:
@@ -390,18 +376,26 @@ def _handle_message(
                 LOGGER.info("Demande acces (message) — chat_id=%s", chat_id)
         except Exception as exc:
             LOGGER.exception("Demande acces : %s", exc)
+            from scripts.telegram_top5_notify import pending_access_inline_keyboard
+
             send_telegram_message(
-                "🔒 <i>Chat non autorise.</i>\n\n"
-                "Envoie <code>/start</code> pour demander l'accès.",
+                "🔒 <b>Access required</b>\n\n"
+                "Send <code>/start</code> to request access to CourtAlpha Bot.",
                 token=token,
                 chat_id=chat_id,
+                reply_markup=pending_access_inline_keyboard(),
             )
         return
 
     if cmd in START_COMMANDS or cmd == "/start":
-        send_telegram_message(format_bot_welcome_message(), token=token, chat_id=chat_id)
         send_telegram_message(
-            "💡 Guide détaillé : <code>/help</code> · Stratégie & mise : <code>/strategie</code>",
+            format_bot_welcome_message(),
+            token=token,
+            chat_id=chat_id,
+            reply_markup=main_menu_reply_keyboard(),
+        )
+        send_telegram_message(
+            "💡 Full guide: <code>/help</code> · Strategy & staking: <code>/strategy</code>",
             token=token,
             chat_id=chat_id,
         )
@@ -409,7 +403,12 @@ def _handle_message(
         return
 
     if cmd in HELP_COMMANDS or cmd == "/help":
-        send_telegram_message(format_bot_help_message(), token=token, chat_id=chat_id)
+        send_telegram_message(
+            format_bot_help_message(),
+            token=token,
+            chat_id=chat_id,
+            reply_markup=main_menu_reply_keyboard(),
+        )
         LOGGER.info("Commande /help — chat_id=%s", chat_id)
         return
 
@@ -419,7 +418,7 @@ def _handle_message(
 
     if cmd in BR_COMMANDS or cmd == "/br":
         if not telegram_user_id:
-            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            send_telegram_message("⚠️ Could not identify your Telegram account.", token=token, chat_id=chat_id)
             return
         send_telegram_message(
             format_telegram_user_br_message(telegram_user_id, username=username),
@@ -431,7 +430,7 @@ def _handle_message(
 
     if cmd in BRSTATS_COMMANDS or cmd in ("/brstats", "/bradv", "/brdetail"):
         if not telegram_user_id:
-            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            send_telegram_message("⚠️ Could not identify your Telegram account.", token=token, chat_id=chat_id)
             return
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
         send_telegram_message(
@@ -444,19 +443,19 @@ def _handle_message(
 
     if cmd in BRSET_COMMANDS or cmd == "/brset":
         if not telegram_user_id:
-            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            send_telegram_message("⚠️ Could not identify your Telegram account.", token=token, chat_id=chat_id)
             return
         amount = parse_brset_amount(text)
         if amount is None:
             send_telegram_message(
-                "Usage : <code>/brset 80</code> (capital de départ en €).",
+                "Usage: <code>/brset 80</code> (starting bankroll in €).",
                 token=token,
                 chat_id=chat_id,
             )
             return
         apply_telegram_brset(telegram_user_id, amount)
         send_telegram_message(
-            f"✅ Capital de départ fixé à <b>{amount:.2f} €</b>.\n\n"
+            f"✅ Starting bankroll set to <b>{amount:.2f} €</b>.\n\n"
             + format_telegram_user_br_message(telegram_user_id, username=username),
             token=token,
             chat_id=chat_id,
@@ -466,19 +465,19 @@ def _handle_message(
 
     if cmd in BRAJUST_COMMANDS or cmd == "/brajust":
         if not telegram_user_id:
-            send_telegram_message("⚠️ Impossible d'identifier ton compte Telegram.", token=token, chat_id=chat_id)
+            send_telegram_message("⚠️ Could not identify your Telegram account.", token=token, chat_id=chat_id)
             return
         delta = parse_brajust_delta(text)
         if delta is None:
             send_telegram_message(
-                "Usage : <code>/brajust +10</code> ou <code>/brajust -5</code>.",
+                "Usage: <code>/brajust +10</code> or <code>/brajust -5</code>.",
                 token=token,
                 chat_id=chat_id,
             )
             return
         apply_telegram_brajust(telegram_user_id, delta)
         send_telegram_message(
-            f"✅ Ajustement <b>{delta:+.2f} €</b> appliqué.\n\n"
+            f"✅ Adjustment <b>{delta:+.2f} €</b> applied.\n\n"
             + format_telegram_user_br_message(telegram_user_id, username=username),
             token=token,
             chat_id=chat_id,
@@ -491,57 +490,55 @@ def _handle_message(
         LOGGER.info("Commande /strategie — chat_id=%s", chat_id)
         return
 
-    if cmd in CHALLENGER_PICKS_COMMANDS or cmd in ("/jourchallenger", "/challengers"):
-        LOGGER.info("Commande /jourchallenger — chat_id=%s", chat_id)
-        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
-        try:
-            out = run_challenger_daily_picks_notify(chat_id=chat_id, source="manual")
-            LOGGER.info(
-                "Challengers du jour envoyes a %s : %d pick(s), %d message(s) (%s)",
-                chat_id,
-                int(out.get("n_picks") or 0),
-                int(out.get("sent") or out.get("n_messages") or 0),
-                out.get("calendar_date"),
-            )
-        except Exception as exc:
-            LOGGER.exception("Echec /jourchallenger : %s", exc)
-            send_telegram_message(
-                format_telegram_error_message("Erreur Challengers du jour", exc),
-                token=token,
-                chat_id=chat_id,
-            )
-        return
-
-    if cmd in MAJOR_PICKS_COMMANDS or cmd in ("/jourmajor", "/majors"):
-        LOGGER.info("Commande /jourmajor — chat_id=%s", chat_id)
-        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
-        try:
-            out = run_major_daily_picks_notify(chat_id=chat_id, source="manual")
-            LOGGER.info(
-                "Majors du jour envoyes a %s : %d pick(s), %d message(s) (%s)",
-                chat_id,
-                int(out.get("n_picks") or 0),
-                int(out.get("sent") or out.get("n_messages") or 0),
-                out.get("calendar_date"),
-            )
-        except Exception as exc:
-            LOGGER.exception("Echec /jourmajor : %s", exc)
-            send_telegram_message(
-                format_telegram_error_message("Erreur Majors du jour", exc),
-                token=token,
-                chat_id=chat_id,
-            )
-        return
-
-    if cmd in DAILY_PICKS_COMMANDS or cmd in ("/jour", "/picks", "/picksdujour"):
+    if cmd in ONE_PICK_ONE_DAY_COMMANDS or cmd in ("/1pick1day", "/1d1p"):
         if not telegram_user_id:
             send_telegram_message(
-                "⚠️ Impossible d'identifier ton compte Telegram.",
+                "⚠️ Could not identify your Telegram account.",
                 token=token,
                 chat_id=chat_id,
             )
             return
-        LOGGER.info("Commande /jour — chat_id=%s user=%s", chat_id, telegram_user_id)
+        LOGGER.info("Commande /1pick1day — chat_id=%s user=%s", chat_id, telegram_user_id)
+        send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
+        try:
+            out = run_1d1p_notify(
+                chat_id=chat_id,
+                source="manual",
+                interactive=True,
+                telegram_user_id=telegram_user_id,
+            )
+            LOGGER.info(
+                "1pick1day envoye a %s : n=%s (%s)",
+                chat_id,
+                out.get("n_picks"),
+                out.get("calendar_date"),
+            )
+        except Exception as exc:
+            LOGGER.exception("Echec /1pick1day : %s", exc)
+            send_telegram_message(
+                format_telegram_error_message("Erreur 1 Day 1 Pick", exc),
+                token=token,
+                chat_id=chat_id,
+            )
+        return
+
+    if cmd in CHALLENGER_PICKS_COMMANDS or cmd in ("/jourchallenger", "/challengers"):
+        LOGGER.info("Alias /jourchallenger → /today — chat_id=%s", chat_id)
+        cmd = "/today"
+
+    if cmd in MAJOR_PICKS_COMMANDS or cmd in ("/jourmajor", "/majors"):
+        LOGGER.info("Alias /jourmajor → /top5 — chat_id=%s", chat_id)
+        cmd = "/top5"
+
+    if cmd in TODAY_COMMANDS or cmd in DAILY_PICKS_COMMANDS or cmd in ("/today", "/jour", "/picks", "/picksdujour"):
+        if not telegram_user_id:
+            send_telegram_message(
+                "⚠️ Could not identify your Telegram account.",
+                token=token,
+                chat_id=chat_id,
+            )
+            return
+        LOGGER.info("Commande /today — chat_id=%s user=%s", chat_id, telegram_user_id)
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
         try:
             out = run_daily_picks_notify(
@@ -560,7 +557,7 @@ def _handle_message(
         except Exception as exc:
             LOGGER.exception("Echec /jour : %s", exc)
             send_telegram_message(
-                format_telegram_error_message("Erreur picks du jour (/jour)", exc),
+                format_telegram_error_message("Erreur Today's Pick (/today)", exc),
                 token=token,
                 chat_id=chat_id,
             )
@@ -569,7 +566,7 @@ def _handle_message(
     if cmd in TOP5_COMMANDS or cmd in ("/top5", "/top"):
         if not telegram_user_id:
             send_telegram_message(
-                "⚠️ Impossible d'identifier ton compte Telegram.",
+                "⚠️ Could not identify your Telegram account.",
                 token=token,
                 chat_id=chat_id,
             )
@@ -600,7 +597,7 @@ def _handle_message(
 
     if text.startswith("/"):
         send_telegram_message(
-            "❓ Commande inconnue. Essaie /top5, /jour, /jourmajor, /jourchallenger, /strategie ou /help.",
+            "❓ Commande inconnue. Essaie /1pick1day, /top5, /today, /strategie ou /help.",
             token=token,
             chat_id=chat_id,
         )
@@ -694,6 +691,10 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
     ).start()
 
     offset = _read_offset()
+    if register_bot_commands(token):
+        LOGGER.info("Menu commandes Telegram enregistre (setMyCommands)")
+    else:
+        LOGGER.warning("setMyCommands Telegram non applique")
     LOGGER.info(
         "Telegram bot daemon demarre — poll %ds, file async (picks), chats autorises : %s",
         poll_timeout_sec,
@@ -712,14 +713,6 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
                     _presignal_typing(upd, token=token, allowed=set(allowed_now))
                     _UPDATE_QUEUE.put((upd, token, allowed_now))
                 else:
-                    cq = upd.get("callback_query")
-                    if cq:
-                        chat = (cq.get("message") or {}).get("chat") or {}
-                        cid = str(chat.get("id") or "").strip()
-                        if cid in allowed_now:
-                            answer_telegram_callback_query(
-                                str(cq.get("id") or ""), token=token
-                            )
                     _process_update(upd, token=token, allowed=allowed_now)
             if updates:
                 _write_offset(offset)
@@ -737,7 +730,7 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Daemon commandes Telegram BettingHUD")
+    ap = argparse.ArgumentParser(description="CourtAlpha Telegram bot command daemon")
     ap.add_argument(
         "--poll-timeout",
         type=int,

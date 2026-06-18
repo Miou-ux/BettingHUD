@@ -47,6 +47,7 @@ Raccourcis :
 
 | Question | Note |
 |----------|------|
+| 1 Day 1 Pick (web, TG, Discord) | [[ONE_DAY_ONE_PICK]] |
 | Quoi de neuf ? | [[CHANGELOG_RECENT]] |
 | Architecture live, snapshot, v47 | [[ARCHITECTURE_ACTUELLE_ET_MISES]] |
 | Proba, EV, Kelly, backtest | [[PREDICTION_ET_MISE]] |
@@ -93,6 +94,8 @@ Quand tu modifies le projet, mets à jour **au minimum** :
 | Type de changement | Fichier(s) `docs/` |
 |--------------------|---------------------|
 | Feature ou correctif livré | [[CHANGELOG_RECENT]] (section datée) |
+| 1 Day 1 Pick (sélection, TG, Discord, web) | [[ONE_DAY_ONE_PICK]] + [[DISCORD_1D1P]] / [[TELEGRAM_TOP5]] |
+| Bot Telegram (commandes, UX, publish) | [[TELEGRAM_TOP5]] + [[ONE_DAY_ONE_PICK]] |
 | Pipeline live, snapshot, env `BETTINGHUD_*` | [[ARCHITECTURE_ACTUELLE_ET_MISES]] + changelog |
 | Déploiement serveur dédié Ubuntu | [[DEPLOY_SERVEUR]] |
 | Challengers / WTA 125 / filtre tournois | [[CHALLENGERS_ET_TOURNOIS]] |

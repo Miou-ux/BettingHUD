@@ -97,7 +97,7 @@ bash deploy/install_ubuntu.sh
 
 ### Bot Telegram (PROD)
 
-Notifications et commandes **@BettingHUDbot** : `/jour` (Live Tracker), `/top5` (Paris du jour), envoi matinal après pipeline.
+Notifications et commandes **@CourtAlphabot** : `/today`, `/top5`, `/1pick1day`, envoi matinal après pipeline.
 
 Documentation : **`docs/TELEGRAM_TOP5.md`**. PREPROD : `py -3.11 scripts/telegram_top5_notify.py --dry-run` uniquement.
 

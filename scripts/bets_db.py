@@ -26,6 +26,27 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 DB_PATH_DEFAULT = os.path.join("data", "bettinghud.db")
+_WAL_ENABLED: set[str] = set()
+
+
+def resolve_db_path(db_path: str = DB_PATH_DEFAULT) -> str:
+    if os.path.isabs(db_path):
+        return db_path
+    root = os.path.dirname(_SCRIPTS_DIR)
+    return os.path.join(root, db_path)
+
+
+def open_db(db_path: str = DB_PATH_DEFAULT, *, timeout: float = 30.0) -> sqlite3.Connection:
+    """Connexion SQLite avec WAL + busy_timeout (lectures concurrentes)."""
+    path = resolve_db_path(db_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    if path not in _WAL_ENABLED:
+        conn.execute("PRAGMA journal_mode=WAL")
+        _WAL_ENABLED.add(path)
+    conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +80,8 @@ _USER_BETS_TARGET_COLUMNS: tuple[tuple[str, str, Optional[str]], ...] = (
 )
 
 LIVE_TRACKER_META_START_BR = "live_br_start_eur"
-LIVE_TRACKER_DEFAULT_START_BR = "55"
+LIVE_TRACKER_DEFAULT_START_BR = "100"
+LEGACY_DEFAULT_START_BR = 55.0
 LIVE_TRACKER_META_MANUAL_ADJUST = "live_br_manual_adjust_eur"
 TELEGRAM_DEFAULT_START_BR = os.getenv("TELEGRAM_DEFAULT_START_BR", LIVE_TRACKER_DEFAULT_START_BR)
 
@@ -68,6 +90,7 @@ APP_KELLY_TRACKER_SOURCES: tuple[str, ...] = (
     "live_tracker",
     "top5_proba_action",
     "live_inplay_manual",
+    "1day1pick_web",
 )
 META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
 META_LAST_TML_SYNC_TS = "last_tml_sync_ts"
@@ -186,7 +209,7 @@ def _fetch_last_ml_source_matches(
 
 def get_data_freshness_snapshot(db_path: str = DB_PATH_DEFAULT) -> dict:
     """Horodatages derniers sync ATP+WTA et dernier entraînement ML (+ mtime fichier modèle)."""
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         ensure_bets_meta(conn)
         tours = get_meta(conn, META_LAST_TOURS_SYNC_TS)
@@ -352,7 +375,25 @@ def _telegram_br_meta_key(telegram_user_id: str, kind: str) -> str:
         return f"telegram_br_start_{uid}"
     if kind == "adjust":
         return f"telegram_br_manual_adj_{uid}"
+    if kind == "custom":
+        return f"telegram_br_start_custom_{uid}"
     raise ValueError(f"meta kind inconnu: {kind}")
+
+
+def is_telegram_user_start_br_custom(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> bool:
+    ensure_bets_meta(conn)
+    return get_meta(conn, _telegram_br_meta_key(telegram_user_id, "custom")) == "1"
+
+
+def mark_telegram_user_start_br_custom(
+    conn: sqlite3.Connection,
+    telegram_user_id: str,
+) -> None:
+    ensure_bets_meta(conn)
+    set_meta(conn, _telegram_br_meta_key(telegram_user_id, "custom"), "1")
 
 
 def ensure_telegram_user_start_br(
@@ -385,9 +426,13 @@ def set_telegram_user_start_br(
     conn: sqlite3.Connection,
     telegram_user_id: str,
     value: float,
+    *,
+    user_custom: bool = False,
 ) -> None:
     ensure_bets_meta(conn)
     set_meta(conn, _telegram_br_meta_key(telegram_user_id, "start"), str(float(value)))
+    if user_custom:
+        mark_telegram_user_start_br_custom(conn, telegram_user_id)
 
 
 def get_telegram_user_manual_adjust_eur(
@@ -503,7 +548,33 @@ def _web_br_meta_key(web_username: str, kind: str) -> str:
         return f"web_br_start_{uname}"
     if kind == "adjust":
         return f"web_br_manual_adj_{uname}"
+    if kind == "custom":
+        return f"web_br_start_custom_{uname}"
     raise ValueError(f"meta kind inconnu: {kind}")
+
+
+def is_web_user_start_br_custom(conn: sqlite3.Connection, web_username: str) -> bool:
+    ensure_bets_meta(conn)
+    return get_meta(conn, _web_br_meta_key(web_username, "custom")) == "1"
+
+
+def mark_web_user_start_br_custom(conn: sqlite3.Connection, web_username: str) -> None:
+    ensure_bets_meta(conn)
+    set_meta(conn, _web_br_meta_key(web_username, "custom"), "1")
+
+
+def set_web_user_start_br(
+    conn: sqlite3.Connection,
+    web_username: str,
+    value: float,
+    *,
+    user_custom: bool = False,
+) -> None:
+    ensure_bets_meta(conn)
+    uname = str(web_username or "").strip().lower()
+    set_meta(conn, _web_br_meta_key(uname, "start"), str(float(value)))
+    if user_custom:
+        mark_web_user_start_br_custom(conn, uname)
 
 
 def ensure_web_user_start_br(
@@ -530,6 +601,74 @@ def get_web_user_start_br(conn: sqlite3.Connection, web_username: str) -> float:
         return float(v) if v is not None else float(TELEGRAM_DEFAULT_START_BR)
     except ValueError:
         return float(TELEGRAM_DEFAULT_START_BR)
+
+
+def migrate_legacy_default_start_br(
+    conn: sqlite3.Connection,
+    *,
+    old_default: float = LEGACY_DEFAULT_START_BR,
+    new_default: float | None = None,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Passe les BR auto-initialisées (ex. 55 €) à la nouvelle valeur par défaut.
+
+    Ignore les comptes dont le capital de départ a été personnalisé (/brset) ou
+    qui ont un ajustement manuel (dépôt/retrait).
+    """
+    target = float(new_default if new_default is not None else TELEGRAM_DEFAULT_START_BR)
+    stats = {"live_tracker": 0, "telegram": 0, "web": 0}
+
+    ensure_bets_meta(conn)
+    live_start = get_meta(conn, LIVE_TRACKER_META_START_BR)
+    live_adj = get_live_tracker_manual_adjust_eur(conn)
+    if live_start is not None:
+        try:
+            if abs(float(live_start) - old_default) < 0.01 and abs(live_adj) <= 1e-9:
+                stats["live_tracker"] = 1
+                if not dry_run:
+                    set_meta(conn, LIVE_TRACKER_META_START_BR, str(target))
+        except ValueError:
+            pass
+
+    for key, value in conn.execute(
+        "SELECT key, value FROM bets_meta WHERE key LIKE 'telegram_br_start_%'"
+    ).fetchall():
+        if str(key).endswith("_custom"):
+            continue
+        uid = str(key)[len("telegram_br_start_") :]
+        if is_telegram_user_start_br_custom(conn, uid):
+            continue
+        if abs(get_telegram_user_manual_adjust_eur(conn, uid)) > 1e-9:
+            continue
+        try:
+            if abs(float(value) - old_default) < 0.01:
+                stats["telegram"] += 1
+                if not dry_run:
+                    set_meta(conn, key, str(target))
+        except ValueError:
+            pass
+
+    for key, value in conn.execute(
+        "SELECT key, value FROM bets_meta WHERE key LIKE 'web_br_start_%'"
+    ).fetchall():
+        if str(key).endswith("_custom"):
+            continue
+        uname = str(key)[len("web_br_start_") :]
+        if is_web_user_start_br_custom(conn, uname):
+            continue
+        if abs(get_web_user_manual_adjust_eur(conn, uname)) > 1e-9:
+            continue
+        try:
+            if abs(float(value) - old_default) < 0.01:
+                stats["web"] += 1
+                if not dry_run:
+                    set_meta(conn, key, str(target))
+        except ValueError:
+            pass
+
+    if not dry_run:
+        conn.commit()
+    return stats
 
 
 def get_web_user_manual_adjust_eur(conn: sqlite3.Connection, web_username: str) -> float:
@@ -598,6 +737,7 @@ _TRACKER_SOURCE_LABELS: dict[str, str] = {
     "live_tracker": "Live Tracker",
     "top5_proba_action": "Paris du jour",
     "live_inplay_manual": "In-play manuel",
+    "1day1pick_web": "1 Day 1 Pick",
 }
 
 
@@ -1027,6 +1167,13 @@ def write_cached_results(
     now_iso = datetime.utcnow().isoformat(timespec="seconds")
     for r in rows:
         try:
+            from scripts.scraper_results import match_result_effective_retired
+
+            retired_eff = match_result_effective_retired(
+                retired=bool(r.get("retired")),
+                walkover=bool(r.get("walkover")),
+                score=r.get("score"),
+            )
             cur.execute(
                 """
                 INSERT OR REPLACE INTO match_results
@@ -1040,7 +1187,7 @@ def write_cached_results(
                     r["p2_canonical"],
                     r.get("winner_canonical"),
                     r.get("score"),
-                    1 if r.get("retired") else 0,
+                    1 if retired_eff else 0,
                     1 if r.get("walkover") else 0,
                     r.get("tour"),
                     r["source"],
@@ -1087,7 +1234,7 @@ def save_bet_enriched(
     column stays as SQLite ``date('now')`` (day the ticket was recorded). Result
     resolution uses ``match_date`` when present, otherwise ``date``.
     """
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         ensure_user_bets_schema(conn)
         ensure_bets_meta(conn)
@@ -1308,7 +1455,7 @@ def upsert_algo_opportunities(
     rows_list = list(rows or [])
     if not rows_list:
         return 0
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         ensure_algo_opportunities_schema(conn)
         now_iso = datetime.utcnow().isoformat(timespec="seconds")
@@ -1573,18 +1720,20 @@ def sync_algo_opportunities_from_results(conn: sqlite3.Connection) -> int:
         )
         if not hit:
             continue
-        winner, score, walkover, source, _resolved_date = hit
-        if walkover:
-            status = "Annulé"
-            profit = 0.0
-        elif winner:
-            won = names_match(canonical_player(bet_on), winner)
-            status = "Gagné" if won else "Perdu"
-            stake_frac = _algo_kelly_stake_frac(p_model, odd_book, segment_brier)
-            profit = _algo_profit_for_status(status, odd_book, stake_frac)
-        else:
-            continue
+        winner, score, walkover, retired, source, _resolved_date = hit
+        retired_eff = _retired_from_match_hit(
+            walkover=bool(walkover), retired=bool(retired), score=score
+        )
         stake_frac = _algo_kelly_stake_frac(p_model, odd_book, segment_brier)
+        status, _won_flag = _resolve_bet_status_from_match_result(
+            bet_on,
+            winner,
+            walkover=bool(walkover),
+            retired=retired_eff,
+        )
+        if status == "En cours":
+            continue
+        profit = 0.0 if status == "Annulé" else _algo_profit_for_status(status, odd_book, stake_frac)
         conn.execute(
             """
             UPDATE algo_opportunities
@@ -1677,7 +1826,7 @@ def upsert_daily_top_proba_picks(
     rows_list = list(rows or [])
     if not rows_list:
         return 0
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         ensure_daily_top_proba_schema(conn)
         now_iso = datetime.utcnow().isoformat(timespec="seconds")
@@ -1792,6 +1941,44 @@ def upsert_daily_top_proba_picks(
         conn.close()
 
 
+def _retired_from_match_hit(
+    *,
+    walkover: bool,
+    retired: bool,
+    score: str | None,
+) -> bool:
+    from scripts.scraper_results import match_result_effective_retired
+
+    return match_result_effective_retired(
+        retired=bool(retired),
+        walkover=bool(walkover),
+        score=score,
+    )
+
+
+def _resolve_bet_status_from_match_result(
+    bet_on: str,
+    winner: str | None,
+    *,
+    walkover: bool,
+    retired: bool,
+) -> tuple[str, int | None]:
+    """Walkover / retirement du pari → Annulé ; sinon Gagné/Perdu sur le vainqueur."""
+    if walkover:
+        return "Annulé", None
+    if not winner:
+        return "En cours", None
+    try:
+        from scripts.scraper_results import canonical_player, names_match
+
+        won = names_match(canonical_player(bet_on), canonical_player(winner))
+    except Exception:
+        return "En cours", None
+    if retired and not won:
+        return "Annulé", None
+    return ("Gagné" if won else "Perdu"), (1 if won else 0)
+
+
 def _lookup_match_result_for_players(
     conn: sqlite3.Connection,
     match_date: str,
@@ -1804,7 +1991,7 @@ def _lookup_match_result_for_players(
     """Résultat TE/Sackmann : date exacte puis fenêtre autour du jour match / capture."""
     exact = conn.execute(
         """
-        SELECT winner_canonical, score, walkover, source, match_date
+        SELECT winner_canonical, score, walkover, retired, source, match_date
         FROM match_results
         WHERE match_date = ?
           AND (
@@ -1827,7 +2014,7 @@ def _lookup_match_result_for_players(
     window = max(1, int(date_window_days))
     return conn.execute(
         """
-        SELECT winner_canonical, score, walkover, source, match_date
+        SELECT winner_canonical, score, walkover, retired, source, match_date
         FROM match_results
         WHERE (
             (p1_canonical = ? AND p2_canonical = ?)
@@ -1843,6 +2030,226 @@ def _lookup_match_result_for_players(
         """,
         (p1c, p2c, p2c, p1c, anchor, window, anchor, window, match_date or anchor),
     ).fetchone()
+
+
+def _correct_retirement_voids_daily_top_proba(conn: sqlite3.Connection) -> int:
+    """Corrige les Perdu déjà réglés quand le favori a abandonné (stake remboursé)."""
+    ensure_daily_top_proba_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT pick_key, calendar_date, match_date, player1, player2, fav_player,
+               odd_fav, p_model_fav, segment_brier, theoretical_stake_frac
+        FROM daily_top_proba_picks
+        WHERE status = 'Perdu'
+          AND match_date IS NOT NULL
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+          AND fav_player IS NOT NULL
+        """
+    ).fetchall()
+    n = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    for key, calendar_date, match_date, p1, p2, fav_player, odd_fav, p_model_fav, segment_brier, stake_frac in rows:
+        p1c = canonical_player(p1)
+        p2c = canonical_player(p2)
+        hit = _lookup_match_result_for_players(
+            conn,
+            str(match_date or "")[:10],
+            p1c,
+            p2c,
+            calendar_date=str(calendar_date or "")[:10] or None,
+        )
+        if not hit:
+            continue
+        winner, score, walkover, retired, source, _resolved_date = hit
+        retired_eff = _retired_from_match_hit(
+            walkover=bool(walkover), retired=bool(retired), score=score
+        )
+        status, fav_won = _resolve_bet_status_from_match_result(
+            fav_player,
+            winner,
+            walkover=bool(walkover),
+            retired=retired_eff,
+        )
+        if status != "Annulé":
+            continue
+        stake_frac = float(stake_frac or 0.0) or _algo_kelly_stake_frac(
+            p_model_fav, odd_fav, segment_brier
+        )
+        conn.execute(
+            """
+            UPDATE daily_top_proba_picks
+            SET status = ?, fav_won = ?, winner_resolved = ?, score_final = ?,
+                result_source = ?, theoretical_stake_frac = ?, theoretical_profit = ?,
+                settled_ts = ?, updated_at = ?
+            WHERE pick_key = ?
+            """,
+            (
+                status,
+                fav_won,
+                winner,
+                score,
+                source,
+                stake_frac,
+                0.0,
+                now_iso,
+                now_iso,
+                key,
+            ),
+        )
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
+def _correct_false_retirement_voids_daily_top_proba(conn: sqlite3.Connection) -> int:
+    """Corrige les Annulé erronés (retired DB faux positif) → Gagné/Perdu."""
+    ensure_daily_top_proba_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT pick_key, calendar_date, match_date, player1, player2, fav_player,
+               odd_fav, p_model_fav, segment_brier, theoretical_stake_frac
+        FROM daily_top_proba_picks
+        WHERE status = 'Annulé'
+          AND match_date IS NOT NULL
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+          AND fav_player IS NOT NULL
+        """
+    ).fetchall()
+    n = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    for key, calendar_date, match_date, p1, p2, fav_player, odd_fav, p_model_fav, segment_brier, stake_frac in rows:
+        p1c = canonical_player(p1)
+        p2c = canonical_player(p2)
+        hit = _lookup_match_result_for_players(
+            conn,
+            str(match_date or "")[:10],
+            p1c,
+            p2c,
+            calendar_date=str(calendar_date or "")[:10] or None,
+        )
+        if not hit:
+            continue
+        winner, score, walkover, retired, source, _resolved_date = hit
+        retired_eff = _retired_from_match_hit(
+            walkover=bool(walkover), retired=bool(retired), score=score
+        )
+        status, fav_won = _resolve_bet_status_from_match_result(
+            fav_player,
+            winner,
+            walkover=bool(walkover),
+            retired=retired_eff,
+        )
+        if status == "Annulé":
+            continue
+        stake_frac = float(stake_frac or 0.0) or _algo_kelly_stake_frac(
+            p_model_fav, odd_fav, segment_brier
+        )
+        profit = _algo_profit_for_status(status, odd_fav, stake_frac)
+        conn.execute(
+            """
+            UPDATE daily_top_proba_picks
+            SET status = ?, fav_won = ?, winner_resolved = ?, score_final = ?,
+                result_source = ?, theoretical_stake_frac = ?, theoretical_profit = ?,
+                settled_ts = ?, updated_at = ?
+            WHERE pick_key = ?
+            """,
+            (
+                status,
+                fav_won,
+                winner,
+                score,
+                source or "false_void_correction",
+                stake_frac,
+                profit,
+                now_iso,
+                now_iso,
+                key,
+            ),
+        )
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
+def correct_retirement_voids_user_bets(conn: sqlite3.Connection) -> int:
+    """Corrige les Perdu déjà réglés quand le parié a abandonné (stake remboursé)."""
+    ensure_user_bets_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id, match_date, date, match_name, bet_on, score_final
+        FROM user_bets
+        WHERE status = 'Perdu'
+          AND bet_on IS NOT NULL
+          AND TRIM(bet_on) != ''
+          AND match_name IS NOT NULL
+          AND TRIM(match_name) != ''
+        """
+    ).fetchall()
+    n = 0
+    for bet_id, match_date, placement_date, match_name, bet_on, existing_score in rows:
+        parts = (match_name or "").split(" vs ")
+        if len(parts) != 2:
+            continue
+        p1_raw, p2_raw = parts[0].strip(), parts[1].strip()
+        p1c = canonical_player(p1_raw)
+        p2c = canonical_player(p2_raw)
+        resolve_date = str(match_date or placement_date or "")[:10]
+        if not resolve_date:
+            continue
+        hit = _lookup_match_result_for_players(
+            conn,
+            resolve_date,
+            p1c,
+            p2c,
+            calendar_date=str(placement_date or "")[:10] or None,
+        )
+        if not hit:
+            continue
+        winner, score, walkover, retired, source, _resolved_date = hit
+        # Only trust explicit retired flag — score_suggests_retirement false-positives
+        # on TE multi-set formats (e.g. "6 7 6 | 4 5 4").
+        score_text = score or existing_score or ""
+        retired_eff = _retired_from_match_hit(
+            walkover=bool(walkover), retired=bool(retired), score=score_text
+        )
+        status, _won = _resolve_bet_status_from_match_result(
+            bet_on,
+            winner,
+            walkover=bool(walkover),
+            retired=retired_eff,
+        )
+        if status != "Annulé":
+            continue
+        settle_bet(
+            conn,
+            bet_id=int(bet_id),
+            status="Annulé",
+            profit=0.0,
+            winner_resolved=winner,
+            score_final=score_text or None,
+            result_source=source or "retirement_void_correction",
+        )
+        n += 1
+    return n
 
 
 def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
@@ -1879,21 +2286,22 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
         )
         if not hit:
             continue
-        winner, score, walkover, source, _resolved_date = hit
+        winner, score, walkover, retired, source, _resolved_date = hit
+        retired_eff = _retired_from_match_hit(
+            walkover=bool(walkover), retired=bool(retired), score=score
+        )
         stake_frac = float(stake_frac or 0.0) or _algo_kelly_stake_frac(
             p_model_fav, odd_fav, segment_brier
         )
-        if walkover:
-            status = "Annulé"
-            fav_won = None
-            profit = 0.0
-        elif winner:
-            won = names_match(canonical_player(fav_player), winner)
-            status = "Gagné" if won else "Perdu"
-            fav_won = 1 if won else 0
-            profit = _algo_profit_for_status(status, odd_fav, stake_frac)
-        else:
+        status, fav_won = _resolve_bet_status_from_match_result(
+            fav_player,
+            winner,
+            walkover=bool(walkover),
+            retired=retired_eff,
+        )
+        if status == "En cours":
             continue
+        profit = 0.0 if status == "Annulé" else _algo_profit_for_status(status, odd_fav, stake_frac)
         conn.execute(
             """
             UPDATE daily_top_proba_picks
@@ -1917,6 +2325,9 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
         )
         n += 1
     conn.commit()
+    n += _correct_false_retirement_voids_daily_top_proba(conn)
+    n += _correct_retirement_voids_daily_top_proba(conn)
+    n += correct_retirement_voids_user_bets(conn)
     return n
 
 
@@ -1927,7 +2338,7 @@ def read_daily_top_proba_picks(
     db_path: str = DB_PATH_DEFAULT,
 ) -> list[dict]:
     """Lecture pour replay / export."""
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
         ensure_daily_top_proba_schema(conn)
@@ -1955,7 +2366,7 @@ def read_daily_top_proba_picks(
 
 
 def read_algo_opportunity_dates(db_path: str = DB_PATH_DEFAULT) -> list[str]:
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         ensure_algo_opportunities_schema(conn)
         return [
@@ -1976,7 +2387,7 @@ def read_algo_opportunity_report(
     db_path: str = DB_PATH_DEFAULT,
 ) -> dict:
     """Return raw rows and aggregate metrics for the selected detected-date range."""
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
         ensure_algo_opportunities_schema(conn)
@@ -2115,7 +2526,7 @@ def read_algo_opportunity_report(
 def init_all(db_path: str = DB_PATH_DEFAULT) -> dict:
     """Run all migrations once. Returns a small summary dict."""
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = open_db(db_path)
     try:
         added_cols = ensure_user_bets_schema(conn)
         ensure_match_results_cache(conn)

@@ -1,34 +1,51 @@
 # Planning des mises à jour — BettingHUD
 
 Vue **centralisée** : quand tournent scrape, snapshot, ML train, daemon, Telegram, etc.  
-Dernière mise à jour : **29 mai 2026**.
+Dernière mise à jour : **18 juin 2026**.
 
-> Environnements : [[ENVIRONNEMENTS]] · Ops PROD : [[OPS_PROD_DEPANNAGE]] · Flags détaillés : [[CHANGELOG_RECENT]] §7–9.
+> Environnements : [[ENVIRONNEMENTS]] · Crons PROD (synthèse) : [[CRONS_SEMAINE]] · Ops PROD : [[OPS_PROD_DEPANNAGE]] · Flags détaillés : [[CHANGELOG_RECENT]] §7–9.
 
 ---
 
 ## 1. Timeline PROD (UTC)
 
 ```text
-02:00 Paris     Pipeline matin (cron) + Telegram Top 5
+02:00 Paris     Pipeline build (cron)
                ├─ scrape TE jour + demain
                ├─ snapshot full (v47)
-               ├─ sync algo_opportunities
-               └─ Telegram Top 5 (si TELEGRAM_TOP5_AFTER_MORNING=1)
+               └─ sync algo_opportunities
 
-04:15 Paris     CourtAlphaX — pick safe du jour (ou « pas de value »)
-10:00–23:30     CourtAlphaX — tweet résultat + BR (*/30 min)
-Dim. 20:00      CourtAlphaX — récap hebdo (lun–dim)
+03:30 Paris     Sync tours ATP + WTA (cron data-sync)
+               ├─ WTA : sync_wta_delta + enrich Flashscore → ingest SQLite
+               └─ ATP : sync_tml_recent + pipeline_quality
+
+04:55 Paris     Image OG stats (partages sociaux)
+
+05:00 Paris     Publications matin (`--morning-publish`)
+               ├─ build + resync cotes
+               ├─ Top 5 Telegram interactif
+               ├─ 1 Day 1 Pick (TG + Discord)
+               └─ canal Telegram public
+
+Lun 08:00       Rapport ML hebdo → admin Telegram (Brier, focus WTA)
+
+Dim 02:15       Backup archive WTA Sackmann (tarball)
+Dim 04:00       Retrain ML hebdo (cron, bundle v47)
+Dim 10:00       Récap canal Telegram public
+Dim 11:00       Brouillon Reddit → admin
+Dim 18:00       Rapport trafic → admin
+
+CourtAlphaX (X) — DÉSACTIVÉ juin 2026 (crons commentés)
 
 Toute la journée (dashboard actif)
                ├─ prematch re-scrape si CSV > ~20 min
                ├─ snapshot refresh ~15 min (live-data-daemon)
-               ├─ sync tours ATP/WTA ~24 h
-               └─ retrain ML ~7 j (2 h après boot, puis hebdo)
+               └─ sync tours : cron 03:30 (plus seulement thread dashboard)
 
 Toutes les 10 min (bettinghud-daemon)
                ├─ capture top 15 probas/jour
                ├─ sync résultats paris / algo_opportunities
+               ├─ 1D1P résultats TG + Discord (publish_1d1p_results)
                └─ scrape résultats TE si paris « En cours »
 
 24/7           Telegram bot (polling /top5, /jour)
@@ -45,7 +62,7 @@ Toutes les 10 min (bettinghud-daemon)
 |---|---|
 | **Script** | `scripts/morning_live_pipeline.py` |
 | **PROD** | Cron **02:00 Europe/Paris** — `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning` |
-| **PREPROD** | Manuel ou `register_morning_task.ps1` (défaut **07:00** locale) |
+| **PREPROD** | Manuel ou `register_morning_task.ps1` (défaut **05:00** locale) |
 | **Logs PROD** | `data/logs/morning_pipeline_cron.log` + `data/cache/logs/morning_pipeline_*.log` |
 
 **Étapes** :
@@ -97,12 +114,15 @@ Alimente : **Live Tracker**, **Paris du jour**, **Top probas jour**, **Telegram 
 |---|---|
 | **Script** | `scripts/update_model_tml.py` |
 | **Sortie** | `models/xgb_model_tml_v47.pkl` |
-| **Auto** | Thread dashboard si `BETTINGHUD_AUTO_ML_TRAIN_WEEKLY=1` (déf. oui) |
-| **Intervalle** | **7 jours** (`BETTINGHUD_AUTO_ML_TRAIN_INTERVAL_SEC=604800`) |
-| **1er run** | **2 h** après démarrage Streamlit (`AUTO_ML_TRAIN_INITIAL_DELAY_SEC=7200`) |
+| **PROD cron** | **Dimanche 04:00 Paris** — `deploy/cron/data-sync` → `bettinghud-data-sync` |
+| **Log PROD** | `data/logs/ml_train_cron.log` |
+| **Auto dashboard** | Thread si `BETTINGHUD_AUTO_ML_TRAIN_WEEKLY=1` (déf. oui) — **secondaire** vs cron dimanche |
+| **Intervalle thread** | **7 jours** (`BETTINGHUD_AUTO_ML_TRAIN_INTERVAL_SEC=604800`) |
+| **1er run thread** | **2 h** après démarrage Streamlit (`AUTO_ML_TRAIN_INITIAL_DELAY_SEC=7200`) |
 | **Manuel** | `py -3 scripts/update_model_tml.py --skip-sync --min-year 2020` |
+| **Rapport admin** | **Lundi 08:00** — `scripts/ml_weekly_telegram_notify.py` (Brier + santé jobs) |
 
-**Important** : le retrain auto ne tourne que si le **dashboard Streamlit est démarré** (pas de cron ML séparé).
+**Important** : en PROD, le retrain hebdomadaire est assuré par le **cron dimanche 04:00**, pas uniquement par le dashboard ouvert.
 
 **Promotion PREPROD → PROD** :
 
@@ -118,10 +138,14 @@ ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/rebuild_live_pro
 | | |
 |---|---|
 | **Script** | `scripts/sync_tours_daily.py` |
-| **Fréquence** | **1×/24 h** (`BETTINGHUD_AUTO_SYNC_INTERVAL_SEC=86400`) |
-| **Délai initial** | 2 min après boot dashboard |
-| **Log** | `data/logs/tours_auto_sync.log` |
+| **Fréquence PROD** | **Cron 03:30 Paris** (`deploy/cron/data-sync`) |
+| **WTA** | `sync_wta_delta.py` → `enrich_wta_delta_te_stats.py` (Flashscore) → `pipeline_quality.py` / ingest |
+| **ATP** | `sync_tml_recent.py` |
+| **Thread dashboard** | **1×/24 h** (`BETTINGHUD_AUTO_SYNC_INTERVAL_SEC=86400`) — redondant si cron actif |
+| **Log** | `data/logs/tours_auto_sync.log` · `data/logs/tours_cron.log` |
 | **PROD** | `BETTINGHUD_AUTO_SYNC_TOURS=1` (systemd dashboard) |
+
+> **Juin 2026** : `fetch_wta_sackmann_raw.py` abandonné (repo Sackmann 404). Voir [[WTA_SACKMANN_ARCHIVE]].
 
 ---
 
@@ -146,7 +170,8 @@ ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/rebuild_live_pro
 
 | Événement | Quand |
 |-----------|--------|
-| **Top 5 matinal** | Après pipeline matin (~**02:00 Paris**) si `TELEGRAM_TOP5_AFTER_MORNING=1` |
+| **Top 5 matinal** | Pipeline **05:00** `--morning-publish` (ou après build 02:00 si flag legacy) |
+| **Rapport ML hebdo (admin)** | **Lundi 08:00** — `ml_weekly_telegram_notify.py` |
 | **Commandes** | Bot polling 24/7 — `/top5`, `/jour`, `/help` |
 | **Service PROD** | `bettinghud-telegram-bot.service` |
 
@@ -158,18 +183,13 @@ Doc : [[TELEGRAM_TOP5]] · Config : `/opt/bettinghud/.env`
 
 ## 8b. CourtAlphaX (compte public X)
 
-Doc complète : [[COURTALPHAX_X]] · modèle `.env` : `docs/env.courtalphax.example`
+**⏸ Pause juin 2026** — crons commentés, `COURTALPHAX_X_ENABLED=0`. Doc complète : [[COURTALPHAX_X]].
 
-| Événement | Quand (Paris) | Script |
+| Événement | Quand (Paris) | Statut |
 |-----------|---------------|--------|
-| Pick safe du jour | **04:15** (+ retry **04:30**, **05:00**) | `courtalphax_daily_pick.py` |
-| Vérif preflight | **04:05**, **04:10** | `courtalphax_preflight.py` |
-| Tweet résultat + BR | **10:00–23:30**, */30 min | `courtalphax_result_notify.py` |
-| Récap hebdo | **Dimanche 20:00** | `courtalphax_weekly_recap.py` |
-
-Cron : `deploy/cron/courtalphax-x` → `/etc/cron.d/bettinghud-courtalphax-x` · logs : `data/logs/courtalphax_x.log`
-
-**PREPROD** : `--dry-run` uniquement (garde-fou `require_prod_for_x_post`).
+| Pick safe du jour | 04:15 | Désactivé |
+| Tweet résultat + BR | 10:00–23:30 */30 | Désactivé |
+| Récap hebdo | Dimanche 20:00 | Désactivé |
 
 ---
 
@@ -188,12 +208,13 @@ Ces refresh **relisent** le snapshot / la DB — ils ne remplacent pas le pipeli
 
 | Tâche | PREPROD | PROD |
 |-------|---------|------|
-| Pipeline matin | Manuel / tâche Windows 02:00 | Cron **02:00 Paris** |
+| Pipeline matin | Manuel / tâche Windows 02:00 | Cron **02:00** + **05:00** Paris |
+| Sync tours ATP/WTA | Manuel | Cron **03:30** Paris |
+| Retrain ML hebdo | Manuel / thread dashboard | Cron **dim. 04:00** + rapport **lun. 08:00** TG |
 | live-data-daemon | Si dashboard ouvert | systemd dashboard |
-| Retrain ML hebdo | Si dashboard ouvert | Idem |
 | Daemon portefeuille | `.bat` / `--once` | `bettinghud-daemon.service` |
-| Telegram | Non | Oui |
-| CourtAlphaX (X) | `--dry-run` | Cron + tweets réels |
+| Telegram | Non (dry-run) | Oui |
+| CourtAlphaX (X) | `--dry-run` | **Pause** (crons off) |
 | Snapshots / cache | Rebuild local fréquent | Pipeline + daemon + manuel |
 
 **Non synchronisés** entre env : `bettinghud.db`, `data/cache/`, paris réels — voir [[ENVIRONNEMENTS]].
@@ -243,6 +264,7 @@ Liste complète : [[CHANGELOG_RECENT]] · commentaires en tête de `app/dashboar
 
 ## 13. Voir aussi
 
+- [[CRONS_SEMAINE]] — tableau hebdomadaire des crons PROD
 - [[ENVIRONNEMENTS]] — workflow PREPROD/PROD, promotion modèle
 - [[OPS_PROD_DEPANNAGE]] — cron, systemd, rebuild, incidents
 - [[ARCHITECTURE_ACTUELLE_ET_MISES]] — flux scrape → proba → Kelly

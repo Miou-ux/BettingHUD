@@ -144,14 +144,15 @@ Détail ops et dépannage : **`docs/OPS_PROD_DEPANNAGE.md`**.
 
 ## Automatisations par environnement
 
-> **Planning détaillé** (horaires, intervalles, commandes) : [[SCHEDULE_MISES_A_JOUR]].
+> **Planning détaillé** (horaires, intervalles, commandes) : [[SCHEDULE_MISES_A_JOUR]] · **Crons hebdo** : [[CRONS_SEMAINE]].
 
 | Tâche | PREPROD | PROD |
 |-------|---------|------|
-| Pipeline matin | Manuel ou tâche Windows (`register_morning_task.ps1`, 02:00) | Cron 02:00 Paris |
-| Telegram | **Non** (`--dry-run` seulement) | Pipeline matin + `bettinghud-telegram-bot.service` — voir [[TELEGRAM_TOP5]] |
+| Pipeline matin | Manuel ou tâche Windows (`register_morning_task.ps1`) | Cron **02:00** + **05:00** Paris |
+| Sync tours ATP/WTA | Manuel | Cron **03:30** (WTA delta) |
+| Retrain ML | Manuel | Cron **dim. 04:00** · rapport **lun. 08:00** TG |
+| Telegram | **Non** (`--dry-run`) | Pipeline 05:00 + `bettinghud-telegram-bot.service` |
 | Daemon portefeuille | `run_portfolio_daemon.bat` ou `--once` | `bettinghud-daemon.service` |
-| Sync tours / ML auto | Threads dashboard local | Idem (variables `BETTINGHUD_*`) |
 
 ---
 

@@ -116,6 +116,21 @@ def main(argv: list[str] | None = None) -> int:
         f"main_years={n_main} qual_itf_years={n_qual}"
     )
     if n_main == 0:
+        import glob as _glob
+
+        existing = [
+            f
+            for f in sorted(_glob.glob(os.path.join(raw_dir, "wta_matches_*.csv")))
+            if "qual_itf" not in os.path.basename(f).lower()
+            and "doubles" not in os.path.basename(f).lower()
+        ]
+        if existing:
+            print(
+                f"fallback : {len(existing)} fichier(s) main déjà présents "
+                "(téléchargement HTTP indisponible — données locales conservées)",
+                file=sys.stderr,
+            )
+            return 0
         print("erreur : aucun wta_matches_YYYY.csv téléchargé", file=sys.stderr)
         return 1
     return 0

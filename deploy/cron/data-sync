@@ -1,0 +1,9 @@
+# Sync données tours + entraînement ML — PROD (Europe/Paris)
+# Ne dépend pas des threads Streamlit (qui ne démarrent qu'après une visite UI :8501).
+CRON_TZ=Europe/Paris
+
+# 03:30 — ATP TennisMyLife + WTA Sackmann → SQLite (entre builds matin 02h/05h)
+30 3 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/sync_tours_daily.py >> /opt/bettinghud/data/logs/tours_cron.log 2>&1
+
+# Dimanche 04:00 — réentraînement hebdo bundle ML (sync inclus si données manquantes)
+0 4 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/update_model_tml.py --min-year 2020 >> /opt/bettinghud/data/logs/ml_train_cron.log 2>&1

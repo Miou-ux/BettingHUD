@@ -1,6 +1,6 @@
 # Canal Telegram public — acquisition CourtAlpha
 
-Canal de diffusion **gratuit** du pick quotidien 1 Day 1 Pick, distinct du bot privé `@BettingHUDbot` (whitelist).
+Canal de diffusion **gratuit** du pick quotidien 1 Day 1 Pick, distinct du bot privé `@CourtAlphabot` (whitelist).
 
 > Voir aussi : [[TELEGRAM_TOP5]] · [[Home]]
 
@@ -11,7 +11,7 @@ Canal de diffusion **gratuit** du pick quotidien 1 Day 1 Pick, distinct du bot p
 1. Telegram → **Nouveau canal** → nom : `CourtAlpha — 1 Day 1 Pick`
 2. Type : **Public** — choisir un lien permanent, ex. `t.me/courtalpha_1day1pick`
 3. Bio : `Pick tennis quotidien · historique public · value bets modèle`
-4. Ajouter **@BettingHUDbot** (ou le bot PROD) comme **administrateur** avec droit **Publier des messages**
+4. Ajouter **@CourtAlphabot** comme **administrateur** avec droit **Publier des messages**
 5. Récupérer l’id du canal :
    - `@courtalpha_1day1pick` ou
    - `-100xxxxxxxxxx` (via `getUpdates` après un post test)

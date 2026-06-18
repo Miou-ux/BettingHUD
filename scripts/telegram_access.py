@@ -222,27 +222,49 @@ def admin_approve_keyboard(chat_id: str) -> dict:
     }
 
 
-def _pending_access_user_message(*, already_requested: bool) -> str:
-    from scripts.telegram_top5_notify import format_bot_invite_start_message
+def _access_eta_hours() -> str:
+    return (os.getenv("TELEGRAM_ACCESS_ETA_HOURS") or "24").strip() or "24"
 
+
+def _pending_access_extra_lines() -> list[str]:
+    from scripts.comms_locale import PUBLIC_SITE_URL
+
+    lines = [
+        "",
+        f"⏱ Typical approval: within <b>{_access_eta_hours()}h</b> (manual review).",
+        f"🌐 While you wait, explore the <b>free</b> public track record on the web.",
+    ]
+    support = (
+        (os.getenv("SUPPORT_EMAIL") or os.getenv("SMTP_FROM") or "").strip()
+    )
+    if support:
+        lines.append(f"✉️ Questions: <code>{_escape_html(support)}</code>")
+    web_base = (os.getenv("BETTINGHUD_WEB_BASE_URL") or PUBLIC_SITE_URL).rstrip("/")
+    lines.append(f"🔗 <a href=\"{web_base}/1-day-1-pick\">Open 1 Day 1 Pick</a>")
+    return lines
+
+
+def _pending_access_user_message(*, already_requested: bool) -> str:
     if already_requested:
         return "\n".join(
             [
-                "⏳ <b>Demande déjà envoyée</b>",
+                "⏳ <b>Access request pending</b>",
                 "",
-                "L'administrateur a été notifié. "
-                "Tu recevras le guide d'utilisation ici dès validation.",
+                "An admin was already notified. You'll receive a welcome message "
+                "with the button menu here once approved.",
                 "",
-                "Pas besoin de renvoyer <code>/start</code> tout de suite.",
+                "No need to send <code>/start</code> again for now.",
+                *_pending_access_extra_lines(),
             ]
         )
     return "\n".join(
         [
-            format_bot_invite_start_message(),
+            f"👋 <b>Welcome to {(os.getenv('COMMS_BRAND_NAME') or 'CourtAlpha').strip() or 'CourtAlpha'} Bot</b>",
             "",
-            "⏳ <b>Demande transmise à l'administrateur.</b>",
-            "Tu seras notifié ici dès que l'accès sera validé "
-            "(+ guide <code>/top5</code>, <code>/jour</code>, Parier, bankroll…).",
+            "⏳ <b>Your access request was sent.</b>",
+            "You'll get a notification here when approved, with a quick menu "
+            "(1 Day 1 Pick, Top 5, Today, Bet, bankroll…).",
+            *_pending_access_extra_lines(),
         ]
     )
 
@@ -271,14 +293,17 @@ def process_unauthorized_access_request(
     if status == "approved":
         send_message(
             cid,
-            "✅ Ton accès est déjà actif — envoie <code>/start</code> pour le menu.",
+            "✅ Your access is already active — send <code>/start</code> for the menu.",
         )
         return
 
     already_pending = status == "pending" and (now - last_notify) < NOTIFY_COOLDOWN_SEC
+    from scripts.telegram_top5_notify import pending_access_inline_keyboard
+
     send_message(
         cid,
         _pending_access_user_message(already_requested=already_pending),
+        pending_access_inline_keyboard(),
     )
 
     admin_chat = admin_notify_chat_id()
@@ -377,6 +402,7 @@ def send_post_approval_onboarding(
     from scripts.telegram_top5_notify import (
         format_bot_onboarding_after_approval,
         format_bot_welcome_message,
+        main_menu_reply_keyboard,
     )
 
     cid = str(chat_id or "").strip()
@@ -384,9 +410,9 @@ def send_post_approval_onboarding(
         return
     send_message(
         cid,
-        "✅ <b>Accès activé !</b> Bienvenue sur BettingHUD Bot.",
+        "✅ <b>Access granted!</b>\n\n" + format_bot_welcome_message(),
+        main_menu_reply_keyboard(),
     )
-    send_message(cid, format_bot_welcome_message())
     send_message(cid, format_bot_onboarding_after_approval())
 
 
@@ -453,7 +479,7 @@ def try_handle_access_admin_callback(
     try:
         send_message(
             target_chat,
-            "❌ Ta demande d'accès au bot BettingHUD n'a pas été acceptée.",
+            "❌ Your access request to CourtAlpha Bot was not approved.",
         )
     except Exception:
         pass

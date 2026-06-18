@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 import argparse
 import os
 import sqlite3
@@ -25,7 +25,7 @@ def _log(msg: str) -> None:
     print(f"[{_ts()}] {msg}", flush=True)
 
 
-def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None):
+def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None, db_path=None):
     t_pipeline = time.perf_counter()
     current_year = datetime.utcnow().year
     _log(f"=== Pipeline TML + ML | min_year={min_year} max_year={current_year} ===")
@@ -45,7 +45,7 @@ def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_p
 
     t1 = time.perf_counter()
     _log("Début chargement modèle + entraînement ...")
-    ml = TennisMLModel()
+    ml = TennisMLModel(db_path=db_path or DB_PATH_DEFAULT)
     t_load = time.perf_counter() - t1
     _log(f"Instance TennisMLModel créée en {t_load:.2f}s")
 
@@ -89,6 +89,12 @@ if __name__ == "__main__":
         help="Ne pas appeler run_sync_bundle() (entraînement plus rapide sur DB locale).",
     )
     parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Chemin SQLite pour prepare_data (défaut : data/bettinghud.db).",
+    )
+    parser.add_argument(
         "--output-pkl",
         type=str,
         default=None,
@@ -106,4 +112,5 @@ if __name__ == "__main__":
         skip_sync=args.skip_sync,
         output_pkl=args.output_pkl,
         feature_plot_path=args.feature_plot,
+        db_path=args.db_path,
     )

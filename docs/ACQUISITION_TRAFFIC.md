@@ -35,10 +35,10 @@ Baseline trafic : admin **Fréquentation** ou `web_page_views` (7 j glissants).
 
 | Heure (Paris) | Script | Canal |
 |---------------|--------|-------|
-| 04:10 | `telegram_channel_notify.py` | Canal TG public |
+| 05:00 | `morning_live_pipeline.py --morning-publish` | Canal TG public (avec Top 5 + 1D1P) |
 | ~~04:15–05:00~~ | ~~`courtalphax_daily_pick.py`~~ | ~~X~~ **PAUSE** (juin 2026) |
 | 04:20 | `generate_og_snapshot.py` | Image OG stats |
-| 07:12 | `telegram_channel_notify.py` | TG resync |
+| 04:55 | `generate_og_snapshot.py` | Image OG stats |
 | Dim 10h | `telegram_channel_notify.py --weekly` | TG récap |
 | Dim 11h | `reddit_draft_notify.py` | TG admin (brouillon) |
 | Dim 18h | `traffic_weekly_report.py` | TG admin (stats) |

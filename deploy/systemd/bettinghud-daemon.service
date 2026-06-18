@@ -11,6 +11,7 @@ WorkingDirectory=/opt/bettinghud
 Environment=HOME=/home/ubuntu
 Environment=BETTINGHUD_ENV=prod
 Environment=PYTHONPATH=/opt/bettinghud
+EnvironmentFile=-/opt/bettinghud/.env
 ExecStart=/opt/bettinghud/venv/bin/python /opt/bettinghud/scripts/portfolio_results_daemon.py
 Restart=always
 RestartSec=30

@@ -8105,17 +8105,11 @@ def start_auto_tours_db_sync():
         time.sleep(delay)
         while True:
             try:
+                # Attendre la fin d'un rebuild snapshot ; ne pas bloquer sur signature CSV
+                # (un nouveau scrape prematch invalide le snapshot sans empêcher la sync DB).
                 if snapshot_build_in_progress():
                     time.sleep(60)
                     continue
-                csv_path, _ = _prematch_csv_signature()
-                if csv_path and os.path.isfile(csv_path):
-                    sig = _live_snapshot_signature_from_paths(
-                        csv_path, _sanitize_mtime_float(_)
-                    )
-                    if load_live_snapshot(sig, max_age_sec=LIVE_SNAPSHOT_TTL_SEC) is None:
-                        time.sleep(60)
-                        continue
                 run_kw: dict = {
                     "args": [sys.executable, sync_script],
                     "cwd": project_root,

@@ -1,0 +1,5 @@
+# Archive WTA Sackmann (précieuse — repo JeffSackmann mort) — PROD
+CRON_TZ=Europe/Paris
+
+# Dimanche 02:15 — tarball + manifest sous data/backups/wta_sackmann/
+15 2 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/backup_wta_sackmann_archive.py --retain 12 >> /opt/bettinghud/data/logs/wta_backup_cron.log 2>&1

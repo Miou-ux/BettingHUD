@@ -123,8 +123,27 @@ def _maybe_run_closing_odds_archive() -> None:
         LOGGER.warning("Archive closing odds ignorée : %s", exc)
 
 
+def _maybe_od1p_results() -> None:
+    try:
+        from scripts.od1p_publish import publish_1d1p_results
+
+        out = publish_1d1p_results()
+        tg_n = int((out.get("telegram") or {}).get("n_posted") or 0)
+        dc_n = int((out.get("discord") or {}).get("n_posted") or 0)
+        if tg_n:
+            LOGGER.info("Telegram 1D1P : %d résultat(s) publié(s)", tg_n)
+        if dc_n:
+            LOGGER.info("Discord 1D1P : %d résultat(s) publié(s)", dc_n)
+        board = (out.get("discord") or {}).get("performance_board")
+        if board and board.get("ok"):
+            LOGGER.info("Discord 1D1P track record : %s", board.get("action", "ok"))
+    except Exception as exc:
+        LOGGER.info("1D1P résultats ignoré : %s", exc)
+
+
 def _sync_algo_report(db_path: str) -> None:
     from scripts.bets_db import (
+        correct_retirement_voids_user_bets,
         ensure_algo_opportunities_schema,
         ensure_daily_top_proba_schema,
         ensure_user_bets_schema,
@@ -141,11 +160,13 @@ def _sync_algo_report(db_path: str) -> None:
         n_bets = sync_algo_opportunities_from_bets(conn)
         n_res = sync_algo_opportunities_from_results(conn)
         n_top = sync_daily_top_proba_from_results(conn)
+        n_void = correct_retirement_voids_user_bets(conn)
         LOGGER.info(
-            "Algo report sync: %d liens paris, %d statuts résolus, %d top-proba résolus",
+            "Algo report sync: %d liens paris, %d statuts résolus, %d top-proba résolus, %d voids user_bets",
             n_bets,
             n_res,
             n_top,
+            n_void,
         )
     finally:
         conn.close()
@@ -177,6 +198,7 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
             _sync_algo_report(db_path)
         except Exception as exc:
             LOGGER.warning("Sync report algo ignorée : %s", exc)
+        _maybe_od1p_results()
         return 0
 
     if scrape_in_progress(max_lock_sec=lock_max_sec):
@@ -198,6 +220,7 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
             _sync_algo_report(db_path)
         except Exception as exc:
             LOGGER.warning("Sync report algo ignorée : %s", exc)
+        _maybe_od1p_results()
         return 0
     except Exception as exc:
         LOGGER.exception("Passe en échec : %s", exc)
@@ -207,6 +230,13 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
 
 
 def main() -> int:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(os.path.join(ROOT, ".env"))
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(description="Daemon sync portefeuille (résultats TE)")
     parser.add_argument(
         "--once",

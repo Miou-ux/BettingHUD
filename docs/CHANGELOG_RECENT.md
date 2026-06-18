@@ -6,6 +6,42 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour juin 2026 — Bot Telegram @CourtAlphabot
+
+**Doc** : **`docs/TELEGRAM_TOP5.md`**, **`docs/COMMS_LOCALE.md`**
+
+| Livrable | Détail |
+|----------|--------|
+| **Rename** | `@BettingHUDbot` → **`@CourtAlphabot`** (display name CourtAlpha) |
+| **Code** | `scripts/comms_locale.py` — défaut `TELEGRAM_BOT_USERNAMES=CourtAlphabot` |
+| **Discord** | `scripts/discord_general_format.py` — liens `t.me` alignés |
+| **Docs** | `TELEGRAM_TOP5.md`, `TELEGRAM_CHANNEL_ACQUISITION.md`, `COMMS_LOCALE.md`, `README.md` |
+| **Outillage** | `scripts/patch_env_telegram_bot.py` — mise à jour `.env` PROD |
+| **PROD** | `/opt/bettinghud/.env` : nouveau token + username ; restart `bettinghud-telegram-bot` |
+
+Voir aussi § **0.18** (historique mai 2026, bot d’origine `@BettingHUDbot`).
+
+---
+
+## 0. Mise à jour 12 juin 2026 — 1 Day 1 Pick multi-canal
+
+**Doc de référence** : [[ONE_DAY_ONE_PICK]]
+
+| Livrable | Détail |
+|----------|--------|
+| Publication auto | **07:05 Paris** : pick TG (broadcast) + Discord via `od1p_publish.py` |
+| Résultats auto | Daemon portfolio : `publish_1d1p_results()` → TG + Discord |
+| Discord track record | Message unique édité quotidiennement (`--performance-board`) |
+| Telegram UX | Menu clavier, onboarding accès, âge snapshot visible |
+| Parité EV | Telegram **EV ≥ 15 %** aligné web/Discord |
+| SQLite | `open_db()` WAL + `busy_timeout` ; lock JSON registre paris TG |
+| Dédup | Snapshot TE doublons → `dedupe_top_proba_rows_by_match` |
+| Affichage web | Historique picks **date décroissante** (récent en haut) |
+| Tables | `telegram_1d1p_posts`, `discord_1d1p_posts` |
+| Tests | `test_1d1p_selection`, `test_telegram_menu_freshness` |
+
+---
+
 ## 0. Mise à jour 9 juin 2026 — Déploiement PROD + Top 5 interactif
 
 | Livrable | Détail |
@@ -201,11 +237,13 @@ Exports : `data/reports/backtest_rg_strategies_*.csv`
 
 ### 0.18 Bot Telegram @BettingHUDbot (29 mai)
 
+> **Juin 2026** : bot renommé **`@CourtAlphabot`** — voir entrée « Mise à jour juin 2026 — Bot Telegram @CourtAlphabot » en tête de ce changelog.
+
 **Doc** : **`docs/TELEGRAM_TOP5.md`** (documentation complète)
 
 | Élément | Détail |
 |---------|--------|
-| **Bot** | `@BettingHUDbot` — notifications + commandes **PROD uniquement** |
+| **Bot** | `@BettingHUDbot` (puis `@CourtAlphabot` depuis juin 2026) — notifications + commandes **PROD uniquement** |
 | **`/jour`** | Tous les matchs scannés **Live Tracker (Aujourd'hui)**, sans filtre EV — `scripts/live_tracker_picks.py` |
 | **`/top5`** | Top 5 proba Paris du jour (EV favori 15–100 %) — `collect_top5_proba_picks` |
 | **Matinal** | `TELEGRAM_TOP5_AFTER_MORNING=1` → envoi Top 5 en fin de `morning_live_pipeline.py` |
