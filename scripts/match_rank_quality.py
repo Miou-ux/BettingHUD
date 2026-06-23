@@ -15,6 +15,10 @@ STALE_RANK_STATS_MAX_DAYS = max(
     30, int(os.getenv("BETTINGHUD_STALE_RANK_STATS_MAX_DAYS", "365"))
 )
 
+MIN_DATA_RELIABILITY_SCORE = max(
+    0, min(100, int(os.getenv("BETTINGHUD_MIN_DATA_RELIABILITY", "80")))
+)
+
 
 def _rank_stats_source_key(stats: dict | None) -> str | None:
     if not stats:
@@ -168,6 +172,43 @@ def match_data_reliability_score(
 
     score = max(0, min(100, score))
     return score, flags
+
+
+def reliability_fields_from_match(match: dict | None) -> dict[str, object]:
+    """Champs à persister depuis une ligne snapshot."""
+    if not isinstance(match, dict):
+        return {"data_reliability_score": None, "data_reliability_flags": None}
+    flags = match.get("data_reliability_flags")
+    if isinstance(flags, list):
+        flags_s = "|".join(str(x) for x in flags if x) or None
+    else:
+        flags_s = str(flags).strip() if flags else None
+    score = match.get("data_reliability_score")
+    try:
+        score_i = int(score) if score is not None else None
+    except (TypeError, ValueError):
+        score_i = None
+    return {"data_reliability_score": score_i, "data_reliability_flags": flags_s}
+
+
+def passes_data_reliability_filter(
+    match_or_pick: dict | None,
+    *,
+    min_score: int | None = None,
+) -> bool:
+    """True si la ligne est proposable (pas ``unreliable``, score >= seuil)."""
+    if not isinstance(match_or_pick, dict):
+        return False
+    if match_or_pick.get("unreliable"):
+        return False
+    threshold = MIN_DATA_RELIABILITY_SCORE if min_score is None else int(min_score)
+    score = match_or_pick.get("data_reliability_score")
+    if score is None:
+        return False
+    try:
+        return int(score) >= threshold
+    except (TypeError, ValueError):
+        return False
 
 
 def count_matches_excluded_by_reason(

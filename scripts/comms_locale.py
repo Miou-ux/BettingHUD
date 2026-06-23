@@ -117,16 +117,24 @@ def telegram_bot_markdown_link() -> str:
 
 
 def telegram_pick_criteria_line(*, min_proba_pct: float, min_ev_pct: float, ev_max_pct: float | None = 100.0) -> str:
+    from scripts.match_rank_quality import MIN_DATA_RELIABILITY_SCORE
+
+    rel = f" · fiabilité data ≥{MIN_DATA_RELIABILITY_SCORE}"
     if comms_is_english():
         ev_part = (
             f"EV <code>&gt;{min_ev_pct:.0f}%</code> → <code>+{ev_max_pct:.0f}%</code>"
             if ev_max_pct is not None
             else f"EV <code>&gt;{min_ev_pct:.0f}%</code>"
         )
-        return f"📊 Model proba <code>&gt;{min_proba_pct:.0f}%</code> · {ev_part} · sorted by proba ↓"
+        return (
+            f"📊 Model proba <code>&gt;{min_proba_pct:.0f}%</code> · {ev_part}"
+            f" · data reliability ≥{MIN_DATA_RELIABILITY_SCORE} · sorted by proba ↓"
+        )
     ev_part = (
         f"EV <code>&gt;{min_ev_pct:.0f}%</code> → <code>+{ev_max_pct:.0f}%</code>"
         if ev_max_pct is not None
         else f"EV <code>&gt;{min_ev_pct:.0f}%</code>"
     )
-    return f"📊 Proba <code>&gt;{min_proba_pct:.0f}%</code> · {ev_part} · tri proba modèle ↓"
+    return (
+        f"📊 Proba <code>&gt;{min_proba_pct:.0f}%</code> · {ev_part}{rel} · tri proba modèle ↓"
+    )

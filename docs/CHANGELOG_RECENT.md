@@ -6,6 +6,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 23 juin 2026 (b) — Filtre fiabilité data ≥ 80
+
+| Livrable | Détail |
+|----------|--------|
+| **Filtre** | `passes_data_reliability_filter` sur Top 5, 1D1P, Paris du jour, Live Tracker, algo report |
+| **Seuil** | `BETTINGHUD_MIN_DATA_RELIABILITY=80` (défaut) |
+| **Persistance** | `data_reliability_score` + `data_reliability_flags` dans `daily_top_proba_picks` et `algo_opportunities` |
+| **Doc** | `docs/DATA_RELIABILITY.md`, critères Telegram (`comms_locale`) |
+
+---
+
 ## 0. Mise à jour 23 juin 2026 — Fiabilité données live (tier 3)
 
 **Doc** : **`docs/DATA_RELIABILITY.md`**

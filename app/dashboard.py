@@ -6284,6 +6284,10 @@ def _filter_matches_for_algo_report(matches: list) -> list:
             continue
         if not _match_has_rank_points_source(m):
             continue
+        from scripts.match_rank_quality import passes_data_reliability_filter
+
+        if not passes_data_reliability_filter(m):
+            continue
         out.append(m)
     return out
 
@@ -6295,7 +6299,11 @@ def _collect_value_bets_from_matches(
 ) -> list[dict]:
     detector = ValueDetector(min_value_threshold=float(ev_threshold_pct) / 100.0)
     value_bets: list[dict] = []
+    from scripts.match_rank_quality import passes_data_reliability_filter
+
     for idx, match in enumerate(matches):
+        if not passes_data_reliability_filter(match):
+            continue
         _seg_brier = _match_segment_brier(match)
         p1_val = enrich_value_metrics(
             detector.detect_value(
@@ -6392,6 +6400,8 @@ def _persist_live_value_opportunities(value_bets: list[dict]) -> int:
         except Exception:
             p_implicit = None
         match_name = f"{p1_name} vs {p2_name}"
+        from scripts.match_rank_quality import reliability_fields_from_match
+
         rows.append(
             {
                 "opportunity_key": _live_opportunity_key(detected_date, match, str(bet_on or "")),
@@ -6419,6 +6429,7 @@ def _persist_live_value_opportunities(value_bets: list[dict]) -> int:
                 "sharpe_per_brier": val.get("sharpe_per_brier"),
                 "priority_score": val.get("priority_score"),
                 "snapshot_tier": match.get("snapshot_tier"),
+                **reliability_fields_from_match(match),
             }
         )
     try:
@@ -6676,8 +6687,12 @@ def _collect_top_model_prob_rows(
 ) -> list[dict]:
     """Lignes numériques top N (favori = max(capped_p1_prob, 1-p1)), tri proba décroissante."""
     rows: list[dict] = []
+    from scripts.match_rank_quality import passes_data_reliability_filter
+
     for m in matches:
         if today_only and not _is_today_calendar_match(m):
+            continue
+        if not passes_data_reliability_filter(m):
             continue
         met = _match_favorite_model_metrics(m)
         if not _passes_favorite_ev_band(met, ev_min_frac=ev_min_frac, ev_max_frac=ev_max_frac):

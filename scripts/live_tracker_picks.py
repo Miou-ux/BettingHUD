@@ -192,7 +192,11 @@ def collect_live_tracker_all_side_picks(
 
     detector = ValueDetector(min_value_threshold=-1.0)
     rows: list[dict] = []
+    from scripts.match_rank_quality import passes_data_reliability_filter
+
     for idx, match in enumerate(matches):
+        if not passes_data_reliability_filter(match):
+            continue
         seg_brier = _match_segment_brier(match, ml)
         p1 = str(match.get("player1") or "").strip()
         p2 = str(match.get("player2") or "").strip()
@@ -286,7 +290,11 @@ def collect_live_tracker_value_picks(
                 ml._load_bundle_if_needed()
 
     value_bets: list[dict] = []
+    from scripts.match_rank_quality import passes_data_reliability_filter
+
     for idx, match in enumerate(matches):
+        if not passes_data_reliability_filter(match):
+            continue
         seg_brier = _match_segment_brier(match, ml)
         p1_val = enrich_value_metrics(
             detector.detect_value(

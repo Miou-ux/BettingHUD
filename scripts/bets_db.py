@@ -1050,6 +1050,10 @@ def ensure_algo_opportunities_schema(conn: sqlite3.Connection) -> None:
         cur.execute("ALTER TABLE algo_opportunities ADD COLUMN real_odd REAL")
     if "theoretical_stake_frac" not in have:
         cur.execute("ALTER TABLE algo_opportunities ADD COLUMN theoretical_stake_frac REAL DEFAULT 0.0")
+    if "data_reliability_score" not in have:
+        cur.execute("ALTER TABLE algo_opportunities ADD COLUMN data_reliability_score INTEGER")
+    if "data_reliability_flags" not in have:
+        cur.execute("ALTER TABLE algo_opportunities ADD COLUMN data_reliability_flags TEXT")
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_algo_opp_detected_date ON algo_opportunities(detected_date)"
     )
@@ -1480,8 +1484,9 @@ def upsert_algo_opportunities(
                     match_name, player1, player2, bet_on, side, tour, surface, tournament,
                     odd_book, true_odd, p_model, p_implicit, ev, confidence,
                     segment_key, segment_brier, sharpe_ratio, sharpe_per_brier,
-                    priority_score, snapshot_tier, theoretical_stake_frac, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    priority_score, snapshot_tier, theoretical_stake_frac,
+                    data_reliability_score, data_reliability_flags, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(opportunity_key) DO UPDATE SET
                     detected_ts=excluded.detected_ts,
                     match_date=COALESCE(excluded.match_date, algo_opportunities.match_date),
@@ -1507,6 +1512,8 @@ def upsert_algo_opportunities(
                     priority_score=excluded.priority_score,
                     snapshot_tier=excluded.snapshot_tier,
                     theoretical_stake_frac=excluded.theoretical_stake_frac,
+                    data_reliability_score=excluded.data_reliability_score,
+                    data_reliability_flags=excluded.data_reliability_flags,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -1536,6 +1543,10 @@ def upsert_algo_opportunities(
                     _float_or_none(r.get("priority_score")),
                     _none_if_blank(r.get("snapshot_tier")),
                     stake_frac,
+                    int(r["data_reliability_score"])
+                    if r.get("data_reliability_score") is not None
+                    else None,
+                    _none_if_blank(r.get("data_reliability_flags")),
                     now_iso,
                 ),
             )
@@ -1815,6 +1826,15 @@ def ensure_daily_top_proba_schema(conn: sqlite3.Connection) -> None:
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_daily_top_proba_status ON daily_top_proba_picks(status)"
     )
+    have = _existing_columns(conn, "daily_top_proba_picks")
+    if "data_reliability_score" not in have:
+        cur.execute(
+            "ALTER TABLE daily_top_proba_picks ADD COLUMN data_reliability_score INTEGER"
+        )
+    if "data_reliability_flags" not in have:
+        cur.execute(
+            "ALTER TABLE daily_top_proba_picks ADD COLUMN data_reliability_flags TEXT"
+        )
     conn.commit()
 
 
@@ -1858,8 +1878,9 @@ def upsert_daily_top_proba_picks(
                     tournament, surface, match_time, tourney_level, confidence,
                     segment_key, segment_brier, theoretical_stake_frac,
                     snapshot_built_at, snapshot_tier, capture_source,
+                    data_reliability_score, data_reliability_flags,
                     first_captured_ts, last_captured_ts, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(pick_key) DO UPDATE SET
                     match_date=excluded.match_date,
                     top_limit=excluded.top_limit,
@@ -1891,6 +1912,8 @@ def upsert_daily_top_proba_picks(
                     snapshot_built_at=excluded.snapshot_built_at,
                     snapshot_tier=excluded.snapshot_tier,
                     capture_source=excluded.capture_source,
+                    data_reliability_score=excluded.data_reliability_score,
+                    data_reliability_flags=excluded.data_reliability_flags,
                     last_captured_ts=excluded.last_captured_ts,
                     updated_at=excluded.updated_at
                 """,
@@ -1929,6 +1952,10 @@ def upsert_daily_top_proba_picks(
                     _float_or_none(r.get("snapshot_built_at")),
                     _none_if_blank(r.get("snapshot_tier")),
                     _none_if_blank(r.get("capture_source")),
+                    int(r["data_reliability_score"])
+                    if r.get("data_reliability_score") is not None
+                    else None,
+                    _none_if_blank(r.get("data_reliability_flags")),
                     first_ts,
                     last_ts,
                     now_iso,

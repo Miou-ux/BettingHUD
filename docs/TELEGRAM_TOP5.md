@@ -100,6 +100,7 @@ Même pool de matchs que le Live Tracker (**Aujourd’hui**), filtrés **proba m
 
 - Uniquement les côtés avec **EV strictement positive** (`ValueDetector`, seuil min défaut **0 %**)
 - Seuils affichage : `TELEGRAM_MIN_PROBA_PCT=60`, `TELEGRAM_MIN_EV_PCT=15` (strictement `>`)
+- **Fiabilité data** : `data_reliability_score ≥ 80` (`BETTINGHUD_MIN_DATA_RELIABILITY`, voir `docs/DATA_RELIABILITY.md`)
 - Scan initial : `TELEGRAM_JOUR_EV_MIN_PCT=15` (défaut)
 
 **Pas de ligne** sur le favori modèle si EV ≤ 0.
@@ -169,6 +170,8 @@ Sur demande via le daemon **ou** sur l’envoi matinal automatique (`run_notify(
 3. Calcul **½ Kelly × Brier** sur la bankroll app (comme le dashboard)
 4. **✅ Confirmer** (mise Kelly), **✏️ Autre mise**, ou envoi d’un montant en € (ex. `2.50`)
 5. Cumul autorisé sur le même match ; insertion `user_bets` (`tracker_source=telegram_bet`)
+
+> **Juin 2026** : les liens **Winamax** sous les picks ont été **retirés** (bouton unique **💰 Parier**). Le cache Winamax n’est plus rafraîchi dans le pipeline matin.
 
 Annuler une saisie en cours : `/annuler`.
 
@@ -294,7 +297,8 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 # TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
 
 # Polling daemon (optionnel)
-# TELEGRAM_BOT_POLL_TIMEOUT_SEC=25
+# TELEGRAM_BOT_POLL_TIMEOUT_SEC=15
+# TELEGRAM_UPDATE_WORKERS=3
 ```
 
 ### 5.4 Variables d’environnement (référence)
@@ -310,17 +314,20 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 | `TELEGRAM_TOP5_EV_MIN_PCT` | `15` | EV min favori (Top 5) |
 | `TELEGRAM_TOP5_EV_MAX_PCT` | `100` | EV max favori (Top 5) |
 | `TELEGRAM_DAILY_PICKS_LIMIT` | `0` | Max lignes `/jour` (`0` = illimité) |
-| `TELEGRAM_BOT_POLL_TIMEOUT_SEC` | `25` | Timeout long polling |
-| `TELEGRAM_SEND_PARALLEL` | `4` | Envois parallèles des cartes `/jour` (mode Parier) |
-
-### Réactivité (v2026-06)
-
-- **Worker async** : le polling n’attend plus la fin de `/jour` ou `/top5` (file d’attente).
-- **Cache** (`telegram_runtime_cache.py`) : bundle ML + snapshot jour préchargés au démarrage, invalidés si le snapshot full change.
-- **Accusé callback immédiat** + indicateur « écrit… » avant traitement des commandes lentes.
-- **`/jour` interactif** : jusqu’à 4 envois Telegram en parallèle (`TELEGRAM_SEND_PARALLEL`).
+| `TELEGRAM_BOT_POLL_TIMEOUT_SEC` | `15` | Timeout long polling `getUpdates` |
+| `TELEGRAM_UPDATE_WORKERS` | `3` | Workers parallèles pour `/jour`, `/top5`, `/1d1p` (file d’attente) |
 | `BETTINGHUD_LIVE_STARTED_GRACE_MINUTES` | `90` | Matchs démarrés encore inclus (/jour) |
 | `BETTINGHUD_LIVE_SNAPSHOT_TTL_SEC` | `86400` | TTL chargement snapshot |
+
+### Réactivité (juin 2026)
+
+- **File d’attente** : `/jour`, `/top5`, `/1d1p` ne bloquent plus le polling (callbacks « Parier » traités en priorité sur le thread principal).
+- **`TELEGRAM_UPDATE_WORKERS`** (déf. 3) : plusieurs commandes lourdes en parallèle (un long `/jour` n’empêche pas un autre utilisateur).
+- **Accusé immédiat** : message `⏳ Chargement des picks…` avant chargement snapshot/ML ; indicateur « écrit… » sur les commandes lentes.
+- **Callback Parier** : spinner Telegram coupé dès le clic (`answerCallbackQuery` immédiat).
+- **Cache** (`telegram_runtime_cache.py`) : bundle ML + snapshot jour + picks **Top5 / Today / 1D1P** préchargés au démarrage du bot ; invalidés si le snapshot full change.
+
+Autonomie crons / ML / enrichissement : voir [[CRONS_SEMAINE]] § *Autonomie PROD*.
 
 ---
 

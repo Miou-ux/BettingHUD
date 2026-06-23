@@ -17,7 +17,7 @@ from scripts.bets_db import (
     upsert_daily_top_proba_picks,
 )
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
-from scripts.match_rank_quality import match_has_rank_points_source
+from scripts.match_rank_quality import match_has_rank_points_source, passes_data_reliability_filter, reliability_fields_from_match
 from scripts.tournament_tier import is_major_tournament_match
 
 # Alias rétrocompat (scripts / tests).
@@ -49,6 +49,8 @@ def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
         except (TypeError, ValueError):
             continue
         if not match_has_rank_points_source(m):
+            continue
+        if not passes_data_reliability_filter(m):
             continue
         out.append(dict(m))
     return out
@@ -313,6 +315,8 @@ def collect_daily_top_proba_rows(
         met = _match_favorite_metrics(m)
         if met is None:
             continue
+        if not passes_data_reliability_filter(m):
+            continue
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
         match_name = f"{p1_name} vs {p2_name}"
         seg_key = resolve_match_brier_segment_key(
@@ -344,6 +348,7 @@ def collect_daily_top_proba_rows(
                 "theoretical_stake_frac": _algo_kelly_stake_frac(
                     met["p_model_fav"], met["odd_fav"], seg_brier
                 ),
+                **reliability_fields_from_match(m),
             }
         )
 
@@ -403,6 +408,8 @@ def collect_top5_proba_picks(
         ev_f = float(met["ev_fav"])
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
             continue
+        if not passes_data_reliability_filter(m):
+            continue
         tour = _match_tour(m)
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
         seg_key = resolve_match_brier_segment_key(
@@ -437,6 +444,7 @@ def collect_top5_proba_picks(
                 "theoretical_stake_frac": _algo_kelly_stake_frac(
                     met["p_model_fav"], met["odd_fav"], seg_brier
                 ),
+                **reliability_fields_from_match(m),
             }
         )
 

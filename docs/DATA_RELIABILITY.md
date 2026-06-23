@@ -47,11 +47,26 @@ Champ snapshot : `data_reliability_score` + `data_reliability_flags` (liste de c
 
 Le booléen **`unreliable`** continue de **bloquer le bouton Parier** dans l’UI ; le score sert au **tri**, au **filtrage** et aux **analyses** sans remplacer ce garde-fou binaire.
 
+### Filtre actif (juin 2026)
+
+Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live Tracker, value bets persistés) passent par `passes_data_reliability_filter` :
+
+- seuil par défaut **`BETTINGHUD_MIN_DATA_RELIABILITY=80`**
+- exclusion si `unreliable=True` ou score absent
+
+### Persistance
+
+| Table | Colonnes |
+|-------|----------|
+| `daily_top_proba_picks` | `data_reliability_score`, `data_reliability_flags` |
+| `algo_opportunities` | idem |
+
+Score et flags sont copiés depuis le snapshot au moment de la capture (`reliability_fields_from_match`).
+
 ### Évolutions prévues
 
-- Filtre Top probas / Top 5 : « score fiabilité ≥ 80 »
 - Pastille UI + colonne tableau Live Tracker
-- Exclusion auto daily_top_proba si score < seuil configurable (`BETTINGHUD_MIN_DATA_RELIABILITY`)
+- Analyses replay sur historique persisté (plus de recompute à l’export)
 
 ---
 

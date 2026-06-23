@@ -126,10 +126,14 @@ def filter_telegram_display_picks(
     apply_proba_filter: bool = True,
 ) -> list[dict]:
     """Filtre affichage Telegram : EV >= seuil (aligné web/Discord) ; proba optionnelle."""
+    from scripts.match_rank_quality import passes_data_reliability_filter
+
     mp = _telegram_min_proba_pct() if min_proba_pct is None else float(min_proba_pct)
     me = _telegram_min_ev_pct() if min_ev_pct is None else float(min_ev_pct)
     kept: list[dict] = []
     for p in picks:
+        if not passes_data_reliability_filter(p):
+            continue
         if apply_proba_filter and _pick_proba_pct(p) <= mp:
             continue
         if _pick_ev_pct(p) < me:
@@ -883,6 +887,15 @@ def answer_telegram_callback_query(
         pass
 
 
+def send_interactive_load_ack(*, token: str, chat_id: str) -> None:
+    """Retour immédiat Telegram pendant le chargement des picks (mode Parier)."""
+    send_telegram_message(
+        tg("⏳ Loading picks…", "⏳ Chargement des picks…"),
+        token=token,
+        chat_id=str(chat_id).strip(),
+    )
+
+
 def send_interactive_pick_messages(
     picks: list[dict],
     *,
@@ -899,6 +912,7 @@ def send_interactive_pick_messages(
         existing_stakes_eur_for_picks,
         format_pick_telegram_card,
         format_user_br_caption,
+        get_pick_by_token,
         inline_keyboard_parier,
         register_picks,
     )
@@ -927,7 +941,9 @@ def send_interactive_pick_messages(
     )
 
     for row, tok in zip(ordered, tokens):
-        pick = _normalize_pick_row(row, list_kind=list_kind)
+        pick = get_pick_by_token(tok, telegram_user_id=str(telegram_user_id)) or _normalize_pick_row(
+            row, list_kind=list_kind
+        )
         key = (pick["match_name"], pick["bet_on"])
         already = float(stakes_by_key.get(key) or 0.0)
         body = format_pick_telegram_card(pick, already_stake=already)
@@ -1114,6 +1130,14 @@ def run_notify(
     telegram_user_id: str | None = None,
 ) -> dict:
     _require_prod_for_send(force=force, dry_run=dry_run)
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if interactive and not dry_run:
+        if not token or not target_chat:
+            raise SystemExit(
+                "TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID requis (.env ou variables d'environnement)."
+            )
+        send_interactive_load_ack(token=token, chat_id=target_chat)
     picks, _meta, cal_day, pool_n, age_min = _load_top5_context(
         limit=int(limit),
         ev_min_pct=ev_min_pct,
@@ -1144,7 +1168,6 @@ def run_notify(
         print(text)
         return result
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise SystemExit(
             "TELEGRAM_BOT_TOKEN requis (.env ou variables d'environnement)."
@@ -1356,6 +1379,14 @@ def run_1d1p_notify(
     telegram_user_id: str | None = None,
 ) -> dict:
     _require_prod_for_send(force=force, dry_run=dry_run)
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if interactive and not dry_run:
+        if not token or not target_chat:
+            raise SystemExit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID required.")
+        if not telegram_user_id:
+            raise ValueError("telegram_user_id required for interactive Bet mode")
+        send_interactive_load_ack(token=token, chat_id=target_chat)
     from scripts.pick_modes import PickMode, load_picks
 
     res = load_picks(PickMode.ONE_PICK_ONE_DAY)
@@ -1376,8 +1407,6 @@ def run_1d1p_notify(
     if dry_run:
         print(text)
         return result
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     if not token or not target_chat:
         raise SystemExit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID required.")
 
@@ -1438,6 +1467,14 @@ def run_daily_picks_notify(
     if ev_threshold_pct is None:
         raw = os.getenv("TELEGRAM_JOUR_EV_MIN_PCT", "").strip()
         ev_threshold_pct = float(raw) if raw else 15.0
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if interactive and not dry_run:
+        if not token or not target_chat:
+            raise SystemExit(
+                "TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID requis (.env ou variables d'environnement)."
+            )
+        send_interactive_load_ack(token=token, chat_id=target_chat)
     picks, _meta, cal_day, pool_n, age_min = _load_live_tracker_jour_context(
         limit=limit,
         ev_threshold_pct=ev_threshold_pct,
@@ -1471,8 +1508,6 @@ def run_daily_picks_notify(
                 print()
         return result
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     if not token or not target_chat:
         raise SystemExit(
             "TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID requis (.env ou variables d'environnement)."

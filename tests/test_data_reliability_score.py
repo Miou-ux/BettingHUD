@@ -63,8 +63,24 @@ def test_rank_placeholder_penalty():
     assert score < 90
 
 
+def test_passes_data_reliability_filter():
+    from scripts.match_rank_quality import (
+        MIN_DATA_RELIABILITY_SCORE,
+        passes_data_reliability_filter,
+    )
+
+    assert passes_data_reliability_filter({"data_reliability_score": 85})
+    assert not passes_data_reliability_filter({"data_reliability_score": 79})
+    assert not passes_data_reliability_filter(
+        {"data_reliability_score": 90, "unreliable": True}
+    )
+    assert not passes_data_reliability_filter({})
+    assert MIN_DATA_RELIABILITY_SCORE == 80
+
+
 if __name__ == "__main__":
     test_clean_match_high_score()
     test_rank_vs_proba_heavy_penalty()
     test_rank_placeholder_penalty()
+    test_passes_data_reliability_filter()
     print("OK")
