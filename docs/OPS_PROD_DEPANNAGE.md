@@ -259,6 +259,8 @@ cd /opt/bettinghud
 
 Dans l’UI : bouton **« Actualiser le Live Tracker »** (même effet). Après correction de `BETTINGHUD_HEADLESS`, le dashboard PROD lance aussi un build automatique au chargement si le snapshot manque.
 
+**Après correctif identité WTA / clés snapshot** (juin 2026, voir `docs/DATA_RELIABILITY.md`) : un enrichissement « cotes seules » ne suffit pas — lancer **`rebuild_live_projection.py`** pour régénérer probas et `data_reliability_score`.
+
 **Cause fréquente (refresh sans data)** : un **nouveau CSV prematch** (scrape toutes les ~30 min) change la « signature » (`csv_mtime`). Le snapshot disque reste valide (34 matchs, etc.) mais `_hydrate_live_matches_from_disk` ne le chargeait pas sans signature exacte → onglets vides. Correctif : repli `load_live_snapshot_by_model` (dashboard ≥ 29 mai 2026).
 
 Vérification :

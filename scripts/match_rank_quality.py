@@ -89,6 +89,87 @@ def match_has_rank_points_source(match: dict) -> bool:
     return match_rank_exclude_reason(match) is None
 
 
+def _player_rank_placeholder(stats: dict | None) -> bool:
+    if not stats:
+        return False
+    try:
+        rank = int(stats.get("rank") or 0)
+        pts = float(stats.get("pts") or 0)
+        return rank >= 1500 or pts < 10.0
+    except (TypeError, ValueError):
+        return True
+
+
+def match_data_reliability_score(
+    match: dict,
+    *,
+    hist_te_conflict: bool = False,
+    ref_date_stale_sides: tuple[bool, bool] = (False, False),
+    data_stale_sides: tuple[bool, bool] = (False, False),
+) -> tuple[int, list[str]]:
+    """Score 0–100 de confiance dans les données d'une ligne snapshot (hors qualité tennis pure).
+
+    100 = identités + rangs récents + proba cohérente ; pénalités cumulatives documentées dans
+  `docs/DATA_RELIABILITY.md`.
+    """
+    if not isinstance(match, dict):
+        return 0, ["invalid_match"]
+    score = 100
+    flags: list[str] = []
+    anchor = str(match.get("date") or "")[:10] or None
+
+    if match.get("unreliable"):
+        score -= 40
+        flags.append("rang_vs_proba")
+
+    if hist_te_conflict:
+        score -= 20
+        flags.append("hist_te_conflict")
+
+    for side, pk, pid_key, ref_stale, data_stale in (
+        ("p1", "p1_stats", "p1_player_id", ref_date_stale_sides[0], data_stale_sides[0]),
+        ("p2", "p2_stats", "p2_player_id", ref_date_stale_sides[1], data_stale_sides[1]),
+    ):
+        st = match.get(pk) or {}
+        if not match.get(pid_key):
+            score -= 20
+            flags.append(f"{side}_unresolved_id")
+        src = _rank_stats_source_key(st)
+        if not src:
+            score -= 12
+            flags.append(f"{side}_no_rank_source")
+        elif src == "tennisexplorer_estimate":
+            score -= 15
+            flags.append(f"{side}_te_estimate")
+        if _player_rank_placeholder(st):
+            score -= 20
+            flags.append(f"{side}_rank_placeholder")
+        if not player_rank_stats_fresh(st, anchor_date=anchor):
+            score -= 10
+            flags.append(f"{side}_stale_rank_ref")
+        if ref_stale:
+            score -= 8
+            flags.append(f"{side}_ref_date_stale")
+        elif data_stale:
+            score -= 6
+            flags.append(f"{side}_data_stale")
+
+    if str(match.get("snapshot_tier") or "full") == "preview":
+        score -= 15
+        flags.append("preview_tier")
+
+    try:
+        gap = float(match.get("book_gap_pp")) if match.get("book_gap_pp") is not None else None
+    except (TypeError, ValueError):
+        gap = None
+    if gap is not None and gap > 25.0:
+        score -= min(20, int((gap - 25.0) / 3.0))
+        flags.append("book_gap_high")
+
+    score = max(0, min(100, score))
+    return score, flags
+
+
 def count_matches_excluded_by_reason(
     matches: list[dict],
     *,

@@ -60,6 +60,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[UI_THEME_QUANT]] | Charte graphique dashboard (thème terminal quant) |
 | [[DAILY_TOP_PROBA_REPLAY]] | Stockage top 15 ATP/WTA/jour pour replay réel |
 | [[CHART_TOP_PROBAS_JOUR]] | Top 15 probas jour + toggle EV favori (partagé Live Tracker) |
+| [[DATA_RELIABILITY]] | Score fiabilité données live + correctifs tier 3 (homonymes, rangs, snapshot) |
 
 **Onglet Paris du jour** (dashboard) : top 5 probas · cote réelle · Kelly · pari direct · lien Live Tracker — détail dans [[CHANGELOG_RECENT]] § 0.14.
 

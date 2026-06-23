@@ -209,6 +209,7 @@ class TennisStatsEngine:
         # Résolution nom canonique -> pid par tour (utilisée par get_player_id_meta).
         self._atp_name_to_id: Dict[str, str] = {}
         self._wta_name_to_id: Dict[str, int] = {}
+        self._wta_name_to_ids: Dict[str, list[int]] = {}
 
         # Présence de tables Sackmann WTA (cache).
         self._has_wta_table: Optional[bool] = None
@@ -386,6 +387,7 @@ class TennisStatsEngine:
         winner_idx: Dict[int, list] = {}
         loser_idx: Dict[int, list] = {}
         name_to_id: Dict[str, int] = {}
+        name_to_ids: Dict[str, list[int]] = {}
 
         order = df["tourney_date"].argsort(kind="mergesort")
         winner_id_arr = df["winner_id"].array
@@ -403,9 +405,6 @@ class TennisStatsEngine:
             if lid is not None:
                 loser_idx.setdefault(lid, []).append(int(pos))
 
-        # Homonymes « Nom I. » : en parcourant du **plus récent** au plus ancien,
-        # la première affectation gagne -> plutôt le joueur encore actif (ex. Karolina
-        # vs Kristyna Pliskova, même clé `pliskova k`).
         for pos in order[::-1]:
             wid = _to_int_or_none(winner_id_arr[pos])
             lid = _to_int_or_none(loser_id_arr[pos])
@@ -413,16 +412,25 @@ class TennisStatsEngine:
             ln = loser_name_arr[pos]
             if wid is not None and wn:
                 cn = canonical_name(to_lastname_initial(str(wn)))
-                if cn and cn not in name_to_id:
-                    name_to_id[cn] = wid
+                if cn:
+                    lst = name_to_ids.setdefault(cn, [])
+                    if wid not in lst:
+                        lst.append(wid)
             if lid is not None and ln:
                 cn = canonical_name(to_lastname_initial(str(ln)))
-                if cn and cn not in name_to_id:
-                    name_to_id[cn] = lid
+                if cn:
+                    lst = name_to_ids.setdefault(cn, [])
+                    if lid not in lst:
+                        lst.append(lid)
+
+        for cn, ids in name_to_ids.items():
+            if ids:
+                name_to_id[cn] = ids[0]
 
         self._wta_winner_idx = winner_idx
         self._wta_loser_idx = loser_idx
         self._wta_name_to_id = name_to_id
+        self._wta_name_to_ids = name_to_ids
 
     # ---------------------------------------------------------------------
     # Cache invalidation
@@ -456,6 +464,79 @@ class TennisStatsEngine:
     # ---------------------------------------------------------------------
     # Résolution d'identité par tour
     # ---------------------------------------------------------------------
+    def _is_wta_rankings_placeholder(self, rank: int, pts: float) -> bool:
+        try:
+            return int(rank) >= 1500 or float(pts) < 10.0
+        except (TypeError, ValueError):
+            return True
+
+    def _te_player_slug_from_url(self, source_url: Optional[str]) -> Optional[str]:
+        if not source_url:
+            return None
+        m = re.search(r"/player/([^/?#]+)", str(source_url), re.I)
+        if not m:
+            return None
+        return m.group(1).lower().strip()
+
+    def _is_wta_itf_match_row(self, row) -> bool:
+        lv = str(row.get("tourney_level") or "").strip().upper()
+        if lv in ("I", "15", "25", "35", "50", "60", "75", "100", "ITF"):
+            return True
+        return "ITF" in str(row.get("tourney_name") or "").upper()
+
+    def _wta_pid_disambiguation_key(
+        self, pid_int: int, te_slug: Optional[str]
+    ) -> tuple:
+        te_prefix = (te_slug or "").split("-")[0].lower() if te_slug else ""
+        slug_match = 0
+
+        row, is_w = self._last_wta_match(pid_int)
+        if row is not None:
+            pname = str(row.get("winner_name") if is_w else row.get("loser_name") or "")
+            if te_prefix:
+                cn = _canonical_player_index_key(pname)
+                first = cn.split()[0] if cn else ""
+                if first and (first.startswith(te_prefix) or te_prefix.startswith(first[:4])):
+                    slug_match = 1
+            is_itf = self._is_wta_itf_match_row(row)
+            rk = row.get("winner_rank") if is_w else row.get("loser_rank")
+            try:
+                rki = int(float(rk)) if rk is not None and not pd.isna(rk) else 9999
+            except (TypeError, ValueError):
+                rki = 9999
+            return (slug_match, 0 if is_itf else 1, -rki, 1)
+
+        meta = self._wta_rankings_current_meta(pid_int)
+        if meta:
+            rnk, _, _ = meta
+            return (slug_match, 0, -int(rnk), 0)
+        return (slug_match, 0, -99999, 0)
+
+    def _pick_wta_pid_candidate(
+        self, candidates: list[int], source_url: Optional[str]
+    ) -> int:
+        if len(candidates) == 1:
+            return candidates[0]
+        te_slug = self._te_player_slug_from_url(source_url)
+        best = candidates[0]
+        best_key = None
+        for pid in candidates:
+            key = self._wta_pid_disambiguation_key(pid, te_slug)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = pid
+        return best
+
+    def _resolve_wta_pid(self, cn: str, source_url: Optional[str]) -> Optional[int]:
+        if not self._wta_name_to_id and not self._wta_name_to_ids:
+            self._load_wta_matches()
+        candidates = self._wta_name_to_ids.get(cn) or []
+        if not candidates:
+            return self._wta_name_to_id.get(cn)
+        if len(candidates) == 1:
+            return candidates[0]
+        return self._pick_wta_pid_candidate(candidates, source_url)
+
     def get_player_id(self, player_name, source_name="flashscore", source_url=None, tour_hint=None):
         meta = self.get_player_id_meta(
             player_name,
@@ -480,12 +561,11 @@ class TennisStatsEngine:
         th = (tour_hint or "").strip().upper()
 
         if cn:
-            # Préchargement WTA si on doit chercher du côté femme.
             if th == "WTA" and not self._wta_name_to_id:
                 self._load_wta_matches()
 
             if th == "WTA":
-                pid = self._wta_name_to_id.get(cn)
+                pid = self._resolve_wta_pid(cn, source_url)
                 if pid is not None:
                     return {
                         "player_id": f"WTA::{pid}",
@@ -505,7 +585,6 @@ class TennisStatsEngine:
                         "tour": "ATP",
                     }
             else:
-                # tour_hint inconnu : on essaie ATP, puis WTA.
                 pid = self._atp_name_to_id.get(cn)
                 if pid:
                     return {
@@ -517,7 +596,7 @@ class TennisStatsEngine:
                     }
                 if not self._wta_name_to_id:
                     self._load_wta_matches()
-                pid = self._wta_name_to_id.get(cn)
+                pid = self._resolve_wta_pid(cn, source_url)
                 if pid is not None:
                     return {
                         "player_id": f"WTA::{pid}",
@@ -655,6 +734,8 @@ class TennisStatsEngine:
         rnk, pts = row[0], row[1]
         rnk = 100 if rnk is None else int(rnk)
         pts = float(pts)
+        if self._is_wta_rankings_placeholder(rnk, pts):
+            return None
         rdate = _normalize_date_display(row[2]) if len(row) > 2 else None
         return rnk, pts, rdate
 
@@ -842,6 +923,8 @@ class TennisStatsEngine:
         if not meta:
             return out
         rnk, pts, rdate = meta
+        if self._is_wta_rankings_placeholder(rnk, pts):
+            return out
         merged = dict(out)
         merged["rank"] = rnk
         merged["pts"] = pts

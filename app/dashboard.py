@@ -1,3 +1,4 @@
+import copy
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -1396,6 +1397,23 @@ def _match_has_data_alert(match: dict) -> bool:
         or _player_ref_date_stale(match, 2)
         or _player_data_stale(match, 1)
         or _player_data_stale(match, 2)
+    )
+
+
+def _match_data_reliability_bundle(match: dict) -> tuple[int, list[str]]:
+    from scripts.match_rank_quality import match_data_reliability_score
+
+    return match_data_reliability_score(
+        match,
+        hist_te_conflict=_match_has_hist_te_conflict(match),
+        ref_date_stale_sides=(
+            _player_ref_date_stale(match, 1),
+            _player_ref_date_stale(match, 2),
+        ),
+        data_stale_sides=(
+            _player_data_stale(match, 1),
+            _player_data_stale(match, 2),
+        ),
     )
 
 
@@ -3086,12 +3104,40 @@ def _is_major_atp_wta(category, tournament_name):
     )
 
 
-def _match_odds_lookup_key(p1: str, p2: str, tournament: str) -> tuple[str, str, str]:
+def _row_prematch_id(row) -> str:
+    pmid = row.get("id") if hasattr(row, "get") else None
+    if pmid is None:
+        pmid = row.get("prematch_id") if hasattr(row, "get") else None
+    if pmid is None or (isinstance(pmid, float) and pd.isna(pmid)):
+        return ""
+    return str(pmid).strip()
+
+
+def _match_odds_lookup_key(
+    p1: str, p2: str, tournament: str, prematch_id: str | None = None
+) -> tuple[str, str, str, str]:
     return (
         str(p1 or "").strip().lower(),
         str(p2 or "").strip().lower(),
         str(tournament or "").strip().lower(),
+        str(prematch_id or "").strip().lower(),
     )
+
+
+def _existing_prediction_matches_row(
+    existing: dict, row, p1_id: object, p2_id: object
+) -> bool:
+    row_pmid = _row_prematch_id(row)
+    ex_pmid = str(existing.get("prematch_id") or "").strip()
+    if row_pmid and ex_pmid and row_pmid != ex_pmid:
+        return False
+    if row_pmid and not ex_pmid:
+        return False
+    if str(existing.get("p1_player_id") or "") != str(p1_id or ""):
+        return False
+    if str(existing.get("p2_player_id") or "") != str(p2_id or ""):
+        return False
+    return True
 
 
 def _player_stats_fingerprint(stats: dict | None, player_id: object = None) -> tuple:
@@ -3119,10 +3165,14 @@ def _prediction_contradicts_rank_points(match: dict) -> bool:
         r2 = int(ps2.get("rank") or 0)
         if r1 <= 0 or r2 <= 0:
             return False
-        gap = 80
+        gap = 30
         if r1 > r2 + gap and p1_prob > 0.55:
             return True
         if r2 > r1 + gap and p1_prob < 0.45:
+            return True
+        if r1 > r2 and p1_prob > 0.70 and (r1 - r2) >= 25:
+            return True
+        if r2 > r1 and p1_prob < 0.30 and (r2 - r1) >= 25:
             return True
     except Exception:
         pass
@@ -3140,6 +3190,10 @@ def _match_needs_full_repredict(
     if str(existing.get("snapshot_tier") or "") != "full":
         return True
     if _prediction_contradicts_rank_points(existing):
+        return True
+    if str(existing.get("p1_player_id") or "") != str(p1_id or ""):
+        return True
+    if str(existing.get("p2_player_id") or "") != str(p2_id or ""):
         return True
     try:
         if float(existing.get("model_mtime_at_predict") or 0.0) != float(
@@ -4104,7 +4158,7 @@ def _build_live_matches_core(
         _bm == "preview"
         or (LIVE_BUILD_FAST_PREVIEW and _bm not in ("full", "enrich"))
     )
-    base_by_key: dict[tuple[str, str, str], dict] = {}
+    base_by_key: dict[tuple[str, str, str, str], dict] = {}
     if _enrich_build and base_matches:
         for _bm0 in base_matches:
             if not isinstance(_bm0, dict):
@@ -4113,6 +4167,7 @@ def _build_live_matches_core(
                 _bm0.get("player1"),
                 _bm0.get("player2"),
                 _bm0.get("tournament"),
+                _bm0.get("prematch_id"),
             )
             base_by_key[_bk] = dict(_bm0)
         if PERF_LOG_LIVE_BUILD:
@@ -4645,7 +4700,9 @@ def _build_live_matches_core(
                 ref0 = str(pd.Timestamp(mdate0).date()) if mdate0 is not None else None
             except Exception:
                 ref0 = None
-            k = _match_odds_lookup_key(p1n, p2n, row.get("tournament"))
+            k = _match_odds_lookup_key(
+                p1n, p2n, row.get("tournament"), _row_prematch_id(row)
+            )
             adv_jobs[k] = (
                 p1n,
                 p2n,
@@ -4655,7 +4712,7 @@ def _build_live_matches_core(
                 ref0,
             )
 
-        def _adv_one(item: tuple[tuple[str, str, str], tuple[str, str, str, str, str, str | None]]):
+        def _adv_one(item: tuple[tuple[str, str, str, str], tuple[str, str, str, str, str, str | None]]):
             k, args = item
             try:
                 return k, _compute_live_advanced_signals(*args)
@@ -4686,7 +4743,7 @@ def _build_live_matches_core(
         p1_name = str(row["player1"]).strip()
         p2_name = str(row["player2"]).strip()
         _snap_key = _match_odds_lookup_key(
-            p1_name, p2_name, row.get("tournament")
+            p1_name, p2_name, row.get("tournament"), _row_prematch_id(row)
         )
 
         p1_id = pid_by_name.get(p1_name)
@@ -4709,10 +4766,15 @@ def _build_live_matches_core(
 
         if _enrich_build and _snap_key in base_by_key:
             _existing = base_by_key.pop(_snap_key)
-            if not _match_needs_full_repredict(
-                _existing, p1_stats, p2_stats, p1_id, p2_id
+            if (
+                _existing_prediction_matches_row(_existing, row, p1_id, p2_id)
+                and not _match_needs_full_repredict(
+                    _existing, p1_stats, p2_stats, p1_id, p2_id
+                )
             ):
                 _em = dict(_existing)
+                if isinstance(_em.get("feature_snapshot"), dict):
+                    _em["feature_snapshot"] = copy.deepcopy(_em["feature_snapshot"])
                 try:
                     _o1 = float(row.get("odd_p1") or 0.0)
                     _o2 = float(row.get("odd_p2") or 0.0)
@@ -4973,7 +5035,7 @@ def _build_live_matches_core(
             "true_odd_p2": true_odd_p2,
             "confidence": confidence,
             "calibration_used": calibration_used,
-            "feature_snapshot": feature_snapshot,
+            "feature_snapshot": copy.deepcopy(feature_snapshot) if feature_snapshot else {},
             "top_features": top_features,
             "p1_stats": p1_stats,
             "p2_stats": p2_stats,
@@ -5036,6 +5098,11 @@ def _build_live_matches_core(
                 flush=True,
             )
     _mark("finalize")
+    for _m in matches:
+        if isinstance(_m, dict):
+            _rs, _rf = _match_data_reliability_bundle(_m)
+            _m["data_reliability_score"] = _rs
+            _m["data_reliability_flags"] = _rf
     try:
         complete_live_build_progress(len(matches))
     except Exception:
@@ -5107,7 +5174,7 @@ def _patch_live_matches_odds_from_csv(matches: list, csv_path: str) -> tuple[lis
     df = _load_prematch_df_for_live(csv_path)
     if df.empty:
         return matches, 0, 0
-    lookup: dict[tuple[str, str, str], tuple[float, float]] = {}
+    lookup: dict[tuple[str, str, str, str], tuple[float, float]] = {}
     for _, row in df.iterrows():
         try:
             o1 = float(row.get("odd_p1") or 0.0)
@@ -5117,16 +5184,22 @@ def _patch_live_matches_odds_from_csv(matches: list, csv_path: str) -> tuple[lis
         if o1 <= 1.0 or o2 <= 1.0:
             continue
         k = _match_odds_lookup_key(
-            row.get("player1"), row.get("player2"), row.get("tournament")
+            row.get("player1"),
+            row.get("player2"),
+            row.get("tournament"),
+            _row_prematch_id(row),
         )
         lookup[k] = (o1, o2)
-    snap_keys: set[tuple[str, str, str]] = set()
+    snap_keys: set[tuple[str, str, str, str]] = set()
     out: list = []
     n_patched = 0
     for m in matches:
         row = dict(m)
         k = _match_odds_lookup_key(
-            row.get("player1"), row.get("player2"), row.get("tournament")
+            row.get("player1"),
+            row.get("player2"),
+            row.get("tournament"),
+            row.get("prematch_id"),
         )
         snap_keys.add(k)
         odds = lookup.get(k)

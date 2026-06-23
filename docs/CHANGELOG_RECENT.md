@@ -6,6 +6,21 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+## 0. Mise à jour 23 juin 2026 — Fiabilité données live (tier 3)
+
+**Doc** : **`docs/DATA_RELIABILITY.md`**
+
+| Livrable | Détail |
+|----------|--------|
+| **Snapshot** | Clé enrich `(p1, p2, tournoi, prematch_id)` ; repredict si IDs joueurs changent ; `feature_snapshot` deep-copié |
+| **Rang vs proba** | Gap 80 → **30** + cas haute proba (ex. Gibson–Keys) |
+| **WTA homonymes** | `_wta_name_to_ids` + disambiguation slug Tennis Explorer |
+| **Rang placeholder** | `rankings_wta_current` ignoré si rank ≥ 1500 ou pts < 10 |
+| **Score fiabilité** | `data_reliability_score` 0–100 + `data_reliability_flags` sur chaque ligne snapshot (`match_rank_quality.py`) |
+| **PROD** | Rebuild complet `rebuild_live_projection.py` après déploiement |
+
+---
+
 ## 0. Mise à jour juin 2026 — Bot Telegram @CourtAlphabot
 
 **Doc** : **`docs/TELEGRAM_TOP5.md`**, **`docs/COMMS_LOCALE.md`**

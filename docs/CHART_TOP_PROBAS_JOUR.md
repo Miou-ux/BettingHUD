@@ -39,6 +39,12 @@ Le **même toggle EV** est partagé avec le **Live Tracker** : quand il est acti
 - Champ snapshot : `book_gap_pp` (écart max modèle vs book sur les deux côtés, en points de pourcentage).
 - Alerte visuelle tableau : gap ≥ **25 pp** (orange) — constante `_TOP_PROBAS_GAP_WARN_PP`.
 
+### Score fiabilité données
+
+- Champs snapshot : `data_reliability_score` (0–100), `data_reliability_flags` (codes pénalités).
+- Rubrique complète : **`docs/DATA_RELIABILITY.md`**.
+- Usage actuel : stocké à chaque build ; filtre UI / Top 5 « score ≥ 80 » prévu (non activé par défaut).
+
 ### Tri et limite
 
 - Tri décroissant sur `proba_modele_pct`.
