@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 PARIS_TZ = ZoneInfo("Europe/Paris")
 EV_MIN_PCT = 15.0
 EV_MAX_PCT = 100.0
+PROBA_STANDARD_MIN_FRAC = 0.70
+"""Si le pick standard (EV 15–100 %) a p_model_fav < 70 %, repli EV > 0 (cap 100 %)."""
 
 
 def _passes_ev_band(row: dict[str, Any], *, ev_min_pct: float, ev_max_pct: float) -> bool:
@@ -19,6 +21,14 @@ def _passes_ev_band(row: dict[str, Any], *, ev_min_pct: float, ev_max_pct: float
     except (TypeError, ValueError):
         return False
     return ev_min_pct <= ev <= ev_max_pct
+
+
+def _passes_ev_positive(row: dict[str, Any], *, ev_max_pct: float) -> bool:
+    try:
+        ev = float(row.get("ev_fav_pct"))
+    except (TypeError, ValueError):
+        return False
+    return 0.0 < ev <= ev_max_pct
 
 
 def _best_circuit_candidate_between_circuits(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -44,6 +54,7 @@ def _first_ev_eligible_per_circuit(
     ev_min_pct: float,
     ev_max_pct: float,
     row_ok: Callable[[dict[str, Any]], bool] | None = None,
+    ev_positive_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Par circuit (ATP/WTA) : premier match classé proba ↓ avec EV dans la bande."""
     from scripts.daily_top_proba_store import DEFAULT_TOURS
@@ -58,10 +69,58 @@ def _first_ev_eligible_per_circuit(
         for row in ranked:
             if row_ok is not None and not row_ok(row):
                 continue
-            if _passes_ev_band(row, ev_min_pct=ev_min_pct, ev_max_pct=ev_max_pct):
+            ev_ok = (
+                _passes_ev_positive(row, ev_max_pct=ev_max_pct)
+                if ev_positive_only
+                else _passes_ev_band(row, ev_min_pct=ev_min_pct, ev_max_pct=ev_max_pct)
+            )
+            if ev_ok:
                 candidates.append(row)
                 break
     return candidates
+
+
+def select_1d1p_pick(
+    rows: list[dict[str, Any]],
+    *,
+    ev_min_pct: float = EV_MIN_PCT,
+    ev_max_pct: float = EV_MAX_PCT,
+    row_ok: Callable[[dict[str, Any]], bool] | None = None,
+    proba_floor_frac: float = PROBA_STANDARD_MIN_FRAC,
+) -> dict[str, Any] | None:
+    """
+    Sélection 1D1P prod : EV 15–100 % par défaut ; si pick final < proba_floor (70 %),
+    repli sur premier candidat EV > 0 par circuit (toujours cap EV max).
+    """
+    circuit_std = _first_ev_eligible_per_circuit(
+        rows,
+        ev_min_pct=ev_min_pct,
+        ev_max_pct=ev_max_pct,
+        row_ok=row_ok,
+    )
+    pick = _best_circuit_candidate_between_circuits(circuit_std)
+    if pick is not None and float(pick.get("p_model_fav") or 0.0) >= float(proba_floor_frac):
+        out = dict(pick)
+        out["selection_mode"] = "standard"
+        return out
+
+    circuit_ev_plus = _first_ev_eligible_per_circuit(
+        rows,
+        ev_min_pct=ev_min_pct,
+        ev_max_pct=ev_max_pct,
+        row_ok=row_ok,
+        ev_positive_only=True,
+    )
+    pick_loose = _best_circuit_candidate_between_circuits(circuit_ev_plus)
+    if pick_loose is None:
+        if pick is not None:
+            out = dict(pick)
+            out["selection_mode"] = "standard_low_proba"
+            return out
+        return None
+    out = dict(pick_loose)
+    out["selection_mode"] = "ev_plus_fallback"
+    return out
 
 
 def load_1d1p_today_pick(
@@ -90,6 +149,17 @@ def load_1d1p_today_pick(
             str(row.get("tournament") or ""),
         )
 
+    def _reliability_row(row: dict[str, Any]) -> bool:
+        from scripts.match_rank_quality import passes_data_reliability_filter
+
+        score = row.get("data_reliability_score")
+        if score is None:
+            return True
+        return passes_data_reliability_filter(row)
+
+    def _eligible_row(row: dict[str, Any]) -> bool:
+        return _major_row(row) and _reliability_row(row)
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -104,13 +174,12 @@ def load_1d1p_today_pick(
             """,
             (cal_day,),
         ).fetchall()
-        circuit_db = _first_ev_eligible_per_circuit(
+        pick = select_1d1p_pick(
             dedupe_top_proba_rows_by_match([dict(r) for r in db_rows]),
             ev_min_pct=ev_min_pct,
             ev_max_pct=ev_max_pct,
-            row_ok=_major_row,
+            row_ok=_eligible_row,
         )
-        pick = _best_circuit_candidate_between_circuits(circuit_db)
         if pick is not None:
             pick = dict(pick)
             pick["source"] = "db"
@@ -135,13 +204,12 @@ def load_1d1p_today_pick(
     )
 
     if pick is None:
-        circuit_live = _first_ev_eligible_per_circuit(
+        pick = select_1d1p_pick(
             ranked_rows,
             ev_min_pct=ev_min_pct,
             ev_max_pct=ev_max_pct,
-            row_ok=_major_row,
+            row_ok=_eligible_row,
         )
-        pick = _best_circuit_candidate_between_circuits(circuit_live)
         if pick is not None:
             pick = dict(pick)
             pick["source"] = "live"

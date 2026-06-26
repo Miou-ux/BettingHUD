@@ -36,7 +36,7 @@ Le **même toggle EV** est partagé avec le **Live Tracker** : quand il est acti
 
 ### Gap book (tableau + tooltip)
 
-- Champ snapshot : `book_gap_pp` (écart max modèle vs book sur les deux côtés, en points de pourcentage).
+- Champ snapshot : `book_gap_pp` — écart **modèle vs book** sur le **favori modèle** (cote publique), en points de %. Voir **`docs/DATA_RELIABILITY.md`** (définition canonique).
 - Alerte visuelle tableau : gap ≥ **25 pp** (orange) — constante `_TOP_PROBAS_GAP_WARN_PP`.
 
 ### Score fiabilité données

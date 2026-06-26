@@ -164,6 +164,22 @@ def _normalize_date_display(val: Any) -> Optional[str]:
     return None
 
 
+def get_days_since_last_match(
+    rows: pd.DataFrame,
+    ref_ts: pd.Timestamp,
+    *,
+    default: int = 7,
+) -> int:
+    """Days between ref_ts and the player's most recent match row (0 if same day)."""
+    if rows is None or rows.empty or "tourney_date" not in rows.columns:
+        return default
+    try:
+        last = rows["tourney_date"].max()
+        return int(max(0, (pd.Timestamp(ref_ts).normalize() - pd.Timestamp(last).normalize()).days))
+    except Exception:
+        return default
+
+
 def _stats_reference_date_from_row(row: Any) -> Optional[str]:
     """Date du dernier match (colonne tourney_date) pour contextualiser rang/points."""
     if row is None:

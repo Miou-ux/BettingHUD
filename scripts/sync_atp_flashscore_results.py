@@ -29,7 +29,13 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from scripts.ml_model import TennisMLModel  # noqa: E402
-from scripts.surface_speed import effective_surface_speed_cpi, infer_outdoor, lookup_surface_speed  # noqa: E402
+from scripts.surface_speed import (  # noqa: E402
+    effective_surface_speed_cpi,
+    infer_outdoor,
+    infer_surface_category,
+    resolve_tournament_surface,
+    lookup_surface_speed,
+)
 from scripts.wta_flashscore_serve_stats import (  # noqa: E402
     FlashscoreIndex,
     fetch_match_service_stats,
@@ -127,12 +133,7 @@ def _tml_level(tier_raw: object, tourney_name: str) -> str:
 
 
 def _infer_surface(tourney_name: str) -> str:
-    n = str(tourney_name or "").lower()
-    if any(k in n for k in ("wimbledon", "eastbourne", "mallorca", "halle", "queen", "nottingham", "stuttgart")):
-        return "Grass"
-    if any(k in n for k in ("roland", "barcelona", "rome", "madrid", "monte carlo")):
-        return "Clay"
-    return "Hard"
+    return resolve_tournament_surface(tourney_name)
 
 
 def _load_socle(conn: sqlite3.Connection) -> pd.DataFrame:

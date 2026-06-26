@@ -3,7 +3,7 @@
 
 Phases (Europe/Paris, cron PROD) :
   - **02:00** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
-  - **05:00** : ``--morning-publish`` — build + publications (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
+  - **05:00** : ``--morning-publish`` — chaîne **sync tours (si besoin) → build → publications** avec garde-fous (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
 
 Modes manuels :
   - ``--telegram-only`` / ``--telegram-only --source morning-sync`` — envoi sans rebuild
@@ -304,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--morning-publish",
         action="store_true",
-        help="05:00 Paris : build + toutes les publications matinales",
+        help="05:00 Paris : chaîne sync tours → build → publications (garde-fous)",
     )
     ap.add_argument(
         "--source",
@@ -332,16 +332,13 @@ def main(argv: list[str] | None = None) -> int:
         return rc
 
     if args.morning_publish:
+        from scripts.morning_orchestrator import run_publish_chain
+
         _log, log_path = _open_log("morning-publish")
-        _log("Démarrage publications matin 05:00 (build + Telegram/Discord/canal).")
-        rc = run_build_phase(_log=_log)
-        if rc != 0:
-            _log(f"Build échoué (code {rc}) — publications non lancées.")
-            _log(f"Fin (code {rc}). Journal : {log_path}")
-            return rc
-        rc_tg = run_telegram_phase(_log=_log, source="morning-sync")
-        _log(f"Fin (build OK, publications code {rc_tg}). Journal : {log_path}")
-        return rc_tg if rc_tg != 0 else 0
+        _log("Démarrage publications matin 05:00 (chaîne sync → build → Telegram/Discord/canal).")
+        rc = run_publish_chain(_log=_log)
+        _log(f"Fin (code {rc}). Journal : {log_path}")
+        return rc
 
     # Comportement historique : tout en une passe
     _log, log_path = _open_log("full")

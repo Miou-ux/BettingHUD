@@ -177,8 +177,31 @@ def run_sync_bundle() -> int:
     else:
         _append_log("pipeline_quality.py OK.")
         _stamp_sync_meta("last_sackmann_sync_ts")
+        if os.getenv("BETTINGHUD_POST_SYNC_REBUILD", "1").strip() not in ("0", "false", "False", "no", "NO"):
+            if _run_py("build_feature_store.py") != 0:
+                _append_log("build_feature_store.py a echoue.")
+                rc = 1
+            else:
+                _append_log("build_feature_store.py OK.")
+            if _run_py("refresh_elo_maps_fast.py") != 0:
+                _append_log("refresh_elo_maps_fast.py a echoue.")
+                rc = 1
+            else:
+                _append_log("refresh_elo_maps_fast.py OK.")
 
     _append_log(f"=== fin sync ATP+WTA rc={rc} ===")
+
+    try:
+        from scripts.morning_chain_state import record_step
+
+        record_step(
+            "tours_sync",
+            ok=(rc == 0),
+            rc=rc,
+            detail={"source": "sync_tours_daily"},
+        )
+    except Exception as e:
+        _append_log(f"morning_chain_state tours_sync: {e}")
 
     if rc == 0:
         try:
@@ -210,6 +233,25 @@ def run_sync_bundle() -> int:
             _append_log("bets_meta: last_tours_sync_ts enregistré.")
         except Exception as e:
             _append_log(f"bets_meta last_tours_sync_ts: {e}")
+
+    if rc == 0:
+        try:
+            from scripts.qc_post_sync import run_qc_post_sync
+
+            qc = run_qc_post_sync()
+            for line in qc.summary_lines():
+                _append_log(line)
+            record_step(
+                "qc_post_sync",
+                ok=qc.ok,
+                rc=0 if qc.ok else 1,
+                detail=qc.to_dict(),
+            )
+            if not qc.ok:
+                _append_log("qc_post_sync: échec bloquant.")
+                rc = 1
+        except Exception as e:
+            _append_log(f"qc_post_sync: {e}")
 
     return rc
 

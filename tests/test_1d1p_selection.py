@@ -139,3 +139,40 @@ def test_atp_tiebreak_when_equal_proba():
     pick = _best_circuit_candidate_between_circuits(circuit)
     assert pick is not None
     assert pick["tour"] == "ATP"
+
+
+def test_ev_plus_fallback_when_standard_pick_below_70_proba():
+    """Standard pick WTA 54% EV 39% → repli EV+ : Bergs ATP 70% EV 4.5%."""
+    from scripts.discord_1d1p_core import select_1d1p_pick
+
+    rows = [
+        {
+            "tour": "ATP",
+            "rank": 1,
+            "fav_player": "Bergs Z.",
+            "p_model_fav": 0.701,
+            "ev_fav_pct": 4.5,
+            "match_name": "Bergs Z. vs Samuel T.",
+        },
+        {
+            "tour": "ATP",
+            "rank": 2,
+            "fav_player": "Borges N.",
+            "p_model_fav": 0.649,
+            "ev_fav_pct": 10.3,
+            "match_name": "Borges N. vs Quinn E.",
+        },
+        {
+            "tour": "WTA",
+            "rank": 1,
+            "fav_player": "Maria T.",
+            "p_model_fav": 0.544,
+            "ev_fav_pct": 39.2,
+            "match_name": "Maria T. vs Ostapenko J.",
+        },
+    ]
+    pick = select_1d1p_pick(rows, ev_min_pct=15.0, ev_max_pct=100.0)
+    assert pick is not None
+    assert pick["selection_mode"] == "ev_plus_fallback"
+    assert pick["fav_player"] == "Bergs Z."
+    assert float(pick["p_model_fav"]) >= 0.70

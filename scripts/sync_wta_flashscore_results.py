@@ -44,6 +44,7 @@ from scripts.wta_sackmann_common import (  # noqa: E402
     resolve_player_id,
     tourney_id_from,
 )
+from scripts.surface_speed import infer_surface_category, resolve_tournament_surface  # noqa: E402
 
 _SEED_RE = re.compile(r"\s*\(\d+\)\s*$")
 
@@ -170,7 +171,7 @@ def _load_prematch_context(*, lookback_days: int = 21) -> dict[tuple[frozenset[s
             if not tname:
                 continue
             tier_raw = str(row.get("tourney_winner_points") or "")
-            surf = "Grass" if "homburg" in tname.lower() or "eastbourne" in tname.lower() or "wimbledon" in tname.lower() else "Hard"
+            surf = resolve_tournament_surface(tname)
             out[(pair, td)] = {
                 "tourney_name": tname,
                 "surface": surf,
@@ -229,7 +230,7 @@ def _row_from_game(
     out = empty_row()
     out["tourney_id"] = tourney_id_from(tourney_name, year)
     out["tourney_name"] = tourney_name
-    out["surface"] = surface_norm(meta.get("surface") or "Hard")
+    out["surface"] = surface_norm(meta.get("surface") or resolve_tournament_surface(tourney_name))
     out["tourney_level"] = tier_to_level(meta.get("tier_raw") or "") or TennisMLModel._infer_tourney_level_from_name(tourney_name)
     out["tourney_date"] = td
     wid = resolve_player_id(winner, name_to_id, player_ids)

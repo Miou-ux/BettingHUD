@@ -1,11 +1,41 @@
 # Crons PROD — vue hebdomadaire
 
-Dernière mise à jour : **18 juin 2026** · fuseau **`Europe/Paris`** (`CRON_TZ` sur tous les fichiers).
+Dernière mise à jour : **22 juin 2026** · fuseau **`Europe/Paris`** (`CRON_TZ` sur tous les fichiers).
 
 Serveur : **`bettinghud`** (`/opt/bettinghud`). Fichiers source : `deploy/cron/*` → `/etc/cron.d/bettinghud-*`.
 
-> **Hors cron** : daemons systemd **24/7** (`telegram_bot_daemon`, `portfolio_results_daemon`, dashboard nginx).  
+> **Hors cron** : services systemd **24/7** (`bettinghud-telegram-bot`, `bettinghud-daemon`, `bettinghud-dashboard` avec `BETTINGHUD_LIVE_DATA_DAEMON=1`).  
 > **PREPROD (PC Windows)** : pipeline matin et backup DB via tâches planifiées — voir [[ENVIRONNEMENTS]].
+
+---
+
+## Autonomie PROD — sans intervention manuelle
+
+Ce qui **tourne tout seul** sur le serveur `bettinghud` (crons + systemd). Tu n’as pas besoin d’ouvrir le dashboard ni CourtAlpha pour que ces jobs s’exécutent.
+
+| Besoin | Mécanisme | Fréquence |
+|--------|-----------|-----------|
+| **Scrape TE + snapshot enrichi (ML live)** | Cron `morning-pipeline` + thread `live-data-daemon` (dashboard systemd) | **02:00** + **05:00** · refresh snapshot ~**15 min** |
+| **Sync historique ATP/WTA + ingest SQLite** | Cron `data-sync` → `sync_tours_daily.py` | **03:30** quotidien |
+| **Réentraînement ML** | Cron `data-sync` → `update_model_tml.py` | **Dim 04:00** |
+| **Rapport ML / Brier (admin TG)** | Cron `ml-weekly-telegram` | **Lun 08:00** |
+| **Publications matin** (Top 5, 1D1P, canal) | Cron `morning-pipeline --morning-publish` → `morning_orchestrator` | **05:00** |
+| **Backup archive WTA** (tarball) | Cron `wta-sackmann-backup` | **Dim 02:15** |
+| **Bot Telegram** (`/jour`, `/top5`, Parier) | `bettinghud-telegram-bot.service` | **24/7** |
+| **Résultats paris + top probas jour** | `bettinghud-daemon.service` | **~10 min** |
+
+**Logs de contrôle** : `tours_auto_sync.log` (sync 03:30), `ml_train_cron.log` (dim.), `morning_publish_cron.log`, `telegram_bot_daemon.log`.
+
+> **CourtAlpha (Settings)** : certains pipelines affichent encore « thread dashboard » — en PROD la **source de vérité est le cron** (`deploy/cron/data-sync`, `morning-pipeline`), pas une visite UI Streamlit `:8501`.
+
+### Ce qui n’est **pas** 100 % autonome
+
+| Élément | Pourquoi | Action si besoin |
+|---------|----------|------------------|
+| **Backup DB SQLite prod → PC** | Tâche Windows `BettingHUD-Prod-DB-Backup` (~05:30) — le **PC doit être allumé** | `scripts\register_prod_backup_task.ps1` · voir [[ENVIRONNEMENTS]] |
+| **Déploiement code / hotfix** | Pas de CD automatique | `git pull` + `systemctl restart …` sur prod |
+| **Scrape TE en journée** | Cron garantit **02:00 + 05:00** seulement ; pas de rescrape toutes les 20 min hors dashboard | Normal entre deux crons ; badge CourtAlpha « Scraper TE » peut passer en warn/error (seuils UI) |
+| **Threads dashboard** (sync tours / ML) | Redondants si crons OK ; ne démarrent que si Streamlit tourne | Ne pas s’y fier seul — vérifier les crons |
 
 ---
 
@@ -43,12 +73,16 @@ gantt
 | **02:00** | `morning_live_pipeline.py --build-only` | Scrape TE, snapshot ML, cache Telegram | `data/logs/morning_build_cron.log` |
 | **03:30** | `sync_tours_daily.py` | ATP (`sync_tml_recent`) + **WTA delta** (`sync_wta_delta` → enrich Flashscore → `pipeline_quality` / ingest) | `data/logs/tours_cron.log` · `data/logs/tours_auto_sync.log` |
 | **04:55** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
-| **05:00** | `morning_live_pipeline.py --morning-publish` | Resync cotes, **Top 5 TG**, **1 Day 1 Pick** (TG + Discord), canal TG public | `data/logs/morning_publish_cron.log` |
+| **05:00** | `morning_live_pipeline.py --morning-publish` | Chaîne **sync tours** (si besoin) → **build** → **1D1P** + Top 5 + canal (garde-fous, pas d’envoi si erreur) | `data/logs/morning_publish_cron.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
-**Ordre matin** : 02:00 (données fraîches) → 03:30 (historique tours SQLite) → 04:55 (OG) → 05:00 (envois).
+**Ordre matin** : 02:00 (préparation) → 03:30 (sync tours, enregistre l’étape OK) → 04:55 (OG) → 05:00 (vérifie sync + garde-fous → build → envois ; **relance sync** si 03:30 a échoué).
+
+État chaîne : `data/cache/morning_chain_state.json`
 
 **WTA (depuis juin 2026)** : le cron 03:30 n’appelle plus `fetch_wta_sackmann_raw.py` (repo mort) ; il append le delta tennis-data + stats Flashscore sur `data/raw/tennis_wta/`, puis ingest.
+
+**ATP** : `sync_tml_recent.py` dans le même bundle. En cas d’échec WTA en tête de chaîne, tout le job peut échouer avant TML — surveiller `tours_auto_sync.log` (`=== fin sync ATP+WTA rc=0 ===`).
 
 ---
 
@@ -109,10 +143,12 @@ sudo chmod 644 /etc/cron.d/bettinghud-<nom>
 
 ## PREPROD (PC local) — rappel
 
-| Tâche | Quand | Script |
-|-------|-------|--------|
-| Backup DB prod → PC | ~05:30 quotidien (tâche Windows) | `backup_prod_db_to_local.ps1` |
-| Pipeline matin (optionnel) | 02:00 ou 05:00 local | `register_morning_task.ps1` |
+| Tâche | Quand | Script | Autonome ? |
+|-------|-------|--------|-------------|
+| Backup DB prod → PC | ~**05:30** quotidien (tâche Windows `BettingHUD-Prod-DB-Backup`) | `backup_prod_db_to_local.ps1` | ⚠️ PC allumé (`StartWhenAvailable` si raté) |
+| Pipeline matin (optionnel) | 02:00 ou 05:00 local | `register_morning_task.ps1` | Si tâche enregistrée |
+
+Installation backup : `powershell -ExecutionPolicy Bypass -File scripts\register_prod_backup_task.ps1`
 
 Pas de cron Linux en local ; pas d’envoi Telegram réel depuis PREPROD.
 
@@ -130,7 +166,8 @@ tail -10 /opt/bettinghud/data/logs/morning_publish_cron.log
 tail -5  /opt/bettinghud/data/logs/ml_train_cron.log
 tail -10 /opt/bettinghud/data/logs/ml_weekly_telegram.log
 
-# Daemons (pas des crons)
+# Daemons systemd (pas des crons)
+systemctl is-active bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot courtalpha-api
 ps aux | grep -E 'telegram_bot_daemon|portfolio_results_daemon' | grep -v grep
 ```
 

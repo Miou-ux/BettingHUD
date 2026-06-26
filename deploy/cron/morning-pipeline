@@ -2,5 +2,5 @@
 CRON_TZ=Europe/Paris
 # 02:00 — scrape Tennis Explorer + snapshot (préparation web/daemon, pas de publication)
 0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only >> /opt/bettinghud/data/logs/morning_build_cron.log 2>&1
-# 05:00 — build + publications (Top 5 TG, 1 Day 1 Pick TG+Discord, canal TG public)
+# 05:00 — chaîne sync tours → build → publications (1D1P, Top 5, canal) — voir morning_orchestrator.py
 0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --morning-publish >> /opt/bettinghud/data/logs/morning_publish_cron.log 2>&1

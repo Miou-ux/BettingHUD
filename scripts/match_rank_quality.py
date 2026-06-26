@@ -19,6 +19,55 @@ MIN_DATA_RELIABILITY_SCORE = max(
     0, min(100, int(os.getenv("BETTINGHUD_MIN_DATA_RELIABILITY", "80")))
 )
 
+# Seuil doc / flag ``book_gap_high`` (pénalité score fiabilité — pas filtre de sélection).
+BOOK_GAP_HIGH_PP = float(os.getenv("BETTINGHUD_BOOK_GAP_HIGH_PP", "25"))
+
+
+def book_gap_pp_from_favorite(p_model_fav: object, odd_fav: object) -> float | None:
+    """Écart |p_modèle(favori) − p_implicite(book)| en points de pourcentage.
+
+    Règle unique prod : cote **publique** du favori modèle (pas ``true_odd`` / marge).
+    """
+    try:
+        p = float(p_model_fav)
+        o = float(odd_fav)
+    except (TypeError, ValueError):
+        return None
+    if o <= 1.0 or not (0.0 <= p <= 1.0):
+        return None
+    return abs(p - (1.0 / o)) * 100.0
+
+
+def book_gap_pp_from_match(match: dict) -> float | None:
+    """``book_gap_pp`` canonique depuis une ligne snapshot (``feature_snapshot`` + cotes)."""
+    if not isinstance(match, dict):
+        return None
+    fs = match.get("feature_snapshot") or {}
+    try:
+        p1 = float(fs.get("capped_p1_prob") or 0.5)
+        odd_p1 = float(match.get("odd_p1") or 0.0)
+        odd_p2 = float(match.get("odd_p2") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if odd_p1 <= 1.0 or odd_p2 <= 1.0:
+        return None
+    fav_side = 1 if p1 >= 0.5 else 2
+    fav_p = max(p1, 1.0 - p1)
+    odd_fav = odd_p1 if fav_side == 1 else odd_p2
+    return book_gap_pp_from_favorite(fav_p, odd_fav)
+
+
+def attach_book_gap_pp(match: dict) -> dict:
+    """Attache ``book_gap_pp`` si absent (idempotent)."""
+    if not isinstance(match, dict):
+        return match
+    if match.get("book_gap_pp") is not None:
+        return match
+    gap = book_gap_pp_from_match(match)
+    if gap is not None:
+        match["book_gap_pp"] = gap
+    return match
+
 
 def _rank_stats_source_key(stats: dict | None) -> str | None:
     if not stats:
@@ -166,12 +215,25 @@ def match_data_reliability_score(
         gap = float(match.get("book_gap_pp")) if match.get("book_gap_pp") is not None else None
     except (TypeError, ValueError):
         gap = None
-    if gap is not None and gap > 25.0:
-        score -= min(20, int((gap - 25.0) / 3.0))
+    if gap is not None and gap > BOOK_GAP_HIGH_PP:
+        score -= min(20, int((gap - BOOK_GAP_HIGH_PP) / 3.0))
         flags.append("book_gap_high")
 
     score = max(0, min(100, score))
     return score, flags
+
+
+def ensure_match_reliability_scored(match: dict) -> dict:
+    """Calcule et attache le score si absent (snapshot / replay / backfill)."""
+    if not isinstance(match, dict):
+        return match
+    attach_book_gap_pp(match)
+    if match.get("data_reliability_score") is not None:
+        return match
+    score, flags = match_data_reliability_score(match)
+    match["data_reliability_score"] = score
+    match["data_reliability_flags"] = "|".join(flags) if flags else None
+    return match
 
 
 def reliability_fields_from_match(match: dict | None) -> dict[str, object]:

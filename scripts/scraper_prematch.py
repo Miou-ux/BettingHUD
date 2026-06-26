@@ -74,6 +74,76 @@ class FlashscoreScraper:
                 pass
         return None
 
+    @staticmethod
+    async def _parse_tournament_surface(page, tournament_href: str) -> str | None:
+        href = str(tournament_href or "").strip().split("?")[0]
+        if not href:
+            return None
+        url = href if href.startswith("http") else f"{_TE_BASE}{href}"
+        try:
+            await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(400)
+        except Exception:
+            return None
+        try:
+            rows = await page.query_selector_all("table tr")
+            for row in rows:
+                cells = await row.query_selector_all("th, td")
+                if len(cells) < 2:
+                    continue
+                label = (await cells[0].inner_text() or "").strip().lower()
+                if "surface" not in label:
+                    continue
+                value = (await cells[-1].inner_text() or "").strip()
+                from scripts.tournament_surface_te import normalize_te_surface_label
+
+                return normalize_te_surface_label(value)
+        except Exception:
+            pass
+        try:
+            from scripts.tournament_surface_te import parse_surface_from_te_html
+
+            html = await page.content()
+            return parse_surface_from_te_html(html)
+        except Exception:
+            return None
+
+    async def _enrich_tournament_surfaces(self, context, matches: list[dict]) -> None:
+        singles = [
+            m
+            for m in matches
+            if str(m.get("tournament_url") or "").strip()
+            and "type=double" not in str(m.get("tournament_url") or "").lower()
+        ]
+        hrefs = sorted({str(m["tournament_url"]).strip() for m in singles})
+        if not hrefs:
+            return
+        from scripts.surface_speed import resolve_tournament_surface
+
+        cache: dict[str, str | None] = {}
+        sem = asyncio.Semaphore(4)
+
+        async def _one(href: str) -> None:
+            async with sem:
+                page = await context.new_page()
+                try:
+                    cache[href] = await self._parse_tournament_surface(page, href)
+                except Exception:
+                    cache[href] = None
+                finally:
+                    await page.close()
+
+        await asyncio.gather(*[_one(h) for h in hrefs])
+        for m in matches:
+            tname = str(m.get("tournament") or "").strip()
+            href = str(m.get("tournament_url") or "").strip()
+            te_surf = cache.get(href)
+            m["surface"] = resolve_tournament_surface(
+                tname,
+                tournament_url=href,
+                te_surface=te_surf,
+            )
+
     async def _enrich_tournament_winner_points(
         self, context, matches: list[dict]
     ) -> None:
@@ -230,6 +300,7 @@ class FlashscoreScraper:
                     f"Enrichissement points vainqueur ({n_tourneys} tournois)…"
                 )
                 await self._enrich_tournament_winner_points(context, matches_data)
+                await self._enrich_tournament_surfaces(context, matches_data)
             
             await browser.close()
             return matches_data
@@ -251,6 +322,14 @@ class FlashscoreScraper:
             filepath = os.path.join(self.data_dir, filename)
             df.to_csv(filepath, index=False)
             print(f"Scraping terminé. {len(all_matches)} matchs sauvegardés dans {filepath}")
+            try:
+                from scripts.qc_prematch_surface import qc_prematch_surface_csv
+
+                rep = qc_prematch_surface_csv(filepath)
+                for w in rep.get("warnings") or []:
+                    print(f"[qc-prematch-surface] WARN {w.get('reason')}: {w.get('tournament')}", flush=True)
+            except Exception as exc:
+                print(f"[qc-prematch-surface] ignoré : {exc}")
             try:
                 from scripts.closing_odds_archive import ingest_match_rows
 

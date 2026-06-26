@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "surface": "Grass",
+      "keys": ["bad homburg", "bad homburg open", "wta bad homburg"]
+    },
+    {
+      "surface": "Grass",
+      "keys": ["wimbledon", "queen's club", "queens club", "eastbourne", "nottingham", "halle", "s-hertogenbosch", "rosmalen"]
+    },
+    {
+      "surface": "Clay",
+      "keys": ["hamburg", "hamburg european open", "roland garros", "french open", "rome", "madrid", "monte carlo", "barcelona"]
+    },
+    {
+      "surface": "Hard",
+      "keys": ["australian open", "us open", "indian wells", "miami", "cincinnati", "shanghai", "dubai", "doha"]
+    }
+  ]
+}

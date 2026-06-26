@@ -17,7 +17,13 @@ from scripts.bets_db import (
     upsert_daily_top_proba_picks,
 )
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
-from scripts.match_rank_quality import match_has_rank_points_source, passes_data_reliability_filter, reliability_fields_from_match
+from scripts.match_rank_quality import (
+    book_gap_pp_from_favorite,
+    ensure_match_reliability_scored,
+    match_has_rank_points_source,
+    passes_data_reliability_filter,
+    reliability_fields_from_match,
+)
 from scripts.tournament_tier import is_major_tournament_match
 
 # Alias rétrocompat (scripts / tests).
@@ -50,6 +56,7 @@ def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
             continue
         if not match_has_rank_points_source(m):
             continue
+        ensure_match_reliability_scored(m)
         if not passes_data_reliability_filter(m):
             continue
         out.append(dict(m))
@@ -264,11 +271,7 @@ def _match_favorite_metrics(m: dict) -> dict[str, Any] | None:
         true_und_f = None
     ev_fav = fav_p * float(odd_fav) - 1.0
     p_implicit_fav = 1.0 / float(odd_fav)
-    gap = m.get("book_gap_pp")
-    try:
-        gap_f = float(gap) if gap is not None else None
-    except (TypeError, ValueError):
-        gap_f = None
+    gap_f = book_gap_pp_from_favorite(fav_p, float(odd_fav))
     return {
         "fav_side": fav_side,
         "fav_player": fav_player,
@@ -315,6 +318,7 @@ def collect_daily_top_proba_rows(
         met = _match_favorite_metrics(m)
         if met is None:
             continue
+        ensure_match_reliability_scored(m)
         if not passes_data_reliability_filter(m):
             continue
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
@@ -408,6 +412,7 @@ def collect_top5_proba_picks(
         ev_f = float(met["ev_fav"])
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
             continue
+        ensure_match_reliability_scored(m)
         if not passes_data_reliability_filter(m):
             continue
         tour = _match_tour(m)
@@ -837,7 +842,7 @@ def _merge_algo_opportunity_match(
         "ev_fav": ev_fav,
         "ev_fav_pct": ev_fav * 100.0,
         "p_implicit_fav": 1.0 / float(odd_fav),
-        "book_gap_pp": (fav_p - (1.0 / float(odd_fav))) * 100.0,
+        "book_gap_pp": book_gap_pp_from_favorite(fav_p, float(odd_fav)),
         "tournament": latest.get("tournament"),
         "surface": latest.get("surface"),
         "match_time": None,
@@ -851,6 +856,8 @@ def _merge_algo_opportunity_match(
         "capture_source": "backfill_algo_opportunities",
         "first_captured_ts": earliest_ts or None,
         "last_captured_ts": str(latest.get("detected_ts") or "") or None,
+        "data_reliability_score": latest.get("data_reliability_score"),
+        "data_reliability_flags": latest.get("data_reliability_flags"),
     }
 
 

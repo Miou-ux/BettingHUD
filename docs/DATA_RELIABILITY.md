@@ -47,6 +47,29 @@ Champ snapshot : `data_reliability_score` + `data_reliability_flags` (liste de c
 
 Le booléen **`unreliable`** continue de **bloquer le bouton Parier** dans l’UI ; le score sert au **tri**, au **filtrage** et aux **analyses** sans remplacer ce garde-fou binaire.
 
+---
+
+## `book_gap_pp` — définition unique (juin 2026)
+
+Écart entre la **probabilité modèle du favori** et la **probabilité implicite du book** (cote publique), en **points de pourcentage** :
+
+```
+p_model_fav = max(p1, 1 − p1)     # capped_p1_prob dans feature_snapshot
+p_implicit_fav = 1 / odd_fav      # cote publique du même favori (pas true_odd)
+book_gap_pp = |p_model_fav − p_implicit_fav| × 100
+```
+
+| Règle | Détail |
+|-------|--------|
+| **Code** | `scripts/match_rank_quality.py` — `book_gap_pp_from_favorite`, `book_gap_pp_from_match`, `attach_book_gap_pp` |
+| **Snapshot live** | Calculé au build (`dashboard.py`) après prédiction |
+| **Top probas / DB** | Recalculé dans `daily_top_proba_store._match_favorite_metrics` (ne repose plus sur un champ hérité incohérent) |
+| **Score fiabilité** | Si `book_gap_pp` > **25** (`BETTINGHUD_BOOK_GAP_HIGH_PP`) → flag `book_gap_high`, pénalité jusqu’à −20 |
+| **Sélection auto** | **Aucun filtre dur** sur `book_gap_pp` (Top 5, 1D1P) — signal d’audit / pénalité score seulement |
+| **≠ marge book** | L’écart cote publique vs `true_odd` (vig) n’est **pas** `book_gap_pp` |
+
+Exemple Muchova @ 1.47, modèle 93.3 % → book ~68.0 % → **~25 pp** (pas l’ancienne métrique vig ~2 pp).
+
 ### Filtre actif (juin 2026)
 
 Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live Tracker, value bets persistés) passent par `passes_data_reliability_filter` :
@@ -63,10 +86,25 @@ Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live T
 
 Score et flags sont copiés depuis le snapshot au moment de la capture (`reliability_fields_from_match`).
 
+`ensure_match_reliability_scored()` recalcule le score si absent avant filtre Top 5 / Live Tracker.  
+`bets_db.py` : upsert avec **COALESCE** — un score existant n’est pas écrasé par `null`.
+
+### Backfill & CSV historiques (juin 2026)
+
+| Action | Script |
+|--------|--------|
+| Backfill tables DB prod | `scripts/backfill_db_reliability_scores.py` |
+| Enrichir `data/backtest_{year}_bets.csv` | `scripts/enrich_backtest_csv_reliability.py --year 2025 --year 2026 --in-place` |
+| Lecture fiabilité dans backtests | `scripts/backtest_csv_pick_rows.py` |
+
+Backfill prod exécuté : **855/855** lignes `daily_top_proba_picks` scorées (moy. 93,6 ; 752 ≥ 80).
+
+Voir journal complet : **`docs/BACKTEST_PROD_TOP5_2025_2026.md`**.
+
 ### Évolutions prévues
 
 - Pastille UI + colonne tableau Live Tracker
-- Analyses replay sur historique persisté (plus de recompute à l’export)
+- Randomisation P1/P2 dans `backtest_2026.py` (réduire biais orientation vainqueur)
 
 ---
 

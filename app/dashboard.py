@@ -841,7 +841,7 @@ except Exception:
     _init_status = None
 
 # Incrémenter si l’API de TennisStatsEngine / moteurs change (invalide le cache Streamlit).
-_ENGINES_CACHE_VERSION = 21  # invalidate: feature store + rank-prior Elo live feeds
+_ENGINES_CACHE_VERSION = 22  # invalidate: inactivity days from live DB; resolve_match_surface
 
 
 @st.cache_resource
@@ -947,25 +947,13 @@ def _pts_from_rank(rank):
 _OFFICIAL_RANK_STATS_SOURCES = frozenset({"matches_recent", "wta_matches", "rankings_wta_current"})
 
 
-def _match_book_gap_pp_max(match: dict) -> float | None:
-    """Écart max modèle/book (info audit uniquement, ne filtre pas les value bets)."""
-    gaps: list[float] = []
-    for odd_key, true_key in (("odd_p1", "true_odd_p1"), ("odd_p2", "true_odd_p2")):
-        try:
-            o = float(match.get(odd_key) or 0.0)
-            t = float(match.get(true_key) or 0.0)
-            if o > 1.0 and t > 1.0:
-                gaps.append(abs(1.0 / o - 1.0 / t) * 100.0)
-        except (TypeError, ValueError):
-            pass
-    return max(gaps) if gaps else None
-
-
 def _match_snapshot_quality_flags(match: dict) -> tuple[bool, str | None, float | None]:
     """(unreliable, data_alert, book_gap_pp) — seul le garde-fou rang/proba bloque l'UI."""
+    from scripts.match_rank_quality import book_gap_pp_from_match
+
     unreliable = _prediction_contradicts_rank_points(match)
     alert = "rang_vs_proba" if unreliable else None
-    return unreliable, alert, _match_book_gap_pp_max(match)
+    return unreliable, alert, book_gap_pp_from_match(match)
 
 
 def _enrich_form_record(form: dict | None) -> dict:
@@ -2403,42 +2391,21 @@ _INFOBULLE_DF_HEIGHT = 220
 
 
 def _infer_surface(tournament: str) -> str:
-    t = (tournament or "").lower()
-    # TE / Flashscore : souvent « French Open » sans « Roland » dans le libellé tournoi.
-    clay_hints = [
-        "french open",
-        "roland garros",
-        "roland-garros",
-        "roland",
-        "garros",
-        "rome",
-        "madrid",
-        "monte-carlo",
-        "monte carlo",
-        "barcelona",
-        "hamburg",
-        "marrakech",
-        "rabat",
-        "morocco open",
-        "moroccan open",
-        "lalla meryem",
-        "bastad",
-        "kitzbuhel",
-        "geneva",
-        "estoril",
-        "parma",
-        "terre battue",
-    ]
-    grass_hints = ["wimbledon", "halle", "queens", "eastbourne", "mallorca", "stuttgart", "s-hertogenbosch"]
-    hard_hints = ["australian", "us open", "miami", "indian wells", "dubai", "doha", "brisbane", "tokyo", "shanghai", "beijing", "montreal", "toronto", "cincinnati"]
+    from scripts.surface_speed import resolve_tournament_surface
 
-    if any(k in t for k in clay_hints):
-        return "Clay"
-    if any(k in t for k in grass_hints):
-        return "Grass"
-    if any(k in t for k in hard_hints):
-        return "Hard"
-    return "Hard"
+    return resolve_tournament_surface(tournament)
+
+
+def _resolve_match_surface(row: dict) -> str:
+    from scripts.surface_speed import resolve_tournament_surface
+
+    raw = str((row or {}).get("surface") or "").strip().title()
+    if raw in ("Hard", "Clay", "Grass", "Carpet"):
+        return raw
+    return resolve_tournament_surface(
+        (row or {}).get("tournament"),
+        tournament_url=(row or {}).get("tournament_url"),
+    )
 
 
 def _name_key(name: str):
@@ -2754,11 +2721,42 @@ def _compute_live_advanced_signals(
     p1_store = _lookup_player_feature_state(p1_name, tour_hint)
     p2_store = _lookup_player_feature_state(p2_name, tour_hint)
     store_signals = _store_adv_signals(p1_store, p2_store)
-    if store_signals is not None:
-        _ADV_SIGNALS_MEM_CACHE[_mem_key] = dict(store_signals)
-        return store_signals
     df = _load_signal_matches_cached(tour_hint)
     p1k, p2k = _name_key(p1_name), _name_key(p2_name)
+
+    def _ref_ts_from_df():
+        if df is None or df.empty:
+            return None
+        max_date = df["tourney_date"].max()
+        try:
+            return (
+                pd.Timestamp(ref_dt_iso).normalize()
+                if ref_dt_iso
+                else pd.Timestamp(max_date).normalize()
+            )
+        except Exception:
+            return pd.Timestamp(max_date).normalize()
+
+    def _days(rows, ref_ts):
+        from scripts.stats_engine import get_days_since_last_match
+
+        if ref_ts is None:
+            return 7
+        return get_days_since_last_match(rows, ref_ts)
+
+    if store_signals is not None:
+        ref_ts = _ref_ts_from_df()
+        store_signals = dict(store_signals)
+        if ref_ts is not None and p1k and p2k:
+            p1_rows = _signal_rows_for_player(df, tour_hint, p1k)
+            p2_rows = _signal_rows_for_player(df, tour_hint, p2k)
+            store_signals["p1_days"] = _days(p1_rows, ref_ts)
+            store_signals["p2_days"] = _days(p2_rows, ref_ts)
+        else:
+            store_signals["p1_days"] = 7
+            store_signals["p2_days"] = 7
+        _ADV_SIGNALS_MEM_CACHE[_mem_key] = dict(store_signals)
+        return store_signals
     if df is None or df.empty:
         return _neutral_live_adv_signals()
     if not p1k or not p2k:
@@ -2771,19 +2769,14 @@ def _compute_live_advanced_signals(
     p2_rows = _signal_rows_for_player(df, tour_hint, p2k)
     # Même référence temporelle que tactical/travel : date du match (CSV prematch) si dispo,
     # sinon dernier jour connu dans l’historique chargé (évite d’utiliser seul max_date DB).
-    try:
-        ref_ts = (
-            pd.Timestamp(ref_dt_iso).normalize()
-            if ref_dt_iso
-            else pd.Timestamp(max_date).normalize()
-        )
-    except Exception:
-        ref_ts = pd.Timestamp(max_date).normalize()
+    ref_ts = _ref_ts_from_df()
+    if ref_ts is None:
+        return _neutral_live_adv_signals()
 
     def _days(rows):
-        if rows.empty:
-            return 7
-        return int(max(0, (ref_ts - rows["tourney_date"].max()).days))
+        from scripts.stats_engine import get_days_since_last_match
+
+        return get_days_since_last_match(rows, ref_ts)
 
     def _player_cluster(rows, pk):
         if rows.empty:
@@ -3942,7 +3935,7 @@ def _force_refresh_live_match(match: dict) -> dict:
         p2_name, p2_url
     )
 
-    surface = out.get("surface") or _infer_surface(out.get("tournament", ""))
+    surface = out.get("surface") or _resolve_match_surface(out)
     _mdate = out.get("date")
     _ref_iso = None
     try:
@@ -4691,7 +4684,7 @@ def _build_live_matches_core(
             p2n = str(row.get("player2") or "").strip()
             if not p1n or not p2n:
                 continue
-            surface0 = _infer_surface(row.get("tournament", ""))
+            surface0 = _resolve_match_surface(row)
             mtour = tour_by_player.get(p1n) or tour_by_player.get(p2n) or "ATP"
             mdate0 = row.get("date") or (
                 str(row["scraped_at"])[:10] if row.get("scraped_at") is not None else None
@@ -4787,7 +4780,7 @@ def _build_live_matches_core(
                 _enrich_delta_odds_only += 1
                 continue
 
-        surface = _infer_surface(row.get("tournament", ""))
+        surface = _resolve_match_surface(row)
         
         true_odd_p1 = 2.0
         true_odd_p2 = 2.0
@@ -6556,6 +6549,15 @@ def _match_favorite_model_metrics(m: dict) -> dict | None:
         book_implied = None
         ev_fav_frac = None
     gap = m.get("book_gap_pp")
+    if gap is None:
+        from scripts.match_rank_quality import book_gap_pp_from_favorite
+
+        try:
+            of_f = float(of) if of is not None else None
+        except (TypeError, ValueError):
+            of_f = None
+        if of_f is not None:
+            gap = book_gap_pp_from_favorite(fav_p, of_f)
     try:
         gap_f = float(gap) if gap is not None else None
         gap_s = f"{gap_f:.1f}" if gap_f is not None else "—"
