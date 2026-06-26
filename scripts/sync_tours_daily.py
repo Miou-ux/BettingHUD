@@ -63,6 +63,16 @@ def _wta_raw_dir() -> str:
     return os.path.join(ROOT, "data", "raw", "tennis_wta")
 
 
+def _run_py_with_args(script_relative: str, extra_args: list[str]) -> int:
+    cmd = [sys.executable, os.path.join(ROOT, "scripts", script_relative), *extra_args]
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=False, timeout=None)
+        return int(p.returncode or 0)
+    except Exception as e:
+        _append_log(f"{script_relative} exception: {e}")
+        return 1
+
+
 def _run_wta_delta_on_raw() -> int:
     """sync_wta_delta + enrich sur data/raw/tennis_wta (prod)."""
     wta_dir = _wta_raw_dir()
@@ -140,12 +150,25 @@ def run_sync_bundle() -> int:
     rc = 0
     if _update_wta_sackmann_raw() != 0:
         rc = 1
+    if _run_py_with_args(
+        "sync_wta_flashscore_results.py",
+        ["--work-dir", _wta_raw_dir()],
+    ) != 0:
+        _append_log("sync_wta_flashscore_results.py a echoue.")
+        rc = 1
+    else:
+        _append_log("sync_wta_flashscore_results.py OK.")
     if _run_py("sync_tml_recent.py") != 0:
         _append_log("sync_tml_recent.py rapporte erreur.")
         rc = 1
     else:
         _append_log("sync_tml_recent.py OK.")
         _stamp_sync_meta("last_tml_sync_ts")
+    if _run_py("sync_atp_flashscore_results.py") != 0:
+        _append_log("sync_atp_flashscore_results.py a echoue.")
+        rc = 1
+    else:
+        _append_log("sync_atp_flashscore_results.py OK.")
 
     pq = _run_py("pipeline_quality.py")
     if pq != 0:

@@ -94,6 +94,44 @@ def norm_name_key(name: object) -> str:
     return s
 
 
+def build_name_to_player_id(socle: pd.DataFrame) -> dict[str, int]:
+    """Prefer lowest numeric id per normalized name (Sackmann id over synthetic)."""
+    from scripts.player_identity import canonical_name, to_lastname_initial
+
+    def _nk(name: object) -> str:
+        raw = str(name or "").strip()
+        if not raw:
+            return ""
+        return canonical_name(to_lastname_initial(raw)) or norm_name_key(raw)
+
+    out: dict[str, int] = {}
+    if socle is None or socle.empty:
+        return out
+    for _, row in socle.iterrows():
+        for name_col, id_col in (("winner_name", "winner_id"), ("loser_name", "loser_id")):
+            nk = _nk(row.get(name_col))
+            if not nk:
+                continue
+            try:
+                pid = int(float(row.get(id_col)))
+            except (TypeError, ValueError):
+                continue
+            prev = out.get(nk)
+            if prev is None or pid < prev:
+                out[nk] = pid
+    return out
+
+
+def resolve_player_id(name: str, name_to_id: dict[str, int], player_ids: set[int]) -> int:
+    from scripts.player_identity import canonical_name, to_lastname_initial
+
+    raw = str(name or "").strip()
+    nk = canonical_name(to_lastname_initial(raw)) or norm_name_key(raw)
+    if nk in name_to_id:
+        return int(name_to_id[nk])
+    return next_synthetic_player_id(player_ids)
+
+
 def dedup_key(row: dict | pd.Series) -> tuple:
     td = row.get("tourney_date")
     if isinstance(td, pd.Timestamp):
