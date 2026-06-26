@@ -2396,15 +2396,29 @@ def _infer_surface(tournament: str) -> str:
     return resolve_tournament_surface(tournament)
 
 
-def _resolve_match_surface(row: dict) -> str:
+def _row_as_mapping(row) -> dict:
+    if row is None:
+        return {}
+    if isinstance(row, dict):
+        return row
+    try:
+        if hasattr(row, "to_dict"):
+            return dict(row.to_dict())
+    except Exception:
+        pass
+    return {}
+
+
+def _resolve_match_surface(row) -> str:
     from scripts.surface_speed import resolve_tournament_surface
 
-    raw = str((row or {}).get("surface") or "").strip().title()
+    m = _row_as_mapping(row)
+    raw = str(m.get("surface") or "").strip().title()
     if raw in ("Hard", "Clay", "Grass", "Carpet"):
         return raw
     return resolve_tournament_surface(
-        (row or {}).get("tournament"),
-        tournament_url=(row or {}).get("tournament_url"),
+        m.get("tournament"),
+        tournament_url=m.get("tournament_url"),
     )
 
 
