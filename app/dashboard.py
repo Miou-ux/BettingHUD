@@ -3084,6 +3084,15 @@ _LIVE_MINOR_TOURNAMENT_TOKENS_NO_CHALLENGER = tuple(
 )
 
 
+def _snapshot_include_challengers() -> bool:
+    """Snapshot live : ATP/WTA main draw par défaut (Option A — pas de Challenger/ITF)."""
+    return os.getenv("BETTINGHUD_SNAPSHOT_INCLUDE_CHALLENGERS", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def _is_atp_wta_circuit_match(
     category,
     tournament_name,
@@ -3268,15 +3277,16 @@ def _filter_df_upcoming_or_recent_started_for_live(df: pd.DataFrame) -> pd.DataF
 
 
 def _load_prematch_df_for_live(csv_path: str) -> pd.DataFrame:
-    """Mêmes filtres que le build live (ATP/WTA + Challengers, J+0/J+1, à venir ou récemment commencés)."""
+    """Filtres build live : ATP/WTA (option Challengers via env), J+0/J+1, à venir ou récents."""
     if not csv_path or not os.path.isfile(csv_path):
         return pd.DataFrame()
     df = pd.read_csv(csv_path)
     df = _filter_df_exclude_doubles_prematch(df)
     if df.empty:
         return df
-    # Inclure les Challengers dans le snapshot ; le Live Tracker les masque par défaut (toggle UI).
-    df = _filter_df_atp_wta_circuit_vectorized(df, include_challengers=True)
+    df = _filter_df_atp_wta_circuit_vectorized(
+        df, include_challengers=_snapshot_include_challengers()
+    )
     if df.empty:
         return df
     if LIVE_ONLY_TODAY_TOMORROW:
@@ -8600,10 +8610,11 @@ if not HEADLESS_APP:
             include_challengers = st.checkbox(
                 "Inclure les Challengers",
                 key="live_include_challengers",
+                disabled=not _snapshot_include_challengers(),
                 help=(
-                    "Affiche aussi les tournois ATP/WTA Challenger. "
-                    "ITF, UTR et tournois « futures » restent masqués. "
-                    "Un rebuild du snapshot peut être nécessaire après activation."
+                    "Les Challengers ne sont plus dans le snapshot par défaut "
+                    "(données joueurs insuffisantes). "
+                    "Activer BETTINGHUD_SNAPSHOT_INCLUDE_CHALLENGERS=1 puis rebuild pour les réafficher."
                 ),
             )
         else:
@@ -8621,9 +8632,9 @@ if not HEADLESS_APP:
                 include_challengers = st.checkbox(
                     "Inclure les Challengers",
                     key="live_include_challengers",
+                    disabled=not _snapshot_include_challengers(),
                     help=(
-                        "Affiche aussi les tournois ATP/WTA Challenger. "
-                        "ITF, UTR et tournois « futures » restent masqués."
+                        "Hors snapshot par défaut — voir BETTINGHUD_SNAPSHOT_INCLUDE_CHALLENGERS."
                     ),
                 )
     
