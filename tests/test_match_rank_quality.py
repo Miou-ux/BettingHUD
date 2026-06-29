@@ -92,8 +92,8 @@ def test_duplicate_model_prob_penalizes_score():
         "p1_player_id": "1",
         "p2_player_id": "2",
         "feature_snapshot": {"capped_p1_prob": 0.62},
-        "p1_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-01"},
-        "p2_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-01"},
+        "p1_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-28"},
+        "p2_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-28"},
     }
     m2 = {
         **m1,
