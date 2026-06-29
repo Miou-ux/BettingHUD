@@ -5,7 +5,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 import joblib
 
@@ -499,14 +499,48 @@ def read_live_build_progress() -> dict[str, Any] | None:
         return None
 
 
+def _read_build_lock() -> tuple[Optional[int], Optional[float]]:
+    try:
+        with open(BUILD_LOCK_PATH, encoding="utf-8") as f:
+            raw = f.read().strip()
+        if not raw:
+            return None, None
+        parts = raw.split()
+        if len(parts) >= 2:
+            return int(parts[0]), float(parts[1])
+        return None, float(parts[0])
+    except (OSError, ValueError, TypeError):
+        return None, None
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def snapshot_build_in_progress(max_lock_sec: float = 1800.0) -> bool:
     if not os.path.exists(BUILD_LOCK_PATH):
         return False
-    try:
-        age = time.time() - os.path.getmtime(BUILD_LOCK_PATH)
-    except OSError:
-        return False
-    if age > float(max_lock_sec):
+    pid, ts = _read_build_lock()
+    now = time.time()
+    stale = False
+    if pid is not None and not _pid_alive(pid):
+        stale = True
+    elif ts is not None and (now - ts) > float(max_lock_sec):
+        stale = True
+    else:
+        try:
+            age = now - os.path.getmtime(BUILD_LOCK_PATH)
+            if age > float(max_lock_sec):
+                stale = True
+        except OSError:
+            return False
+    if stale:
         try:
             os.remove(BUILD_LOCK_PATH)
         except OSError:
@@ -521,7 +555,7 @@ def acquire_snapshot_build_lock() -> bool:
     try:
         os.makedirs(os.path.dirname(BUILD_LOCK_PATH), exist_ok=True)
         with open(BUILD_LOCK_PATH, "w", encoding="utf-8") as f:
-            f.write(str(int(time.time())))
+            f.write(f"{os.getpid()} {int(time.time())}\n")
         return True
     except OSError:
         return False

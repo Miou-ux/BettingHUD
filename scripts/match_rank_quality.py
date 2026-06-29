@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -142,6 +143,53 @@ def match_has_rank_points_source(match: dict) -> bool:
     return match_rank_exclude_reason(match) is None
 
 
+def match_duplicate_prob_identity_key(match: dict) -> tuple:
+    """Clé stable pour détecter deux matchs distincts partageant la même proba modèle."""
+    if not isinstance(match, dict):
+        return ("", "", "", "")
+    return (
+        str(match.get("p1_player_id") or ""),
+        str(match.get("p2_player_id") or ""),
+        str(match.get("player1") or "").strip().lower(),
+        str(match.get("player2") or "").strip().lower(),
+    )
+
+
+def duplicate_model_prob_keys(
+    matches: list[dict],
+    *,
+    precision: int = 10,
+) -> set[tuple]:
+    """Identités des matchs dont ``capped_p1_prob`` est partagée par au moins un autre match."""
+    by_prob: dict[float, list[tuple]] = defaultdict(list)
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        fs = m.get("feature_snapshot") or {}
+        cp = fs.get("capped_p1_prob")
+        if cp is None:
+            continue
+        try:
+            prob_key = round(float(cp), precision)
+        except (TypeError, ValueError):
+            continue
+        by_prob[prob_key].append(match_duplicate_prob_identity_key(m))
+    bad: set[tuple] = set()
+    for keys in by_prob.values():
+        if len(set(keys)) > 1:
+            bad.update(keys)
+    return bad
+
+
+def match_in_duplicate_model_prob_cluster(
+    match: dict,
+    duplicate_keys: set[tuple] | None,
+) -> bool:
+    if not duplicate_keys:
+        return False
+    return match_duplicate_prob_identity_key(match) in duplicate_keys
+
+
 def _player_rank_placeholder(stats: dict | None) -> bool:
     if not stats:
         return False
@@ -159,6 +207,7 @@ def match_data_reliability_score(
     hist_te_conflict: bool = False,
     ref_date_stale_sides: tuple[bool, bool] = (False, False),
     data_stale_sides: tuple[bool, bool] = (False, False),
+    duplicate_model_prob: bool = False,
 ) -> tuple[int, list[str]]:
     """Score 0–100 de confiance dans les données d'une ligne snapshot (hors qualité tennis pure).
 
@@ -174,6 +223,10 @@ def match_data_reliability_score(
     if match.get("unreliable"):
         score -= 40
         flags.append("rang_vs_proba")
+
+    if duplicate_model_prob:
+        score -= 30
+        flags.append("duplicate_model_prob")
 
     if hist_te_conflict:
         score -= 20

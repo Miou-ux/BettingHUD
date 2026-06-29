@@ -57,9 +57,44 @@ def test_tennisexplorer_estimate_excluded():
     assert match_rank_exclude_reason(m) == "tennisexplorer_estimate"
 
 
+def test_duplicate_model_prob_penalizes_score():
+    from scripts.match_rank_quality import (
+        duplicate_model_prob_keys,
+        match_data_reliability_score,
+        match_in_duplicate_model_prob_cluster,
+    )
+
+    m1 = {
+        "date": "2026-06-29",
+        "player1": "A",
+        "player2": "B",
+        "p1_player_id": "1",
+        "p2_player_id": "2",
+        "feature_snapshot": {"capped_p1_prob": 0.62},
+        "p1_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-01"},
+        "p2_stats": {"stats_source": "matches_recent", "stats_reference_date": "2026-06-01"},
+    }
+    m2 = {
+        **m1,
+        "player1": "C",
+        "player2": "D",
+        "p1_player_id": "3",
+        "p2_player_id": "4",
+    }
+    dup_keys = duplicate_model_prob_keys([m1, m2])
+    assert len(dup_keys) == 2
+    s_ok, flags_ok = match_data_reliability_score(m1, duplicate_model_prob=False)
+    s_dup, flags_dup = match_data_reliability_score(
+        m1, duplicate_model_prob=match_in_duplicate_model_prob_cluster(m1, dup_keys)
+    )
+    assert s_dup < s_ok
+    assert "duplicate_model_prob" in flags_dup
+
+
 if __name__ == "__main__":
     test_fresh_match_eligible()
     test_stale_tml_excluded()
     test_missing_ref_date_excluded()
     test_tennisexplorer_estimate_excluded()
+    test_duplicate_model_prob_penalizes_score()
     print("OK")

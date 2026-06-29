@@ -1388,7 +1388,11 @@ def _match_has_data_alert(match: dict) -> bool:
     )
 
 
-def _match_data_reliability_bundle(match: dict) -> tuple[int, list[str]]:
+def _match_data_reliability_bundle(
+    match: dict,
+    *,
+    duplicate_model_prob: bool = False,
+) -> tuple[int, list[str]]:
     from scripts.match_rank_quality import match_data_reliability_score
 
     return match_data_reliability_score(
@@ -1402,6 +1406,7 @@ def _match_data_reliability_bundle(match: dict) -> tuple[int, list[str]]:
             _player_data_stale(match, 1),
             _player_data_stale(match, 2),
         ),
+        duplicate_model_prob=duplicate_model_prob,
     )
 
 
@@ -4986,6 +4991,13 @@ def _build_live_matches_core(
             top_features = preds.get("top_features", []) or []
             segment_calibration_key = str(preds.get("segment_calibration_key", "") or "")
         except Exception as _exc:
+            true_odd_p1 = 2.0
+            true_odd_p2 = 2.0
+            confidence = None
+            calibration_used = "Globale"
+            feature_snapshot = {}
+            top_features = []
+            segment_calibration_key = ""
             if PERF_LOG_LIVE_BUILD:
                 import traceback as _tb
                 print(f"[live-build][ERR predict] {p1_name} vs {p2_name}: {_exc!r}", flush=True)
@@ -5105,9 +5117,19 @@ def _build_live_matches_core(
                 flush=True,
             )
     _mark("finalize")
+    from scripts.match_rank_quality import (
+        duplicate_model_prob_keys,
+        match_in_duplicate_model_prob_cluster,
+    )
+
+    _dup_prob_keys = duplicate_model_prob_keys(matches)
     for _m in matches:
         if isinstance(_m, dict):
-            _rs, _rf = _match_data_reliability_bundle(_m)
+            _dup_prob = match_in_duplicate_model_prob_cluster(_m, _dup_prob_keys)
+            _m["duplicate_model_prob"] = _dup_prob
+            _rs, _rf = _match_data_reliability_bundle(
+                _m, duplicate_model_prob=_dup_prob
+            )
             _m["data_reliability_score"] = _rs
             _m["data_reliability_flags"] = _rf
     try:

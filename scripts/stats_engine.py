@@ -500,6 +500,27 @@ class TennisStatsEngine:
             return True
         return "ITF" in str(row.get("tourney_name") or "").upper()
 
+    def _wta_match_row_rank(self, row, is_winner: bool, pid_int: int) -> int:
+        rk = row.get("winner_rank") if is_winner else row.get("loser_rank")
+        if rk is not None and not pd.isna(rk):
+            try:
+                return int(float(rk))
+            except (TypeError, ValueError):
+                pass
+        meta = self._wta_rankings_current_meta(pid_int)
+        if meta:
+            return int(meta[0])
+        return 9999
+
+    def _wta_row_recency_key(self, row) -> int:
+        try:
+            td = row.get("tourney_date")
+            if td is not None and not pd.isna(td):
+                return int(pd.Timestamp(td).strftime("%Y%m%d"))
+        except Exception:
+            pass
+        return 0
+
     def _wta_pid_disambiguation_key(
         self, pid_int: int, te_slug: Optional[str]
     ) -> tuple:
@@ -515,17 +536,20 @@ class TennisStatsEngine:
                 if first and (first.startswith(te_prefix) or te_prefix.startswith(first[:4])):
                     slug_match = 1
             is_itf = self._is_wta_itf_match_row(row)
-            rk = row.get("winner_rank") if is_w else row.get("loser_rank")
-            try:
-                rki = int(float(rk)) if rk is not None and not pd.isna(rk) else 9999
-            except (TypeError, ValueError):
-                rki = 9999
-            return (slug_match, 0 if is_itf else 1, -rki, 1)
+            rki = self._wta_match_row_rank(row, is_w, pid_int)
+            recency = self._wta_row_recency_key(row)
+            return (slug_match, 0 if is_itf else 1, -rki, recency)
 
         meta = self._wta_rankings_current_meta(pid_int)
         if meta:
-            rnk, _, _ = meta
-            return (slug_match, 0, -int(rnk), 0)
+            rnk, _, rdate = meta
+            recency = 0
+            if rdate:
+                try:
+                    recency = int(pd.Timestamp(rdate).strftime("%Y%m%d"))
+                except Exception:
+                    pass
+            return (slug_match, 0, -int(rnk), recency)
         return (slug_match, 0, -99999, 0)
 
     def _pick_wta_pid_candidate(
