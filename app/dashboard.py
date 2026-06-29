@@ -5309,9 +5309,10 @@ def _try_build_live_snapshot_if_missing(
     identity_workers: int | None = LIVE_DAEMON_IDENTITY_WORKERS,
     label: str = "live-snapshot",
     force_full: bool = False,
+    snapshot_lock_held: bool = False,
 ) -> bool:
     """Construit le snapshot disque (matchs du jour + demain) s'il est absent pour la signature courante."""
-    if snapshot_build_in_progress():
+    if not snapshot_lock_held and snapshot_build_in_progress():
         return False
     csv_path, csv_mtime = _prematch_csv_signature()
     if not csv_path or not os.path.isfile(csv_path):
@@ -5343,8 +5344,9 @@ def _try_build_live_snapshot_if_missing(
         return True
     if existing is not None and force_full and not _snapshot_has_preview_only(existing):
         return True
-    if not acquire_snapshot_build_lock():
-        return False
+    if not snapshot_lock_held:
+        if not acquire_snapshot_build_lock():
+            return False
     try:
         if force_full:
             _ADV_SIGNALS_MEM_CACHE.clear()
@@ -5417,7 +5419,8 @@ def _try_build_live_snapshot_if_missing(
             pass
         return False
     finally:
-        release_snapshot_build_lock()
+        if not snapshot_lock_held:
+            release_snapshot_build_lock()
 
 
 def _schedule_full_snapshot_upgrade(

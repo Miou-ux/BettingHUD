@@ -563,6 +563,9 @@ def acquire_snapshot_build_lock() -> bool:
 
 def release_snapshot_build_lock() -> None:
     try:
+        pid, _ = _read_build_lock()
+        if pid is not None and pid != os.getpid():
+            return
         if os.path.exists(BUILD_LOCK_PATH):
             os.remove(BUILD_LOCK_PATH)
     except OSError:

@@ -108,14 +108,34 @@ def run_qc_live_snapshot(matches: list[dict] | None = None) -> QcReport:
 
     report = QcReport("live_snapshot")
     if matches is None:
-        from scripts.live_snapshot import load_latest_live_snapshot
+        from scripts.live_snapshot import FULL_SNAPSHOT_PATH, load_latest_live_snapshot
+
+        if not os.path.isfile(FULL_SNAPSHOT_PATH):
+            report.add_blocking(
+                "snapshot_missing",
+                f"fichier snapshot absent ({FULL_SNAPSHOT_PATH})",
+            )
+            return report
 
         matches, meta = load_latest_live_snapshot(max_age_sec=24 * 3600)
         if not matches:
             report.add_blocking("snapshot_empty", "snapshot live vide")
             return report
-        if not (meta or {}).get("built_at"):
+        built = (meta or {}).get("built_at")
+        if not built:
             report.add_warning("snapshot_meta", "meta built_at absente")
+        else:
+            try:
+                max_age_min = float(os.getenv("BETTINGHUD_QC_SNAPSHOT_MAX_AGE_MIN", "120"))
+            except ValueError:
+                max_age_min = 120.0
+            age_min = (datetime.now(PARIS_TZ).timestamp() - float(built)) / 60.0
+            if age_min > max_age_min:
+                report.add_warning(
+                    "snapshot_stale",
+                    f"snapshot âgé de {age_min:.0f} min (seuil {max_age_min:.0f})",
+                    age_min=round(age_min, 1),
+                )
 
     today = datetime.now(PARIS_TZ).date()
     checked = 0

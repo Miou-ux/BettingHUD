@@ -2,7 +2,9 @@
 """Rebuild snapshot Live Tracker (projection J+0 / J+1) hors Streamlit."""
 from __future__ import annotations
 
+import atexit
 import os
+import signal
 import sys
 import time
 from unittest.mock import MagicMock
@@ -17,6 +19,8 @@ os.environ.setdefault("BETTINGHUD_LIVE_DATA_DAEMON", "0")
 os.environ.setdefault("BETTINGHUD_AUTO_SYNC_TOURS", "0")
 os.environ.setdefault("BETTINGHUD_ENABLE_AUTO_ML_TRAIN_WEEKLY", "0")
 os.environ.setdefault("BETTINGHUD_LIVE_PROJECTION_WARMUP", "0")
+
+_CLI_LOCK_HELD = False
 
 
 class _MockSessionState(dict):
@@ -66,6 +70,22 @@ def _install_streamlit_mock() -> None:
     sys.modules["streamlit_autorefresh"] = sar
 
 
+def _release_cli_lock() -> None:
+    global _CLI_LOCK_HELD
+    if not _CLI_LOCK_HELD:
+        return
+    from scripts.live_snapshot import release_snapshot_build_lock
+
+    release_snapshot_build_lock()
+    _CLI_LOCK_HELD = False
+
+
+def _on_cli_signal(signum, _frame) -> None:
+    print(f"\n[rebuild-cli] signal {signum} — libération verrou…", file=sys.stderr, flush=True)
+    _release_cli_lock()
+    raise SystemExit(128 + int(signum))
+
+
 def main() -> int:
     _install_streamlit_mock()
 
@@ -73,6 +93,7 @@ def main() -> int:
         FULL_SNAPSHOT_PATH,
         NEXTDAY_SNAPSHOT_PATH,
         SNAPSHOT_PATH,
+        acquire_snapshot_build_lock,
         snapshot_build_in_progress,
     )
 
@@ -83,44 +104,58 @@ def main() -> int:
         _try_build_live_snapshot_if_missing,
     )
 
+    global _CLI_LOCK_HELD
     ensure_bettinghud_query_indexes()
 
     if snapshot_build_in_progress():
         print("Un build est déjà en cours — abandon.", file=sys.stderr)
         return 2
 
-    print("Vidage cache joueur + anciens snapshots…")
-    _purge_all_live_player_caches()
-    for path in (SNAPSHOT_PATH, FULL_SNAPSHOT_PATH, NEXTDAY_SNAPSHOT_PATH):
-        try:
-            if os.path.isfile(path):
-                os.remove(path)
-        except OSError:
-            pass
+    if not acquire_snapshot_build_lock():
+        print("Impossible d'acquérir le verrou snapshot — abandon.", file=sys.stderr)
+        return 2
 
-    os.environ.setdefault("BETTINGHUD_SYNC_FULL_AFTER_PREVIEW", "1")
-    os.environ.setdefault("BETTINGHUD_LIVE_INCREMENTAL_ENRICH", "0")
+    _CLI_LOCK_HELD = True
+    atexit.register(_release_cli_lock)
+    signal.signal(signal.SIGINT, _on_cli_signal)
+    signal.signal(signal.SIGTERM, _on_cli_signal)
 
-    t0 = time.time()
-    print("Construction projection complète (aujourd’hui + demain)…")
-    ok = _try_build_live_snapshot_if_missing(
-        identity_workers=None,
-        label="rebuild-cli",
-        force_full=True,
-    )
-    elapsed = time.time() - t0
-    if not ok:
-        print("Échec ou snapshot déjà à jour / verrou indisponible.", file=sys.stderr)
-        return 1 if not ok else 0
-    print(f"OK — snapshot enregistré ({elapsed:.0f} s).")
     try:
-        from app.dashboard import sync_algo_report_from_snapshot
+        print("Vidage cache joueur + anciens snapshots…")
+        _purge_all_live_player_caches()
+        for path in (SNAPSHOT_PATH, FULL_SNAPSHOT_PATH, NEXTDAY_SNAPSHOT_PATH):
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError:
+                pass
 
-        n_sync = sync_algo_report_from_snapshot(force=True)
-        print(f"[rebuild-cli] report algo synchronisé : {n_sync} opportunité(s).")
-    except Exception as exc:
-        print(f"[rebuild-cli] sync report algo ignorée : {exc}", file=sys.stderr)
-    return 0
+        os.environ.setdefault("BETTINGHUD_SYNC_FULL_AFTER_PREVIEW", "1")
+        os.environ.setdefault("BETTINGHUD_LIVE_INCREMENTAL_ENRICH", "0")
+
+        t0 = time.time()
+        print("Construction projection complète (aujourd’hui + demain)…")
+        ok = _try_build_live_snapshot_if_missing(
+            identity_workers=None,
+            label="rebuild-cli",
+            force_full=True,
+            snapshot_lock_held=True,
+        )
+        elapsed = time.time() - t0
+        if not ok:
+            print("Échec build snapshot.", file=sys.stderr)
+            return 1
+        print(f"OK — snapshot enregistré ({elapsed:.0f} s).")
+        try:
+            from app.dashboard import sync_algo_report_from_snapshot
+
+            n_sync = sync_algo_report_from_snapshot(force=True)
+            print(f"[rebuild-cli] report algo synchronisé : {n_sync} opportunité(s).")
+        except Exception as exc:
+            print(f"[rebuild-cli] sync report algo ignorée : {exc}", file=sys.stderr)
+        return 0
+    finally:
+        _release_cli_lock()
 
 
 if __name__ == "__main__":
