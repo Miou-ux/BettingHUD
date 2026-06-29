@@ -57,6 +57,27 @@ def test_tennisexplorer_estimate_excluded():
     assert match_rank_exclude_reason(m) == "tennisexplorer_estimate"
 
 
+def test_default_stats_placeholder_excluded():
+    from scripts.match_rank_quality import is_default_player_stats, match_data_reliability_score
+
+    default = {
+        "rank": 100,
+        "pts": 1000,
+        "stats_source": "no_ranking_source",
+    }
+    assert is_default_player_stats(default)
+    m = {
+        "date": "2026-06-29",
+        "p1_stats": dict(default),
+        "p2_stats": dict(default),
+    }
+    assert match_rank_exclude_reason(m) == "default_stats_placeholder"
+    score, flags = match_data_reliability_score(m)
+    assert score < 80
+    assert "p1_rank_placeholder" in flags
+    assert "p2_rank_placeholder" in flags
+
+
 def test_duplicate_model_prob_penalizes_score():
     from scripts.match_rank_quality import (
         duplicate_model_prob_keys,
@@ -96,5 +117,6 @@ if __name__ == "__main__":
     test_stale_tml_excluded()
     test_missing_ref_date_excluded()
     test_tennisexplorer_estimate_excluded()
+    test_default_stats_placeholder_excluded()
     test_duplicate_model_prob_penalizes_score()
     print("OK")

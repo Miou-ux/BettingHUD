@@ -23,6 +23,37 @@ MIN_DATA_RELIABILITY_SCORE = max(
 # Seuil doc / flag ``book_gap_high`` (pénalité score fiabilité — pas filtre de sélection).
 BOOK_GAP_HIGH_PP = float(os.getenv("BETTINGHUD_BOOK_GAP_HIGH_PP", "25"))
 
+# Repli ``stats_engine.get_player_stats`` / preview live quand aucune source rang/points.
+_DEFAULT_STATS_RANK = 100
+_DEFAULT_STATS_PTS = 1000.0
+_DEFAULT_STATS_SOURCES = frozenset(
+    {"no_ranking_source", "preview_default", "fast_default", "cache_default"}
+)
+
+
+def is_default_player_stats(stats: dict | None) -> bool:
+    """True si rang/points sont le paquet fictif (pas de données réelles en base)."""
+    if not stats:
+        return False
+    src = str(stats.get("stats_source") or "").strip().lower()
+    if src in _DEFAULT_STATS_SOURCES:
+        return True
+    try:
+        rank = int(stats.get("rank") or 0)
+        pts = float(stats.get("pts") or 0)
+    except (TypeError, ValueError):
+        return True
+    return rank == _DEFAULT_STATS_RANK and abs(pts - _DEFAULT_STATS_PTS) < 1e-6
+
+
+def match_both_default_player_stats(match: dict) -> bool:
+    """Les deux joueurs ont le repli rank=100 / pts=1000 (vecteur features quasi identique)."""
+    if not isinstance(match, dict):
+        return False
+    return is_default_player_stats(match.get("p1_stats")) and is_default_player_stats(
+        match.get("p2_stats")
+    )
+
 
 def book_gap_pp_from_favorite(p_model_fav: object, odd_fav: object) -> float | None:
     """Écart |p_modèle(favori) − p_implicite(book)| en points de pourcentage.
@@ -122,6 +153,8 @@ def match_rank_exclude_reason(
     """Raison d'exclusion UI (None = éligible)."""
     if not isinstance(match, dict):
         return "invalid_match"
+    if match_both_default_player_stats(match):
+        return "default_stats_placeholder"
     p1 = match.get("p1_stats") or {}
     p2 = match.get("p2_stats") or {}
     k1 = _rank_stats_source_key(p1)
@@ -193,6 +226,8 @@ def match_in_duplicate_model_prob_cluster(
 def _player_rank_placeholder(stats: dict | None) -> bool:
     if not stats:
         return False
+    if is_default_player_stats(stats):
+        return True
     try:
         rank = int(stats.get("rank") or 0)
         pts = float(stats.get("pts") or 0)
