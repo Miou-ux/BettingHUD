@@ -108,7 +108,8 @@ def test_duplicate_model_prob_penalizes_score():
     s_dup, flags_dup = match_data_reliability_score(
         m1, duplicate_model_prob=match_in_duplicate_model_prob_cluster(m1, dup_keys)
     )
-    assert s_dup < s_ok
+    assert s_dup == s_ok - 20
+    assert s_dup == 80
     assert "duplicate_model_prob" in flags_dup
 
 

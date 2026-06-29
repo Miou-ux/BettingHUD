@@ -23,6 +23,10 @@ MIN_DATA_RELIABILITY_SCORE = max(
 # Seuil doc / flag ``book_gap_high`` (pénalité score fiabilité — pas filtre de sélection).
 BOOK_GAP_HIGH_PP = float(os.getenv("BETTINGHUD_BOOK_GAP_HIGH_PP", "25"))
 
+DUPLICATE_MODEL_PROB_PENALTY = max(
+    0, min(50, int(os.getenv("BETTINGHUD_DUP_PROB_PENALTY", "20")))
+)
+
 # Repli ``stats_engine.get_player_stats`` / preview live quand aucune source rang/points.
 _DEFAULT_STATS_RANK = 100
 _DEFAULT_STATS_PTS = 1000.0
@@ -260,7 +264,7 @@ def match_data_reliability_score(
         flags.append("rang_vs_proba")
 
     if duplicate_model_prob:
-        score -= 30
+        score -= DUPLICATE_MODEL_PROB_PENALTY
         flags.append("duplicate_model_prob")
 
     if hist_te_conflict:
