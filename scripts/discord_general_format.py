@@ -87,7 +87,7 @@ def build_general_welcome_embed() -> dict[str, Any]:
                 "name": "💶 2025 backtest · 100 € start",
                 "value": (
                     "_No-leak simulation — model trained before 2025 · majors · EV 15–100%_\n\n"
-                    "**1 Day 1 Pick** · ½ Kelly (Brier-adjusted, 15% cap)\n"
+                    "**1 Day 1 Pick** · Kelly 0.65 (Brier-adjusted, 15% cap)\n"
                     f"**{_eur(b['start_eur'])} € → {_eur(b['1d1p_kelly_final_eur'])} €**  "
                     f"(**+{_eur(b['1d1p_kelly_growth_pct'])} %**)\n\n"
                     f"• **{b['1d1p_days']}** picks · **{b['1d1p_hit_pct']}%** hit rate\n"

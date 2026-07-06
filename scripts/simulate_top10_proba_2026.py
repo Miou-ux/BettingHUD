@@ -1,6 +1,6 @@
 """
 Simulation 2026 sans leak : top 10 probas / jour, EV >= 15 %, filtres backtest dashboard,
-gestion BR = Kelly 1/2 × facteur Brier segment (÷0,25), plafond 15 % liquidité intraday.
+gestion BR = Kelly 0,65 × facteur Brier segment (÷0,25), plafond 15 % liquidité intraday.
 
 Étapes :
   1. CSV no-leak via ``backtest_2026.py`` (ou fichier existant).
@@ -41,7 +41,7 @@ DEFAULT_TOP_N = 10
 DEFAULT_EV_MIN_PCT = 15.0
 DEFAULT_EV_MAX_PCT = 100.0
 DEFAULT_BR0 = 100.0
-KELLY_BASE = 0.5
+KELLY_BASE = 0.65  # prod default — voir scripts/kelly_policy.py
 MAX_STAKE_PCT = 15.0
 
 
@@ -400,7 +400,7 @@ def main() -> None:
 
     print("\n--- Gestion bankroll (Kelly adaptatif) ---")
     print(f"  BR départ           : {args.br_start:.2f} €")
-    print(f"  Kelly base          : {KELLY_BASE} (demi-Kelly)")
+    print(f"  Kelly base          : {KELLY_BASE} (prod fractional Kelly)")
     print(f"  Ajustement Brier    : max(0, 1 - Brier_seg / 0.25)")
     print(f"  Plafond mise        : {MAX_STAKE_PCT:.0f} % liquidité intraday")
     print(f"  Brier global bundle : {glob_b:.4f} ({len(seg)} segments)")

@@ -286,7 +286,7 @@ def build_welcome_embed() -> dict[str, Any]:
                     "🟢 **ATP** · 🔵 **WTA** — best EV-eligible pick per circuit (model proba ↓)\n"
                     "Then **highest model probability** between circuits\n"
                     "EV band **15–100%** on the favourite · majors **250+** only\n"
-                    "Theoretical stake: **½ Kelly** (Brier-adjusted), cap **15%** bankroll"
+                    "Theoretical stake: **Kelly 0.65** (Brier-adjusted), cap **15%** bankroll"
                 ),
                 "inline": False,
             },

@@ -35,9 +35,17 @@ Les webhooks **ne peuvent pas épingler** : un seul message « 📊 Track Record
 | **Toutes les ~10 min** (daemon) | `od1p_publish.py` → résultats | Résultat Gagné / Perdu / Annulé sur **Discord et Telegram** |
 | **Manuel** | `discord_1d1p_notify.py --performance-board` | Crée ou met à jour le message track record |
 
-Sélection : même logique que `/1pick1day` web (`scripts/pick_modes.py` · mode `1pick1day`).
+Sélection : même logique que `/1pick1day` web (`scripts/pick_modes.py` → `discord_1d1p_core.select_1d1p_pick`).
 
-Les modes **top5** et **today** (Today's Pick) sont unifiés via le même module pour web et Telegram ; Discord couvre pour l’instant le 1D1P uniquement.
+| Règle | Détail |
+|-------|--------|
+| Standard | EV **15–100 %**, proba ↓ par circuit, max proba ATP vs WTA |
+| Repli | Si **p &lt; 70 %** → **EV &gt; 0** (cap 100 %) |
+| Code Discord | `discord_1d1p_notify.run_daily_pick` → `load_1d1p_today_pick` — pas de filtre séparé |
+
+Republication : `scripts/repost_1d1p_today.py --apply` (supprime posts du jour Discord/TG puis reposte).
+
+Les modes **top5** et **today** restent Telegram/web uniquement.
 
 ## Commandes
 

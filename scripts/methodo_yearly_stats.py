@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Yearly stats for CourtAlpha /methodo backtest table.
-
-Top 5 proba/jour (EV 15–100 %, G/M/A) — same protocol as methodoContent:
-  - bets, hit %, Brier from Top 5 selection
-  - roi_year_pct: Kelly ½ × Brier, cap 15 % liq. → roi_on_staked_pct (volume-weighted)
-  - roi_1d1p_pct: 1 Day 1 Pick — best rank=1 ATP vs WTA per day, flat 1 u
+"""Yearly stats for CourtAlpha /methodo backtest table (hybrid prod Top 5 + 1D1P).
 
 Usage:
   py -3 scripts/methodo_yearly_stats.py
@@ -23,123 +18,110 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from scripts.backtest_staking_sim import (  # noqa: E402
-    load_and_filter_bets_csv,
-    resolve_backtest_csv,
-    simulate_sequential_intraday,
+from scripts.backtest_pack12_global_2026 import (  # noqa: E402
+    BR_START,
+    LIVE_CUTOFF,
+    MAX_STAKE_PCT,
+    _live_rows,
+)
+from scripts.backtest_prod_1d1p_2026 import picks_for_rows as d1p_picks_for_rows  # noqa: E402
+from scripts.backtest_prod_top5_2026 import (  # noqa: E402
+    _csv_rows_for_year,
+    _kelly_sim,
+    picks_for_rows as top5_picks_for_rows,
 )
 from scripts.ml_model import TennisMLModel  # noqa: E402
 from scripts.simulate_top10_proba_2026 import (  # noqa: E402
-    DEFAULT_EXTRA_EXCLUDE,
     DEFAULT_TOURNEY_LEVELS,
     KELLY_BASE,
-    MAX_STAKE_PCT,
-    _segment_calibration_key,
     flat_stake_metrics,
-    select_top_proba_per_day,
 )
 
-BR_START = 100.0
-EV_MIN_PCT = 15.0
-EV_MAX_PCT = 100.0
 TOP_N = 5
 
 
-def _filter_pool(csv_path: str, *, year: int) -> pd.DataFrame:
-    extra = [t.strip() for t in DEFAULT_EXTRA_EXCLUDE.split(",") if t.strip()]
-    df = load_and_filter_bets_csv(
-        csv_path,
-        year=year,
-        ev_min_pct=EV_MIN_PCT,
-        allowed_tours=["ATP", "WTA"],
-        allowed_tourney_levels=list(DEFAULT_TOURNEY_LEVELS),
-        extra_tournament_tokens=extra,
-    )
-    return df[df["ev"].astype(float) <= EV_MAX_PCT / 100.0].reset_index(drop=True)
+def _pool_rows(year: int) -> list[dict]:
+    rows = _csv_rows_for_year(year)
+    if year >= 2026:
+        rows = rows + _live_rows()
+    return rows
 
 
-def select_one_day_one_pick_per_day(df: pd.DataFrame) -> pd.DataFrame:
-    """Best p_model rank=1 ATP vs WTA per calendar day (1 Day 1 Pick backtest proxy)."""
-    if df.empty:
-        return df.iloc[0:0].copy()
-    work = df.copy()
-    work["_ord"] = np.arange(len(work), dtype=np.int64)
-    work = work.sort_values(
-        ["date", "tour", "p_model", "_ord"],
-        ascending=[True, True, False, True],
-        kind="mergesort",
-    )
-    # rank=1 per circuit per day
-    rank1 = work.groupby(["date", "tour"], sort=False).head(1)
-    # best between ATP and WTA (ATP tie-break, aligned one_day_one_pick.py)
-    rank1 = rank1.copy()
-    rank1["_atp_pref"] = (rank1["tour"].astype(str).str.upper() == "ATP").astype(int)
-    rank1 = rank1.sort_values(
-        ["date", "p_model", "_atp_pref", "_ord"],
-        ascending=[True, False, False, True],
-        kind="mergesort",
-    )
-    return rank1.groupby("date", sort=False).head(1).drop(columns=["_ord", "_atp_pref"]).reset_index(drop=True)
-
-
-def _attach_segments(df: pd.DataFrame, ml: TennisMLModel) -> pd.DataFrame:
-    if df.empty:
-        return df
-    out = df.copy()
-    out["segment_calibration_key"] = out.apply(
-        lambda r: _segment_calibration_key(r, ml), axis=1
-    )
+def _picks_to_flat_df(picks: list[dict]) -> pd.DataFrame:
+    rows: list[dict] = []
+    for p in picks:
+        if p.get("settled") is False:
+            continue
+        st = str(p.get("status") or "").strip().lower()
+        if "annul" in st:
+            continue
+        if "gagn" in st:
+            won = True
+        elif "perdu" in st:
+            won = False
+        elif "won" in p:
+            won = bool(p.get("won"))
+        else:
+            continue
+        rows.append(
+            {
+                "date": str(p.get("calendar_date") or "")[:10],
+                "p_model": float(p.get("p_model_fav") or p.get("p_model") or 0),
+                "odd": float(p.get("odd_fav") or p.get("odd") or 0),
+                "won": bool(won),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out["date"] = pd.to_datetime(out["date"])
     return out
 
 
-def _kelly_volume_roi(df: pd.DataFrame, ml: TennisMLModel) -> float:
-    if df.empty:
+def _kelly_volume_roi(picks: list[dict], ml: TennisMLModel) -> float:
+    if not picks:
         return 0.0
-    seg = getattr(ml, "segment_brier_scores", {}) or {}
-    glob_b = float(getattr(ml, "global_test_brier", 0.1741))
-    ordered = df.sort_values(["date", "p_model"], ascending=[True, False], kind="mergesort")
-    kelly = simulate_sequential_intraday(
-        ordered,
-        bankroll_start=BR_START,
-        kelly_multiplier=1.0,
-        max_stake_pct=MAX_STAKE_PCT,
-        daily_stake_budget_pct=100.0,
-        use_adaptive_kelly_quarter=True,
-        adaptive_kelly_base_fraction=KELLY_BASE,
-        segment_brier_scores=seg,
-        global_brier_score=glob_b,
-        stake_cap_basis="liquid",
-    )
-    return float(kelly["roi_on_staked_pct"])
+    k = _kelly_sim(picks, ml, br_start=BR_START, kelly_frac=KELLY_BASE)
+    staked = float(k.get("total_staked_eur") or 0.0)
+    net = float(k.get("net_profit_eur") or 0.0)
+    if staked <= 0:
+        return 0.0
+    return net / staked * 100.0
 
 
 def compute_year_row(year: int, *, ml: TennisMLModel) -> dict | None:
-    csv_path = resolve_backtest_csv(ROOT, year)
-    if not csv_path or not os.path.isfile(csv_path):
+    try:
+        pool = _pool_rows(year)
+    except Exception:
+        return None
+    if not pool:
         return None
 
-    pool = _filter_pool(csv_path, year=year)
-    top5 = select_top_proba_per_day(pool, top_n=TOP_N)
-    top5 = _attach_segments(top5, ml)
-    flat_top5 = flat_stake_metrics(top5, br0=BR_START)
+    top5 = top5_picks_for_rows(pool, limit=TOP_N)
+    pick1d1p = d1p_picks_for_rows(pool)
+    if not top5 and not pick1d1p:
+        return None
 
-    pick1d1p = select_one_day_one_pick_per_day(pool)
-    flat_1d1p = flat_stake_metrics(pick1d1p, br0=BR_START)
+    flat_top5 = flat_stake_metrics(_picks_to_flat_df(top5), br0=BR_START)
+    flat_1d1p = flat_stake_metrics(_picks_to_flat_df(pick1d1p), br0=BR_START)
     roi_year = _kelly_volume_roi(top5, ml)
 
     note = None
     if year == 2026:
         note = "partial"
 
+    days_top5 = len({str(p.get("calendar_date") or "")[:10] for p in top5})
+    days_1d1p = len({str(p.get("calendar_date") or "")[:10] for p in pick1d1p})
+
     return {
         "year": str(year),
         "bets": int(flat_top5["n_bets"]),
-        "days": int(top5["date"].nunique()) if not top5.empty else 0,
+        "days": days_top5,
         "hit_pct": round(float(flat_top5["hit_pct"]), 1),
         "roi_year_pct": round(roi_year, 1),
         "roi_1d1p_pct": round(float(flat_1d1p["roi_pct"]), 1),
-        "brier": round(float(flat_top5["brier"]), 3),
-        "days_1d1p": int(pick1d1p["date"].nunique()) if not pick1d1p.empty else 0,
+        "brier": round(float(flat_top5["brier"]), 3) if flat_top5["n_bets"] else 0.0,
+        "days_1d1p": days_1d1p,
         "note": note,
     }
 
@@ -159,12 +141,15 @@ def build_methodo_yearly_stats(*, years: list[int] | None = None) -> dict:
 
     return {
         "protocol": {
-            "selection": f"Top {TOP_N} proba/jour",
-            "ev_band_pct": [EV_MIN_PCT, EV_MAX_PCT],
+            "selection": (
+                f"Hybrid Top {TOP_N}: proba ≥ 80%, reliability ≥ 80, "
+                "EV tier 1: 15–30%, tier 2: 30–50%, max 5/day"
+            ),
             "tours": ["ATP", "WTA"],
             "levels": list(DEFAULT_TOURNEY_LEVELS),
-            "roi_year": "Kelly 1/2 x Brier segment, cap 15% liquidity -> net_profit / total_staked",
-            "roi_1d1p": "1 pick/jour (meilleur rank=1 ATP vs WTA), mise fixe 1 u",
+            "roi_year": f"Kelly {KELLY_BASE} × Brier segment, cap 15% liquidity → ROI on staked",
+            "roi_1d1p": "Hybrid rank 1/day (1 Day 1 Pick), flat 1 unit",
+            "live_replay_from": LIVE_CUTOFF,
         },
         "rows": rows,
         "generated_from": "scripts/methodo_yearly_stats.py",
@@ -183,7 +168,7 @@ def main() -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
-    print("Methodo yearly stats (Top 5 proba + 1D1P flat)")
+    print("Methodo yearly stats (hybrid Top 5 + 1D1P)")
     print("-" * 72)
     for r in payload["rows"]:
         note = f" ({r['note']})" if r.get("note") else ""

@@ -27,6 +27,9 @@ DUPLICATE_MODEL_PROB_PENALTY = max(
     0, min(50, int(os.getenv("BETTINGHUD_DUP_PROB_PENALTY", "20")))
 )
 
+# Incrémenter si la formule de score change (force rescore hors snapshot rebuild).
+RELIABILITY_SCORE_VERSION = 3
+
 # Repli ``stats_engine.get_player_stats`` / preview live quand aucune source rang/points.
 _DEFAULT_STATS_RANK = 100
 _DEFAULT_STATS_PTS = 1000.0
@@ -197,8 +200,11 @@ def duplicate_model_prob_keys(
     *,
     precision: int = 10,
 ) -> set[tuple]:
-    """Identités des matchs dont ``capped_p1_prob`` est partagée par au moins un autre match."""
-    by_prob: dict[float, list[tuple]] = defaultdict(list)
+    """Identités des matchs dont ``capped_p1_prob`` est partagée dans le **même tournoi**.
+
+    Évite les faux positifs cross-tournoi (deux favoris ~97 % le même jour).
+    """
+    by_bucket: dict[tuple[float, str], list[tuple]] = defaultdict(list)
     for m in matches:
         if not isinstance(m, dict):
             continue
@@ -210,9 +216,10 @@ def duplicate_model_prob_keys(
             prob_key = round(float(cp), precision)
         except (TypeError, ValueError):
             continue
-        by_prob[prob_key].append(match_duplicate_prob_identity_key(m))
+        tourney = str(m.get("tournament") or "").strip().lower()
+        by_bucket[(prob_key, tourney)].append(match_duplicate_prob_identity_key(m))
     bad: set[tuple] = set()
-    for keys in by_prob.values():
+    for keys in by_bucket.values():
         if len(set(keys)) > 1:
             bad.update(keys)
     return bad
@@ -225,6 +232,31 @@ def match_in_duplicate_model_prob_cluster(
     if not duplicate_keys:
         return False
     return match_duplicate_prob_identity_key(match) in duplicate_keys
+
+
+def has_duplicate_model_prob_flag(row: dict | None) -> bool:
+    """True si la ligne porte le flag ``duplicate_model_prob`` (bool ou flags persistés)."""
+    if not isinstance(row, dict):
+        return False
+    if row.get("duplicate_model_prob"):
+        return True
+    flags = row.get("data_reliability_flags")
+    if isinstance(flags, list):
+        return "duplicate_model_prob" in flags
+    return "duplicate_model_prob" in str(flags or "")
+
+
+def excluded_duplicate_model_prob_from_top5(
+    row: dict | None,
+    *,
+    duplicate_keys: set[tuple] | None = None,
+) -> bool:
+    """True si le pick ne doit pas être publié en Top 5 (cluster proba modèle dupliquée)."""
+    if not isinstance(row, dict):
+        return False
+    if has_duplicate_model_prob_flag(row):
+        return True
+    return match_in_duplicate_model_prob_cluster(row, duplicate_keys)
 
 
 def _player_rank_placeholder(stats: dict | None) -> bool:
@@ -247,17 +279,21 @@ def match_data_reliability_score(
     ref_date_stale_sides: tuple[bool, bool] = (False, False),
     data_stale_sides: tuple[bool, bool] = (False, False),
     duplicate_model_prob: bool = False,
+    hist_te_soft_penalty: bool = False,
 ) -> tuple[int, list[str]]:
     """Score 0–100 de confiance dans les données d'une ligne snapshot (hors qualité tennis pure).
 
     100 = identités + rangs récents + proba cohérente ; pénalités cumulatives documentées dans
-  `docs/DATA_RELIABILITY.md`.
+    `docs/DATA_RELIABILITY.md`.
+
+    ``hist_te_soft_penalty`` : conflit Base/TE mais rangs officiels frais → pénalité réduite (-8).
     """
     if not isinstance(match, dict):
         return 0, ["invalid_match"]
     score = 100
     flags: list[str] = []
     anchor = str(match.get("date") or "")[:10] or None
+    stale_rank_sides: list[bool] = [False, False]
 
     if match.get("unreliable"):
         score -= 40
@@ -268,12 +304,16 @@ def match_data_reliability_score(
         flags.append("duplicate_model_prob")
 
     if hist_te_conflict:
-        score -= 20
+        score -= 8 if hist_te_soft_penalty else 20
         flags.append("hist_te_conflict")
+        if hist_te_soft_penalty:
+            flags.append("hist_te_soft")
 
-    for side, pk, pid_key, ref_stale, data_stale in (
-        ("p1", "p1_stats", "p1_player_id", ref_date_stale_sides[0], data_stale_sides[0]),
-        ("p2", "p2_stats", "p2_player_id", ref_date_stale_sides[1], data_stale_sides[1]),
+    for idx, (side, pk, pid_key, ref_stale, data_stale) in enumerate(
+        (
+            ("p1", "p1_stats", "p1_player_id", ref_date_stale_sides[0], data_stale_sides[0]),
+            ("p2", "p2_stats", "p2_player_id", ref_date_stale_sides[1], data_stale_sides[1]),
+        )
     ):
         st = match.get(pk) or {}
         if not match.get(pid_key):
@@ -292,7 +332,10 @@ def match_data_reliability_score(
         if not player_rank_stats_fresh(st, anchor_date=anchor):
             score -= 10
             flags.append(f"{side}_stale_rank_ref")
-        if ref_stale:
+            stale_rank_sides[idx] = True
+        if ref_stale and not stale_rank_sides[idx] and not player_rank_stats_fresh(
+            st, anchor_date=anchor
+        ):
             score -= 8
             flags.append(f"{side}_ref_date_stale")
         elif data_stale:
@@ -315,16 +358,74 @@ def match_data_reliability_score(
     return score, flags
 
 
-def ensure_match_reliability_scored(match: dict) -> dict:
-    """Calcule et attache le score si absent (snapshot / replay / backfill)."""
+def compute_match_reliability(
+    match: dict,
+    *,
+    duplicate_keys: set[tuple] | None = None,
+) -> tuple[int, list[str]]:
+    """Score complet à partir d'une ligne snapshot (même logique que finalize live build)."""
+    from scripts.reliability_context import (
+        match_has_hist_te_conflict,
+        match_has_official_fresh_ranks,
+        player_data_stale,
+        player_ref_date_stale,
+    )
+
+    dup = False
+    if duplicate_keys is not None:
+        dup = match_in_duplicate_model_prob_cluster(match, duplicate_keys)
+    elif match.get("duplicate_model_prob"):
+        dup = True
+
+    hist_te = match_has_hist_te_conflict(match)
+    soft_te = hist_te and match_has_official_fresh_ranks(match)
+
+    score, flags = match_data_reliability_score(
+        match,
+        hist_te_conflict=hist_te,
+        hist_te_soft_penalty=soft_te,
+        ref_date_stale_sides=(
+            player_ref_date_stale(match, 1),
+            player_ref_date_stale(match, 2),
+        ),
+        data_stale_sides=(
+            player_data_stale(match, 1),
+            player_data_stale(match, 2),
+        ),
+        duplicate_model_prob=dup,
+    )
+    return score, flags
+
+
+def ensure_match_reliability_scored(
+    match: dict,
+    *,
+    day_matches: list[dict] | None = None,
+    duplicate_keys: set[tuple] | None = None,
+) -> dict:
+    """Calcule et attache le score si absent ou version obsolète."""
     if not isinstance(match, dict):
         return match
     attach_book_gap_pp(match)
-    if match.get("data_reliability_score") is not None:
+
+    ver = match.get("data_reliability_version")
+    needs_rescore = (
+        match.get("data_reliability_score") is None
+        or int(ver or 0) < RELIABILITY_SCORE_VERSION
+    )
+    if not needs_rescore:
         return match
-    score, flags = match_data_reliability_score(match)
+
+    if duplicate_keys is None and day_matches:
+        duplicate_keys = duplicate_model_prob_keys(day_matches)
+
+    score, flags = compute_match_reliability(match, duplicate_keys=duplicate_keys)
     match["data_reliability_score"] = score
     match["data_reliability_flags"] = "|".join(flags) if flags else None
+    match["data_reliability_version"] = RELIABILITY_SCORE_VERSION
+    match["duplicate_model_prob"] = match_in_duplicate_model_prob_cluster(
+        match, duplicate_keys
+    )
     return match
 
 

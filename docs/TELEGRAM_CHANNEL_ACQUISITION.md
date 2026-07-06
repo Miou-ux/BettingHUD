@@ -82,3 +82,35 @@ py -3 scripts/telegram_channel_notify.py --dry-run --weekly
 - Abonnés canal
 - Sessions web `utm_source=telegram`
 - Pages vues `/1-day-1-pick`
+
+---
+
+## 7. Dépannage `chat not found`
+
+Symptôme logs : `Bad Request: chat not found` ou `missing_telegram_channel_id`.
+
+| Cause | Action |
+|-------|--------|
+| Canal pas créé | Telegram → **Nouveau canal** → public `t.me/courtalpha_1day1pick` |
+| Bot pas admin | Ajouter **@CourtAlphabot** admin avec **Publier des messages** |
+| Username incorrect | Utiliser l’id numérique `-100…` dans `TELEGRAM_CHANNEL_ID` |
+
+**Script de réparation PROD** (après étapes Telegram) :
+
+```bash
+cd /opt/bettinghud
+/opt/bettinghud/venv/bin/python scripts/setup_telegram_public_channel.py --watch --apply --test-send
+# ou si tu connais l’id :
+/opt/bettinghud/venv/bin/python scripts/setup_telegram_public_channel.py --apply --test-send --channel-id -100xxxxxxxxxx
+```
+
+Variables `.env` requises :
+
+```bash
+TELEGRAM_CHANNEL_ID=@courtalpha_1day1pick   # ou -100…
+TELEGRAM_CHANNEL_ENABLED=1
+COURTALPHA_PUBLIC_URL=https://courtalpha.tech
+COURTALPHA_ROOT=/opt/courtalpha
+```
+
+Diagnostic seul : `scripts/setup_telegram_public_channel.py --probe`

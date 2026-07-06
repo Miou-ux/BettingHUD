@@ -11,8 +11,8 @@ Variables :
   TELEGRAM_BOT_TOKEN
   TELEGRAM_CHAT_ID
   TELEGRAM_ALLOWED_CHAT_IDS   (optionnel, liste séparée par virgules)
-  TELEGRAM_BOT_POLL_TIMEOUT_SEC  (defaut 25)
-  TELEGRAM_SEND_PARALLEL         (defaut 4 — envois parallèles mode Parier /jour)
+  TELEGRAM_BOT_POLL_TIMEOUT_SEC  (defaut 15)
+  TELEGRAM_UPDATE_WORKERS        (defaut 3 — commandes /jour /top5 en parallèle)
 """
 from __future__ import annotations
 
@@ -266,6 +266,10 @@ def _handle_callback(
             show_alert=True,
         )
         return
+
+    cq_id = str(cq.get("id") or "")
+    if cq_id:
+        answer_telegram_callback_query(cq_id, token=token)
 
     if handle_callback_query(
         cq,
@@ -650,14 +654,14 @@ def _process_update(upd: dict, *, token: str, allowed: frozenset[str]) -> None:
         _handle_message(msg, token=token, allowed=allowed_set)
 
 
-def _update_worker() -> None:
+def _update_worker(worker_id: int) -> None:
     assert _UPDATE_QUEUE is not None
     while True:
         upd, token, allowed = _UPDATE_QUEUE.get()
         try:
             _process_update(upd, token=token, allowed=allowed)
         except Exception as exc:
-            LOGGER.exception("Erreur traitement update : %s", exc)
+            LOGGER.exception("Erreur traitement update (worker %s) : %s", worker_id, exc)
         finally:
             _UPDATE_QUEUE.task_done()
 
@@ -681,7 +685,14 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
 
     global _UPDATE_QUEUE
     _UPDATE_QUEUE = queue.Queue(maxsize=200)
-    threading.Thread(target=_update_worker, name="tg-update-worker", daemon=True).start()
+    n_workers = max(1, int(os.getenv("TELEGRAM_UPDATE_WORKERS", "3")))
+    for i in range(n_workers):
+        threading.Thread(
+            target=_update_worker,
+            args=(i + 1,),
+            daemon=True,
+            name=f"tg-update-worker-{i + 1}",
+        ).start()
     threading.Thread(
         target=lambda: __import__(
             "scripts.telegram_runtime_cache", fromlist=["warm_telegram_runtime_cache"]
@@ -696,8 +707,9 @@ def run_daemon(*, poll_timeout_sec: int = 25, once: bool = False) -> int:
     else:
         LOGGER.warning("setMyCommands Telegram non applique")
     LOGGER.info(
-        "Telegram bot daemon demarre — poll %ds, file async (picks), chats autorises : %s",
+        "Telegram bot daemon demarre — poll %ds, %d worker(s) picks, chats autorises : %s",
         poll_timeout_sec,
+        n_workers,
         ", ".join(sorted(allowed)),
     )
 
@@ -734,7 +746,7 @@ def main() -> int:
     ap.add_argument(
         "--poll-timeout",
         type=int,
-        default=int(os.getenv("TELEGRAM_BOT_POLL_TIMEOUT_SEC", "25")),
+        default=int(os.getenv("TELEGRAM_BOT_POLL_TIMEOUT_SEC", "15")),
     )
     ap.add_argument("--once", action="store_true", help="Une passe de polling puis quitter")
     args = ap.parse_args()

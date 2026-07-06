@@ -98,7 +98,7 @@ Principe Live Tracker :
 3. Kelly plein :
    - `b = custom_odd - 1`
    - `f_full = (b*p - (1-p)) / b`
-4. Kelly partiel : coefficient de base (souvent 1/2)
+4. Kelly partiel : coefficient de base **0,65** (prod, juillet 2026)
 5. ajustement prudent par qualité calibration (**Brier** segment via `brier_segment_key` — Kelly « adaptatif » dans le dashboard)
 6. plafond de fraction bankroll (`KELLY_RECO_BANKROLL_CAP_FRAC`)
 7. mise reco en € = fraction finale × bankroll disponible

@@ -641,7 +641,7 @@ def inline_keyboard_parier(token: str) -> dict:
 
     return {
         "inline_keyboard": [
-            [{"text": tg("💰 Bet", "💰 Parier"), "callback_data": f"{_CB_BET}{token}"}],
+            [{"text": tg("💰 Bet", "💰 Parier"), "callback_data": f"{_CB_BET}{token}"}]
         ]
     }
 

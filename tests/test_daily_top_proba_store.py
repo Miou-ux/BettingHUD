@@ -79,6 +79,89 @@ def test_collect_top5_excludes_challenger():
     assert "challenger" not in str(picks[0].get("tournament") or "").lower()
 
 
+def test_collect_top5_excludes_duplicate_model_prob():
+    from scripts.daily_top_proba_store import collect_top5_proba_picks
+
+    shared_prob = 0.807
+    good_stats = {
+        "rank": 10,
+        "pts": 3000,
+        "stats_source": "matches_recent",
+        "stats_reference_date": "2026-06-28",
+    }
+    m1 = _match("A", "B", shared_prob, "WTA", date="2026-06-29")
+    m1.update(
+        {
+            "p1_player_id": "1",
+            "p2_player_id": "2",
+            "p1_stats": good_stats,
+            "p2_stats": {**good_stats, "rank": 20},
+            "true_odd_p1": 1.30,
+            "odd_p1": 1.35,
+            "true_odd_p2": 3.50,
+            "odd_p2": 3.20,
+        }
+    )
+    m2 = _match("C", "D", shared_prob, "WTA", date="2026-06-29")
+    m2.update(
+        {
+            "p1_player_id": "3",
+            "p2_player_id": "4",
+            "p1_stats": good_stats,
+            "p2_stats": {**good_stats, "rank": 25},
+            "true_odd_p1": 1.40,
+            "odd_p1": 1.45,
+            "true_odd_p2": 3.00,
+            "odd_p2": 2.90,
+        }
+    )
+    m3 = _match("E", "F", 0.91, "WTA", date="2026-06-29")
+    m3.update(
+        {
+            "p1_player_id": "5",
+            "p2_player_id": "6",
+            "p1_stats": good_stats,
+            "p2_stats": {**good_stats, "rank": 30},
+            "true_odd_p1": 1.15,
+            "odd_p1": 1.18,
+            "true_odd_p2": 5.00,
+            "odd_p2": 4.80,
+        }
+    )
+    picks = collect_top5_proba_picks(
+        [m1, m2, m3],
+        limit=5,
+        ev_min_frac=0.0,
+        ev_max_frac=2.0,
+        today_only=False,
+        calendar_date="2026-06-29",
+    )
+    favs = {p["fav_player"] for p in picks}
+    assert "A" not in favs
+    assert "C" not in favs
+    assert picks[0]["fav_player"] == "E"
+
+
+def test_filter_telegram_display_excludes_duplicate_flag():
+    from scripts.telegram_top5_notify import filter_telegram_display_picks
+
+    ok = {
+        "p_model_fav": 0.85,
+        "ev_fav_pct": 20.0,
+        "data_reliability_score": 95,
+        "match_name": "A vs B",
+    }
+    dup = {
+        **ok,
+        "match_name": "C vs D",
+        "data_reliability_flags": "duplicate_model_prob",
+        "data_reliability_score": 80,
+    }
+    out = filter_telegram_display_picks([dup, ok], apply_proba_filter=True)
+    assert len(out) == 1
+    assert out[0]["match_name"] == "A vs B"
+
+
 def test_collect_paris_du_jour_includes_challenger():
     from scripts.daily_top_proba_store import collect_paris_du_jour_picks
 
@@ -104,7 +187,7 @@ def test_collect_paris_du_jour_includes_challenger():
         limit=None,
         ev_min_frac=0.0,
         ev_max_frac=2.0,
-        today_only=True,
+        today_only=False,
         calendar_date="2026-05-27",
     )
     assert len(picks) == 2

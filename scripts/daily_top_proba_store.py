@@ -19,7 +19,9 @@ from scripts.bets_db import (
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
 from scripts.match_rank_quality import (
     book_gap_pp_from_favorite,
+    duplicate_model_prob_keys,
     ensure_match_reliability_scored,
+    excluded_duplicate_model_prob_from_top5,
     match_has_rank_points_source,
     passes_data_reliability_filter,
     reliability_fields_from_match,
@@ -45,10 +47,14 @@ DEFAULT_JSONL_MIN_INTERVAL_SEC = int(
 
 
 def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
-    out: list[dict] = []
+    pool: list[dict] = []
     for m in matches:
         if not isinstance(m, dict):
             continue
+        pool.append(dict(m))
+    dup_keys = duplicate_model_prob_keys(pool)
+    out: list[dict] = []
+    for m in pool:
         try:
             if float(m.get("odd_p1") or 0.0) <= 1.0 or float(m.get("odd_p2") or 0.0) <= 1.0:
                 continue
@@ -56,10 +62,10 @@ def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
             continue
         if not match_has_rank_points_source(m):
             continue
-        ensure_match_reliability_scored(m)
+        ensure_match_reliability_scored(m, duplicate_keys=dup_keys)
         if not passes_data_reliability_filter(m):
             continue
-        out.append(dict(m))
+        out.append(m)
     return out
 
 
@@ -399,6 +405,7 @@ def collect_top5_proba_picks(
             ml._load_bundle_if_needed()
 
     pool: list[dict] = []
+    dup_prob_keys = duplicate_model_prob_keys(matches)
     for m in matches:
         if today_only and not is_today_paris_match(m, today=cal_date_obj):
             continue
@@ -414,6 +421,8 @@ def collect_top5_proba_picks(
             continue
         ensure_match_reliability_scored(m)
         if not passes_data_reliability_filter(m):
+            continue
+        if excluded_duplicate_model_prob_from_top5(m, duplicate_keys=dup_prob_keys):
             continue
         tour = _match_tour(m)
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
@@ -463,6 +472,38 @@ def collect_top5_proba_picks(
     return out
 
 
+def collect_hybrid_proba_picks(
+    matches: list[dict],
+    *,
+    limit: int | None = 5,
+    today_only: bool = True,
+    major_only: bool = True,
+    calendar_date: str | None = None,
+    ml: TennisMLModel | None = None,
+) -> list[dict]:
+    """Top 5 / 1D1P prod : sélection hybride P80 + EV tier1/tier2 (max 5/jour)."""
+    from scripts.hybrid_pick_selection import (
+        HYBRID_MIN_PROBA_FRAC,
+        HYBRID_POOL_EV_MAX_PCT,
+        HYBRID_POOL_EV_MIN_PCT,
+        select_hybrid_picks,
+    )
+
+    pool = collect_top5_proba_picks(
+        matches,
+        limit=None,
+        ev_min_frac=HYBRID_POOL_EV_MIN_PCT / 100.0,
+        ev_max_frac=HYBRID_POOL_EV_MAX_PCT / 100.0,
+        today_only=today_only,
+        major_only=major_only,
+        min_proba_frac=HYBRID_MIN_PROBA_FRAC,
+        calendar_date=calendar_date,
+        ml=ml,
+    )
+    dup = duplicate_model_prob_keys(matches)
+    return select_hybrid_picks(pool, limit=limit, duplicate_keys=dup)
+
+
 def collect_daily_ev_band_picks(
     matches: list[dict],
     *,
@@ -475,15 +516,14 @@ def collect_daily_ev_band_picks(
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Picks favori modèle dans la bande EV (tri proba ↓)."""
-    return collect_top5_proba_picks(
+    """Picks Top 5 prod (sélection hybride). Paramètres EV legacy ignorés."""
+    _ = ev_min_frac, ev_max_frac, min_proba_frac
+    cap = 5 if limit is None else limit
+    return collect_hybrid_proba_picks(
         matches,
-        limit=limit,
-        ev_min_frac=ev_min_frac,
-        ev_max_frac=ev_max_frac,
+        limit=cap,
         today_only=today_only,
         major_only=major_only,
-        min_proba_frac=min_proba_frac,
         calendar_date=calendar_date,
         ml=ml,
     )

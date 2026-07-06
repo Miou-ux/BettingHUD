@@ -56,6 +56,7 @@ def main() -> int:
     from scripts.bets_db import DB_PATH_DEFAULT, ensure_bets_meta, get_meta, set_meta
     from scripts.discord_1d1p_notify import run_daily_pick
     from scripts.discord_1d1p_post_log import ensure_discord_1d1p_schema
+    from scripts.telegram_1d1p_post_log import ensure_telegram_1d1p_schema
 
     paris = ZoneInfo("Europe/Paris")
     today = datetime.now(paris).date().isoformat()
@@ -64,6 +65,7 @@ def main() -> int:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     ensure_discord_1d1p_schema(conn)
+    ensure_telegram_1d1p_schema(conn)
     ensure_bets_meta(conn)
 
     discord_rows = conn.execute(
@@ -104,6 +106,20 @@ def main() -> int:
                 print(f"discord delete warn {mid}: {exc}")
         conn.execute("DELETE FROM discord_1d1p_posts WHERE id = ?", (int(r["id"]),))
 
+    tg_rows = conn.execute(
+        """
+        SELECT id, post_type, message_preview
+        FROM telegram_1d1p_posts
+        WHERE calendar_date = ? AND post_type IN ('daily_pick', 'no_pick')
+        """,
+        (today,),
+    ).fetchall()
+    print(f"telegram_1d1p posts to delete: {len(tg_rows)}")
+    for r in tg_rows:
+        print(f"  id={r['id']} type={r['post_type']} preview={r['message_preview']}")
+    for r in tg_rows:
+        conn.execute("DELETE FROM telegram_1d1p_posts WHERE id = ?", (int(r["id"]),))
+
     if tg_token and tg_channel and tg_msg_id:
         try:
             if _delete_telegram_message(tg_token, tg_channel, tg_msg_id):
@@ -121,10 +137,13 @@ def main() -> int:
     discord_out = run_daily_pick(dry_run=False, force=True)
     print("discord repost:", discord_out)
 
-    from scripts.telegram_channel_notify import run_channel_notify
+    try:
+        from scripts.telegram_channel_notify import run_channel_notify
 
-    tg_out = run_channel_notify(dry_run=False, force=True)
-    print("telegram channel repost:", tg_out)
+        tg_out = run_channel_notify(dry_run=False, force=True)
+        print("telegram channel repost:", tg_out)
+    except Exception as exc:
+        print(f"telegram channel repost skipped: {exc}")
 
     # Private bot chat (TELEGRAM_CHAT_ID) — interactive /1pick1day
     chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
@@ -154,8 +173,11 @@ def main() -> int:
             telegram_user_id=chat_id,
         )
         print("telegram bot /1pick1day:", bot_out)
-    else:
-        print("telegram bot: TELEGRAM_CHAT_ID absent — skip")
+
+    from scripts.telegram_1d1p_notify import run_daily_pick as tg_1d1p_broadcast
+
+    tg_broadcast = tg_1d1p_broadcast(dry_run=False, force=True, source="repost")
+    print("telegram 1d1p broadcast:", tg_broadcast)
 
     return 0 if discord_out.get("ok") else 1
 

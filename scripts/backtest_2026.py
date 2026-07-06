@@ -393,7 +393,7 @@ def build_dataset_with_identity(ml: TennisMLModel, *, data_lag_days: int = 0):
         "winner_rank_points": df["winner_rank_points"].values,
         "loser_rank_points": df["loser_rank_points"].values,
     })
-    return dataset, df1, identity
+    return dataset, df1, df2, identity
 
 
 # ---------- backtest core ----------
@@ -846,7 +846,7 @@ def main():
     ml.surface_blend_n0 = 30.0
     ml.segment_blend_weight = 0.7
 
-    dataset, df1, identity = build_dataset_with_identity(ml, data_lag_days=int(args.data_lag_days))
+    dataset, df1, df2, identity = build_dataset_with_identity(ml, data_lag_days=int(args.data_lag_days))
     train_mask, test_mask = train_no_leak(ml, dataset, cutoff)
 
     bets_df, id_test = run_backtest(
@@ -861,6 +861,16 @@ def main():
                 ascending=[True, False],
                 kind="mergesort",
             ).reset_index(drop=True)
+        try:
+            from scripts.enrich_backtest_csv_reliability import augment_backtest_dataframe
+
+            bets_df = augment_backtest_dataframe(
+                bets_df,
+                db_path=os.path.join(ROOT, "data", "bettinghud.db"),
+                recompute_missing=True,
+            )
+        except Exception as exc:
+            print(f"[!] data_reliability_score non ajouté au CSV: {exc}")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         bets_df.to_csv(out_path, index=False)
         print(f"\nDétail sauvegardé: {out_path} (tri jour + priority_score desc)")

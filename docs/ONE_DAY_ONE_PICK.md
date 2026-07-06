@@ -1,6 +1,6 @@
 # 1 Day 1 Pick (1pick1day) — référence complète
 
-Pick **unique par jour** : meilleur candidat EV par circuit (ATP/WTA, proba ↓), puis meilleur entre circuits.  
+Pick **unique par jour** : **meilleur pick (rang 1)** de la sélection hybride Top 5 — même règles que `/top5`.  
 Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalpha.tech/1-day-1-pick).
 
 > **Langue canaux** : Telegram & Discord en **anglais** ([[COMMS_LOCALE]]). Web FR + EN.
@@ -11,18 +11,29 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 
 | Étape | Règle |
 |-------|--------|
-| Pool | Matchs du jour (Europe/Paris), tournois **majors 250+** main draw |
-| Par circuit | Premier classé **proba modèle ↓** avec **EV favori 15–100 %** (inclus) |
-| Entre circuits | Meilleur `p_model_fav` (tie-break ATP) |
-| Mise théorique | ½ Kelly × Brier, plafond 15 % BR |
-| Fall-through | Si n°1 ATP/WTA hors bande EV → candidat suivant **même circuit** (ex. Medvedev EV− → Fritz) |
+| Pool | Même sélection que **Top 5 hybride** (voir [[HYBRID_PICK_SELECTION]]) |
+| Proba | Favori modèle **≥ 80 %** |
+| EV | Tier 1 **15–30 %** puis complément tier 2 **30–50 %** (max 5 candidats/jour) |
+| Pick retenu | **Rang 1** au tri proba modèle ↓ (`selection_mode`: `hybrid_best`) |
+| Mise théorique | Kelly **0,65** × Brier, plafond 15 % BR |
+
+> **Juillet 2026** : remplace l’ancienne règle « 1er EV par circuit ATP/WTA + repli EV+ si p &lt; 70 % ».
+
+**Republication** après changement de règle :
+```bash
+/opt/bettinghud/venv/bin/python scripts/repost_1d1p_today.py --apply
+```
+(Discord + canal TG public + bot `/1pick1day` — supprime les posts du jour puis reposte.)
 
 **Code unifié** : `scripts/pick_modes.py` (`PickMode.ONE_PICK_ONE_DAY`) → web, Telegram, Discord.
 
 | Couche | Fichier |
 |--------|---------|
-| Chargement pick | `scripts/discord_1d1p_core.py` → `load_1d1p_today_pick()` |
-| Replay / stats | `CourtAlpha/api/services/one_day_one_pick.py` → `build_one_day_one_pick_replay()` |
+| Sélection hybride | `scripts/hybrid_pick_selection.py` → `select_hybrid_picks()` |
+| Top 5 pool | `scripts/daily_top_proba_store.py` → `collect_hybrid_proba_picks()` |
+| 1D1P live | `scripts/discord_1d1p_core.py` → `load_1d1p_today_pick()` (rang 1) |
+| Unifié | `scripts/pick_modes.py` (`PickMode.ONE_PICK_ONE_DAY`, `TOP5`) |
+| Replay / stats | `CourtAlpha/api/services/one_day_one_pick.py` → à aligner hybride |
 | Dédup snapshot TE | `scripts/daily_top_proba_store.py` → `dedupe_top_proba_rows_by_match()` |
 
 ---

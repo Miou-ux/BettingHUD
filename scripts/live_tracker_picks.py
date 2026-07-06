@@ -192,9 +192,10 @@ def collect_live_tracker_all_side_picks(
 
     detector = ValueDetector(min_value_threshold=-1.0)
     rows: list[dict] = []
-    from scripts.match_rank_quality import passes_data_reliability_filter
+    from scripts.match_rank_quality import passes_data_reliability_filter, reliability_fields_from_match, ensure_match_reliability_scored
 
     for idx, match in enumerate(matches):
+        ensure_match_reliability_scored(match)
         if not passes_data_reliability_filter(match):
             continue
         seg_brier = _match_segment_brier(match, ml)
@@ -264,6 +265,7 @@ def collect_live_tracker_all_side_picks(
                     "is_value": bool(val.get("is_value")),
                     "side": side,
                     "idx": idx,
+                    **reliability_fields_from_match(match),
                 }
             )
 
@@ -290,9 +292,10 @@ def collect_live_tracker_value_picks(
                 ml._load_bundle_if_needed()
 
     value_bets: list[dict] = []
-    from scripts.match_rank_quality import passes_data_reliability_filter
+    from scripts.match_rank_quality import passes_data_reliability_filter, reliability_fields_from_match, ensure_match_reliability_scored
 
     for idx, match in enumerate(matches):
+        ensure_match_reliability_scored(match)
         if not passes_data_reliability_filter(match):
             continue
         seg_brier = _match_segment_brier(match, ml)
@@ -358,6 +361,7 @@ def collect_live_tracker_value_picks(
                 "confidence": match.get("confidence"),
                 "side": side,
                 "idx": int(vb.get("idx") or 0),
+                **reliability_fields_from_match(match),
             }
         )
     return sort_picks_by_model_proba_desc(picks)

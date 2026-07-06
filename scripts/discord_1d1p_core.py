@@ -2,82 +2,16 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 EV_MIN_PCT = 15.0
 EV_MAX_PCT = 100.0
 PROBA_STANDARD_MIN_FRAC = 0.70
-"""Si le pick standard (EV 15–100 %) a p_model_fav < 70 %, repli EV > 0 (cap 100 %)."""
-
-
-def _passes_ev_band(row: dict[str, Any], *, ev_min_pct: float, ev_max_pct: float) -> bool:
-    try:
-        ev = float(row.get("ev_fav_pct"))
-    except (TypeError, ValueError):
-        return False
-    return ev_min_pct <= ev <= ev_max_pct
-
-
-def _passes_ev_positive(row: dict[str, Any], *, ev_max_pct: float) -> bool:
-    try:
-        ev = float(row.get("ev_fav_pct"))
-    except (TypeError, ValueError):
-        return False
-    return 0.0 < ev <= ev_max_pct
-
-
-def _best_circuit_candidate_between_circuits(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Meilleur candidat ATP vs WTA : proba modèle max, tie-break ATP."""
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda r: (
-            float(r.get("p_model_fav") or 0.0),
-            str(r.get("tour") or "").upper() == "ATP",
-        ),
-    )
-
-
-# Alias rétrocompat (scripts diag / tests).
-_best_rank1_between_circuits = _best_circuit_candidate_between_circuits
-
-
-def _first_ev_eligible_per_circuit(
-    rows: list[dict[str, Any]],
-    *,
-    ev_min_pct: float,
-    ev_max_pct: float,
-    row_ok: Callable[[dict[str, Any]], bool] | None = None,
-    ev_positive_only: bool = False,
-) -> list[dict[str, Any]]:
-    """Par circuit (ATP/WTA) : premier match classé proba ↓ avec EV dans la bande."""
-    from scripts.daily_top_proba_store import DEFAULT_TOURS
-
-    candidates: list[dict[str, Any]] = []
-    for tour in DEFAULT_TOURS:
-        tour_u = tour.upper()
-        ranked = sorted(
-            [r for r in rows if str(r.get("tour") or "").upper() == tour_u],
-            key=lambda r: (int(r.get("rank") or 999), -float(r.get("p_model_fav") or 0.0)),
-        )
-        for row in ranked:
-            if row_ok is not None and not row_ok(row):
-                continue
-            ev_ok = (
-                _passes_ev_positive(row, ev_max_pct=ev_max_pct)
-                if ev_positive_only
-                else _passes_ev_band(row, ev_min_pct=ev_min_pct, ev_max_pct=ev_max_pct)
-            )
-            if ev_ok:
-                candidates.append(row)
-                break
-    return candidates
+"""Legacy — la sélection prod utilise désormais la logique hybride (P80 + EV tiers)."""
 
 
 def select_1d1p_pick(
@@ -85,42 +19,23 @@ def select_1d1p_pick(
     *,
     ev_min_pct: float = EV_MIN_PCT,
     ev_max_pct: float = EV_MAX_PCT,
-    row_ok: Callable[[dict[str, Any]], bool] | None = None,
+    row_ok=None,
     proba_floor_frac: float = PROBA_STANDARD_MIN_FRAC,
+    hybrid_limit: int = 5,
 ) -> dict[str, Any] | None:
     """
-    Sélection 1D1P prod : EV 15–100 % par défaut ; si pick final < proba_floor (70 %),
-    repli sur premier candidat EV > 0 par circuit (toujours cap EV max).
-    """
-    circuit_std = _first_ev_eligible_per_circuit(
-        rows,
-        ev_min_pct=ev_min_pct,
-        ev_max_pct=ev_max_pct,
-        row_ok=row_ok,
-    )
-    pick = _best_circuit_candidate_between_circuits(circuit_std)
-    if pick is not None and float(pick.get("p_model_fav") or 0.0) >= float(proba_floor_frac):
-        out = dict(pick)
-        out["selection_mode"] = "standard"
-        return out
+    1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri proba ↓).
 
-    circuit_ev_plus = _first_ev_eligible_per_circuit(
-        rows,
-        ev_min_pct=ev_min_pct,
-        ev_max_pct=ev_max_pct,
-        row_ok=row_ok,
-        ev_positive_only=True,
-    )
-    pick_loose = _best_circuit_candidate_between_circuits(circuit_ev_plus)
-    if pick_loose is None:
-        if pick is not None:
-            out = dict(pick)
-            out["selection_mode"] = "standard_low_proba"
-            return out
+    Même pool que Top 5 (tier1 EV 15–30 %, complément tier2 EV 30–50 %, max 5/jour).
+    """
+    _ = ev_min_pct, ev_max_pct, proba_floor_frac
+    from scripts.hybrid_pick_selection import best_hybrid_pick, select_hybrid_picks
+
+    eligible = [r for r in rows if row_ok(r)] if row_ok is not None else list(rows)
+    picks = select_hybrid_picks(eligible, limit=hybrid_limit)
+    if not picks:
         return None
-    out = dict(pick_loose)
-    out["selection_mode"] = "ev_plus_fallback"
-    return out
+    return best_hybrid_pick(picks, limit=hybrid_limit, apply_telegram_proba_filter=False)
 
 
 def load_1d1p_today_pick(
@@ -130,15 +45,20 @@ def load_1d1p_today_pick(
     ev_min_pct: float = EV_MIN_PCT,
     ev_max_pct: float = EV_MAX_PCT,
 ) -> tuple[dict[str, Any] | None, str, int, float | None]:
-    """Retourne (pick, calendar_date, pool_size_majeur_EV, snapshot_age_min)."""
-    from scripts.bets_db import ensure_daily_top_proba_schema, sync_daily_top_proba_from_results
+    """Retourne (pick, calendar_date, pool_size_hybride, snapshot_age_min)."""
     from scripts.daily_top_proba_store import (
-        DEFAULT_TOP_LIMIT,
-        collect_daily_top_proba_rows,
-        dedupe_top_proba_rows_by_match,
+        collect_hybrid_proba_picks,
+        collect_top5_proba_picks,
         load_today_matches_for_daily_top_proba,
         snapshot_age_min_from_meta,
     )
+    from scripts.hybrid_pick_selection import (
+        HYBRID_MIN_PROBA_FRAC,
+        HYBRID_POOL_EV_MAX_PCT,
+        HYBRID_POOL_EV_MIN_PCT,
+        count_hybrid_pool_candidates,
+    )
+    from scripts.match_rank_quality import duplicate_model_prob_keys
     from scripts.tournament_tier import is_major_atp_wta_by_name
 
     cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
@@ -149,70 +69,36 @@ def load_1d1p_today_pick(
             str(row.get("tournament") or ""),
         )
 
-    def _reliability_row(row: dict[str, Any]) -> bool:
-        from scripts.match_rank_quality import passes_data_reliability_filter
-
-        score = row.get("data_reliability_score")
-        if score is None:
-            return True
-        return passes_data_reliability_filter(row)
-
-    def _eligible_row(row: dict[str, Any]) -> bool:
-        return _major_row(row) and _reliability_row(row)
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        ensure_daily_top_proba_schema(conn)
-        sync_daily_top_proba_from_results(conn)
-        db_rows = conn.execute(
-            """
-            SELECT *
-            FROM daily_top_proba_picks
-            WHERE calendar_date = ?
-            ORDER BY tour, rank
-            """,
-            (cal_day,),
-        ).fetchall()
-        pick = select_1d1p_pick(
-            dedupe_top_proba_rows_by_match([dict(r) for r in db_rows]),
-            ev_min_pct=ev_min_pct,
-            ev_max_pct=ev_max_pct,
-            row_ok=_eligible_row,
-        )
-        if pick is not None:
-            pick = dict(pick)
-            pick["source"] = "db"
-    finally:
-        conn.close()
-
     matches, snap_meta = load_today_matches_for_daily_top_proba()
     snapshot_age_min = snapshot_age_min_from_meta(snap_meta)
-    ranked_rows = collect_daily_top_proba_rows(
+    pool_rows = collect_top5_proba_picks(
         matches,
-        calendar_date=cal_day,
-        top_limit=DEFAULT_TOP_LIMIT,
+        limit=None,
+        ev_min_frac=HYBRID_POOL_EV_MIN_PCT / 100.0,
+        ev_max_frac=HYBRID_POOL_EV_MAX_PCT / 100.0,
         today_only=True,
+        major_only=True,
+        min_proba_frac=HYBRID_MIN_PROBA_FRAC,
+        calendar_date=cal_day,
     )
-    pool_n = len(
-        [
-            r
-            for r in ranked_rows
-            if _major_row(r)
-            and _passes_ev_band(r, ev_min_pct=ev_min_pct, ev_max_pct=ev_max_pct)
-        ]
+    dup = duplicate_model_prob_keys(matches)
+    pool_n = count_hybrid_pool_candidates(
+        [r for r in pool_rows if _major_row(r)],
+        duplicate_keys=dup,
     )
 
-    if pick is None:
-        pick = select_1d1p_pick(
-            ranked_rows,
-            ev_min_pct=ev_min_pct,
-            ev_max_pct=ev_max_pct,
-            row_ok=_eligible_row,
-        )
-        if pick is not None:
-            pick = dict(pick)
-            pick["source"] = "live"
+    hybrid = collect_hybrid_proba_picks(
+        matches,
+        limit=5,
+        today_only=True,
+        major_only=True,
+        calendar_date=cal_day,
+    )
+    pick = None
+    if hybrid:
+        pick = dict(hybrid[0])
+        pick["selection_mode"] = "hybrid_best"
+        pick["source"] = "live"
 
     return pick, cal_day, pool_n, snapshot_age_min
 

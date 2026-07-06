@@ -44,8 +44,36 @@ Champ snapshot : `data_reliability_score` + `data_reliability_flags` (liste de c
 | `book_gap_high` | jusqu’à −20 | `book_gap_pp` > 25 pp |
 | `p1_ref_date_stale` / `p2_ref_date_stale` | −8 | Badge fraîcheur référence |
 | `p1_data_stale` / `p2_data_stale` | −6 | Données joueur anciennes |
+| **`duplicate_model_prob`** | **−20** (défaut, `BETTINGHUD_DUP_PROB_PENALTY`) | Même `capped_p1_prob` sur ≥ 2 matchs distincts du snapshot |
 
 Le booléen **`unreliable`** continue de **bloquer le bouton Parier** dans l’UI ; le score sert au **tri**, au **filtrage** et aux **analyses** sans remplacer ce garde-fou binaire.
+
+### `duplicate_model_prob` — détection et publication Top 5 (juillet 2026)
+
+| Étape | Comportement |
+|-------|----------------|
+| **Détection** | `duplicate_model_prob_keys()` : même `capped_p1_prob` **dans le même tournoi** (évite faux positifs cross-événement) |
+| **Snapshot** | `dashboard.py` finalize : `duplicate_model_prob=True` + flag dans `data_reliability_flags` |
+| **Score** | Pénalité −20 (défaut) — un pick peut encore atteindre **rel ≥ 80** et passer `passes_data_reliability_filter` |
+| **Top 5 / 1D1P publication** | **Exclusion dure** : `excluded_duplicate_model_prob_from_top5()` dans `collect_hybrid_proba_picks` / `select_hybrid_picks` et `filter_telegram_display_picks` |
+| **Hors périmètre** | `/jour`, Live Tracker — le flag reste un signal d’audit / pénalité score uniquement |
+
+**Helpers** : `has_duplicate_model_prob_flag()`, `excluded_duplicate_model_prob_from_top5()`, `match_in_duplicate_model_prob_cluster()`.
+
+### Score v2 (juillet 2026) — plus de matchs éligibles sans assouplir Top 5
+
+| Changement | Effet |
+|------------|--------|
+| **hist_te_soft** | Conflit Base/TE mais rangs officiels frais (ATP/WTA) → pénalité **−8** au lieu de **−20** |
+| **ref_date_stale** | Ignoré si `stale_rank_ref` déjà appliqué sur le même joueur (évite double pénalité) |
+| **duplicate** | Cluster par **(proba, tournoi)** — pas cross-tournoi |
+| **Rescore** | `data_reliability_version=3` ; `ensure_match_reliability_scored` rescoring auto |
+| **ref_date_stale** | Pénalité seulement si référence rang **> 12 mois** (sinon badge UI sans malus score) |
+| **Diagnostic** | `scripts/diagnose_reliability_funnel.py` |
+
+Après déploiement : **`py -3 scripts/rebuild_live_projection.py`** pour recalculer le snapshot.
+
+**Backtest** : `scripts/backtest_p0_vs_prod_2026.py` — comparatif prod vs exclusion dup / cap EV sur 2026.
 
 ---
 

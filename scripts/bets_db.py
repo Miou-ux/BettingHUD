@@ -96,8 +96,10 @@ META_LAST_TOURS_SYNC_TS = "last_tours_sync_ts"
 META_LAST_TML_SYNC_TS = "last_tml_sync_ts"
 META_LAST_SACKMANN_SYNC_TS = "last_sackmann_sync_ts"
 META_LAST_ML_TRAIN_TS = "last_ml_train_ts"
-ALGO_OPP_KELLY_BASE_FRAC = 0.5
-ALGO_OPP_KELLY_MAX_STAKE_FRAC = 0.15
+from scripts.kelly_policy import KELLY_BASE_FRAC, KELLY_MAX_STAKE_FRAC  # noqa: E402
+
+ALGO_OPP_KELLY_BASE_FRAC = KELLY_BASE_FRAC
+ALGO_OPP_KELLY_MAX_STAKE_FRAC = KELLY_MAX_STAKE_FRAC
 ALGO_OPP_BRIER_CAP = 0.25
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1358,7 +1360,7 @@ def _algo_kelly_stake_frac(
     odd: object,
     segment_brier: object,
 ) -> float:
-    """Live staking policy: 1/2 Kelly, Brier indexed, capped at 15% bankroll."""
+    """Live staking policy: fractional Kelly (KELLY_BASE_FRAC), Brier indexed, capped."""
     try:
         p = max(0.0, min(1.0, float(p_model)))
         o = float(odd)
@@ -1512,8 +1514,8 @@ def upsert_algo_opportunities(
                     priority_score=excluded.priority_score,
                     snapshot_tier=excluded.snapshot_tier,
                     theoretical_stake_frac=excluded.theoretical_stake_frac,
-                    data_reliability_score=excluded.data_reliability_score,
-                    data_reliability_flags=excluded.data_reliability_flags,
+                    data_reliability_score=COALESCE(excluded.data_reliability_score, algo_opportunities.data_reliability_score),
+                    data_reliability_flags=COALESCE(excluded.data_reliability_flags, algo_opportunities.data_reliability_flags),
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -1912,8 +1914,8 @@ def upsert_daily_top_proba_picks(
                     snapshot_built_at=excluded.snapshot_built_at,
                     snapshot_tier=excluded.snapshot_tier,
                     capture_source=excluded.capture_source,
-                    data_reliability_score=excluded.data_reliability_score,
-                    data_reliability_flags=excluded.data_reliability_flags,
+                    data_reliability_score=COALESCE(excluded.data_reliability_score, daily_top_proba_picks.data_reliability_score),
+                    data_reliability_flags=COALESCE(excluded.data_reliability_flags, daily_top_proba_picks.data_reliability_flags),
                     last_captured_ts=excluded.last_captured_ts,
                     updated_at=excluded.updated_at
                 """,
@@ -2279,6 +2281,102 @@ def correct_retirement_voids_user_bets(conn: sqlite3.Connection) -> int:
     return n
 
 
+def _void_stale_open_daily_top_proba(conn: sqlite3.Connection, *, min_days: int = 14) -> int:
+    """Annule les picks toujours « En cours » longtemps après la date match (ex. match annulé)."""
+    ensure_daily_top_proba_schema(conn)
+    ensure_match_results_cache(conn)
+    try:
+        from scripts.scraper_results import canonical_player
+    except Exception:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT pick_key, calendar_date, match_date, player1, player2, fav_player,
+               odd_fav, p_model_fav, segment_brier, theoretical_stake_frac
+        FROM daily_top_proba_picks
+        WHERE COALESCE(status, 'En cours') = 'En cours'
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+          AND fav_player IS NOT NULL
+          AND julianday('now') - julianday(COALESCE(match_date, calendar_date)) >= ?
+        """,
+        (int(min_days),),
+    ).fetchall()
+    n = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    for key, calendar_date, match_date, p1, p2, fav_player, odd_fav, p_model_fav, segment_brier, stake_frac in rows:
+        p1c = canonical_player(p1)
+        p2c = canonical_player(p2)
+        wo = conn.execute(
+            """
+            SELECT 1 FROM match_results
+            WHERE (
+                (p1_canonical = ? AND p2_canonical = ?)
+                OR (p1_canonical = ? AND p2_canonical = ?)
+              )
+              AND walkover = 1
+            LIMIT 1
+            """,
+            (p1c, p2c, p2c, p1c),
+        ).fetchone()
+        hit = _lookup_match_result_for_players(
+            conn,
+            str(match_date or "")[:10],
+            p1c,
+            p2c,
+            calendar_date=str(calendar_date or "")[:10] or None,
+        )
+        if hit:
+            winner, score, walkover, retired, source, _resolved_date = hit
+            retired_eff = _retired_from_match_hit(
+                walkover=bool(walkover), retired=bool(retired), score=score
+            )
+            status, fav_won = _resolve_bet_status_from_match_result(
+                fav_player,
+                winner,
+                walkover=bool(walkover),
+                retired=retired_eff,
+            )
+            if status == "En cours":
+                continue
+            result_source = source
+        elif wo:
+            status, fav_won = "Annulé", None
+            score, result_source = None, "walkover_cache"
+        else:
+            status, fav_won = "Annulé", None
+            score, result_source = None, "stale_unresolved_void"
+        stake_frac = float(stake_frac or 0.0) or _algo_kelly_stake_frac(
+            p_model_fav, odd_fav, segment_brier
+        )
+        profit = 0.0 if status == "Annulé" else _algo_profit_for_status(status, odd_fav, stake_frac)
+        conn.execute(
+            """
+            UPDATE daily_top_proba_picks
+            SET status = ?, fav_won = ?, winner_resolved = ?, score_final = ?,
+                result_source = ?, theoretical_stake_frac = ?, theoretical_profit = ?,
+                settled_ts = ?, updated_at = ?
+            WHERE pick_key = ?
+            """,
+            (
+                status,
+                fav_won,
+                None,
+                score,
+                result_source,
+                stake_frac,
+                profit,
+                now_iso,
+                now_iso,
+                key,
+            ),
+        )
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
 def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
     """Résout Gagné/Perdu sur le favori modèle via le cache match_results."""
     ensure_daily_top_proba_schema(conn)
@@ -2355,6 +2453,7 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
     n += _correct_false_retirement_voids_daily_top_proba(conn)
     n += _correct_retirement_voids_daily_top_proba(conn)
     n += correct_retirement_voids_user_bets(conn)
+    n += _void_stale_open_daily_top_proba(conn)
     return n
 
 

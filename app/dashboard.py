@@ -299,7 +299,9 @@ AUTO_ML_TRAIN_INITIAL_DELAY_SEC = max(
 # Kelly ¼ (value bets) — fraction maximale de la bankroll **disponible** par pari recommandée.
 KELLY_RECO_BANKROLL_CAP_FRAC = 0.15
 # Fraction de Kelly pleine avant facteur Brier (stratégie live + défaut backtest « adaptatif »).
-KELLY_RECO_ADAPTIVE_BASE_FRAC = 0.5
+from scripts.kelly_policy import KELLY_BASE_FRAC, kelly_base_label  # noqa: E402
+
+KELLY_RECO_ADAPTIVE_BASE_FRAC = KELLY_BASE_FRAC
 # Seuil EV minimum Live / In-Play / sync report algo (défaut 15 %).
 DEFAULT_LIVE_EV_THRESHOLD_PCT = max(
     1.0, float(os.getenv("BETTINGHUD_LIVE_EV_THRESHOLD_PCT", "15"))
@@ -5128,6 +5130,8 @@ def _build_live_matches_core(
             )
     _mark("finalize")
     from scripts.match_rank_quality import (
+        RELIABILITY_SCORE_VERSION,
+        compute_match_reliability,
         duplicate_model_prob_keys,
         match_in_duplicate_model_prob_cluster,
     )
@@ -5137,11 +5141,10 @@ def _build_live_matches_core(
         if isinstance(_m, dict):
             _dup_prob = match_in_duplicate_model_prob_cluster(_m, _dup_prob_keys)
             _m["duplicate_model_prob"] = _dup_prob
-            _rs, _rf = _match_data_reliability_bundle(
-                _m, duplicate_model_prob=_dup_prob
-            )
+            _rs, _rf = compute_match_reliability(_m, duplicate_keys=_dup_prob_keys)
             _m["data_reliability_score"] = _rs
             _m["data_reliability_flags"] = _rf
+            _m["data_reliability_version"] = RELIABILITY_SCORE_VERSION
     try:
         complete_live_build_progress(len(matches))
     except Exception:
@@ -7295,7 +7298,7 @@ def _render_top5_proba_action_tab() -> None:
                 match=match,
             )
             _cap_pct = int(round(KELLY_RECO_BANKROLL_CAP_FRAC * 100.0))
-            _k_label = "1/2" if float(KELLY_RECO_ADAPTIVE_BASE_FRAC) >= 0.5 else "1/4"
+            _k_label = kelly_base_label(KELLY_RECO_ADAPTIVE_BASE_FRAC)
             st.caption(
                 f"Mise reco Kelly {_k_label} x Brier (cap {_cap_pct}% BR) : "
                 f"**{reco_eur:.2f} €** ({reco_pct:.2f}% BR dispo)"
@@ -7543,7 +7546,7 @@ def _render_inplay_bet_side(
         match=match,
     )
     st.caption(
-        f"Mise reco Kelly 1/2 × Brier : **{reco_eur:.2f} €** ({reco_pct:.2f}% BR dispo)"
+        f"Mise reco Kelly {kelly_base_label()} × Brier : **{reco_eur:.2f} €** ({reco_pct:.2f}% BR dispo)"
     )
 
     default_stake = max(
@@ -7876,7 +7879,7 @@ def _render_daily_algo_opportunity_report() -> None:
     st.markdown("### 📆 Report journalier algo")
     st.caption(
         "Historique durable des opportunités détectées par le Live Tracker. "
-        "La performance théorique simule ta règle Live : tri composite, Kelly 1/2, cap 15%, indexé Brier ; "
+        f"La performance théorique simule ta règle Live : tri composite, Kelly {kelly_base_label()}, cap 15%, indexé Brier ; "
         "la performance réelle reprend uniquement les paris effectivement placés."
     )
     _sync_cols = st.columns([1.4, 3.6]) if not MOBILE_COMPACT else st.columns([1, 1])
@@ -8995,7 +8998,7 @@ if not HEADLESS_APP:
         if abs(_man) > 1e-6:
             _raw = float(br_snap.get("available_raw_eur", br_avail - _man))
             _capt += f" **Correction manuelle : {_man:+.2f} €** (sans correction : {_raw:.2f} €)."
-        _capt += " **Mode BR : tous les paris (hypothèse Kelly 1/2 adaptatif globale).**"
+        _capt += f" **Mode BR : tous les paris (hypothèse Kelly {kelly_base_label()} adaptatif globale).**"
         st.caption(_capt)
     
         # Streamlit mémorise les `number_input` par clé : si la BR change (nouveau pari, résultat…),
@@ -9334,7 +9337,7 @@ if not HEADLESS_APP:
                             f"Sharpe/Brier **{float(val.get('sharpe_per_brier', 0)):.3f}** · "
                             f"Priorité **{float(val.get('priority_score', 0)):.4f}**"
                         )
-                        # Kelly partiel (défaut 1/2) sur la **cote saisie**, plafond BR dispo → KELLY_RECO_BANKROLL_CAP_FRAC.
+                        # Kelly partiel (défaut prod) sur la **cote saisie**, plafond BR dispo → KELLY_RECO_BANKROLL_CAP_FRAC.
                         p_model_side = min(1.0, max(0.0, 1.0 / float(odd_true))) if odd_true and odd_true > 0 else 0.0
                         b_side = max(0.01, float(custom_odd) - 1.0)
                         kelly_full = max(0.0, (b_side * p_model_side - (1.0 - p_model_side)) / b_side)
@@ -9346,7 +9349,7 @@ if not HEADLESS_APP:
                         reco_pct = reco_frac * 100.0
                         reco_eur = br_avail * reco_frac
                         _cap_pct = int(round(KELLY_RECO_BANKROLL_CAP_FRAC * 100.0))
-                        _k_label = "1/2" if float(KELLY_RECO_ADAPTIVE_BASE_FRAC) >= 0.5 else "1/4"
+                        _k_label = kelly_base_label(KELLY_RECO_ADAPTIVE_BASE_FRAC)
                         st.markdown(
                             f"**Mise reco (Kelly {_k_label} × Brier-adaptatif, cap {_cap_pct} % BR)** : "
                             f"<span class='quant-num'>{reco_eur:.2f} €</span>",
@@ -9794,7 +9797,7 @@ if not HEADLESS_APP:
             k_frac_label = st.selectbox(
                 "Kelly",
                 options=[
-                    "Kelly 1/2 adaptatif (Brier)",
+                    f"Kelly {kelly_base_label()} adaptatif (Brier)",
                     "Kelly 1/4 adaptatif (Brier)",
                     "Kelly ¼",
                     "Kelly ½",
@@ -9803,13 +9806,13 @@ if not HEADLESS_APP:
                 ],
                 index=0,
                 key="kcsv_kmult",
-                help="Mode adaptatif : fraction Kelly (1/2 ou 1/4) × max(0, 1 - Brier_segment/0.25), comme le live (défaut 1/2).",
+                help=f"Mode adaptatif : fraction Kelly ({kelly_base_label()} ou 1/4) × max(0, 1 - Brier_segment/0.25), comme le live.",
             )
             k_frac_map = {"Kelly ¼": 0.25, "Kelly ½": 0.5, "Kelly plein": 1.0}
             k_use_pct_br = k_frac_label == "% fixe de la BR"
             k_use_adapt = "adaptatif" in k_frac_label.lower()
-            if k_frac_label.startswith("Kelly 1/2 adaptatif"):
-                k_adapt_base = 0.5
+            if k_frac_label.startswith(f"Kelly {kelly_base_label()}"):
+                k_adapt_base = float(KELLY_RECO_ADAPTIVE_BASE_FRAC)
             elif k_frac_label.startswith("Kelly 1/4 adaptatif"):
                 k_adapt_base = 0.25
             else:

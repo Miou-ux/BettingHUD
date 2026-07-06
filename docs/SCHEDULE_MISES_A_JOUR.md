@@ -1,9 +1,9 @@
 # Planning des mises à jour — BettingHUD
 
 Vue **centralisée** : quand tournent scrape, snapshot, ML train, daemon, Telegram, etc.  
-Dernière mise à jour : **18 juin 2026**.
+Dernière mise à jour : **22 juin 2026**.
 
-> Environnements : [[ENVIRONNEMENTS]] · Crons PROD (synthèse) : [[CRONS_SEMAINE]] · Ops PROD : [[OPS_PROD_DEPANNAGE]] · Flags détaillés : [[CHANGELOG_RECENT]] §7–9.
+> Environnements : [[ENVIRONNEMENTS]] · Crons PROD (synthèse + **autonomie**) : [[CRONS_SEMAINE]] · Ops PROD : [[OPS_PROD_DEPANNAGE]] · Flags détaillés : [[CHANGELOG_RECENT]] §7–9.
 
 ---
 
@@ -103,8 +103,10 @@ Alimente : **Live Tracker**, **Paris du jour**, **Top probas jour**, **Telegram 
 |---|---|
 | **Script** | `scripts/scraper_prematch.py` (`FlashscoreScraper`) |
 | **Sortie** | `data/scraped/prematch_odds_YYYYMMDD_HHMMSS.csv` |
-| **Auto** | Si dernier CSV > **`BETTINGHUD_PREMATCH_TTL_MIN`** (déf. **20 min** dans `dashboard.py`) |
-| **Garanti** | Pipeline matin |
+| **Auto** | Thread dashboard si CSV > **`BETTINGHUD_PREMATCH_TTL_MIN`** (déf. 20 min) — **uniquement** si Streamlit tourne |
+| **Garanti PROD** | Cron pipeline matin **02:00 + 05:00** Paris (2×/jour) |
+
+> L’UI CourtAlpha peut afficher un statut « error » sur le scraper TE en journée : le CSV n’est pas rafraîchi toutes les 20 min en prod (seuils santé ≠ fréquence réelle). Voir [[CRONS_SEMAINE]] § *Autonomie PROD*.
 
 ---
 

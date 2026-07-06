@@ -162,6 +162,7 @@ def _warm_precomputed_picks() -> None:
         limit=limit,
         ev_min_pct=ev_today,
     )
+    load_picks(PickMode.ONE_PICK_ONE_DAY, channel=Channel.TELEGRAM)
     LOGGER.info("Picks Telegram precomputes en %.2f s", time.perf_counter() - t0)
 
 

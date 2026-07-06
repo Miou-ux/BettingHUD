@@ -34,6 +34,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[BACKTEST_TOP5_PROBA_VS_EV]] | Top **5** proba vs top **5** EV · grille EV min 5–20 % (2024–2026) |
 | [[BACKTEST_PARAM_OPTIMIZATION]] | Recherche auto EV min/max, top N (walk-forward, score composite) |
 | [[BACKTEST_RG_2026]] | **Backtest Roland-Garros 2026** — Top 5 proba vs EV vs p≥65 % |
+| [[BACKTEST_PROD_TOP5_2025_2026]] | **Top 5 prod réel** — replay 2025/2026, fiabilité, audit hit rate, scripts |
 | [[COMMS_LOCALE]] | **Langue TG & Discord** — communications publiques en **anglais** |
 | [[ONE_DAY_ONE_PICK]] | **1 Day 1 Pick** — sélection, web, TG, Discord, cron, dépannage |
 | [[TELEGRAM_TOP5]] | **Bot Telegram** — `/today`, `/top5`, `/1pick1day`, envoi matinal (EN) |
@@ -86,6 +87,10 @@ py -3 scripts/rebuild_live_projection.py
 
 # Pipeline matin
 py -3 scripts/morning_live_pipeline.py
+
+# Backtest Top 5 prod (2025 / 2026) — voir docs/BACKTEST_PROD_TOP5_2025_2026.md
+py -3 scripts/backtest_prod_top5_2026.py --year 2026
+py -3 scripts/backtest_prod_top5_2026.py --year 2025
 
 # Backtest RG 2026 (replay opportunites)
 py -3 scripts/backtest_rg_strategies.py --end 2026-05-29

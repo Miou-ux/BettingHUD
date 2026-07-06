@@ -126,13 +126,18 @@ def filter_telegram_display_picks(
     apply_proba_filter: bool = True,
 ) -> list[dict]:
     """Filtre affichage Telegram : EV >= seuil (aligné web/Discord) ; proba optionnelle."""
-    from scripts.match_rank_quality import passes_data_reliability_filter
+    from scripts.match_rank_quality import (
+        excluded_duplicate_model_prob_from_top5,
+        passes_data_reliability_filter,
+    )
 
     mp = _telegram_min_proba_pct() if min_proba_pct is None else float(min_proba_pct)
     me = _telegram_min_ev_pct() if min_ev_pct is None else float(min_ev_pct)
     kept: list[dict] = []
     for p in picks:
         if not passes_data_reliability_filter(p):
+            continue
+        if excluded_duplicate_model_prob_from_top5(p):
             continue
         if apply_proba_filter and _pick_proba_pct(p) <= mp:
             continue
@@ -144,7 +149,11 @@ def filter_telegram_display_picks(
     return kept
 
 
-def _telegram_pick_criteria_line(*, ev_max_pct: float | None = 100.0) -> str:
+def _telegram_pick_criteria_line(*, ev_max_pct: float | None = 100.0, hybrid: bool = False) -> str:
+    if hybrid:
+        from scripts.hybrid_pick_selection import hybrid_criteria_line
+
+        return hybrid_criteria_line()
     from scripts.comms_locale import telegram_pick_criteria_line
 
     return telegram_pick_criteria_line(
@@ -439,7 +448,7 @@ def format_bot_onboarding_after_approval() -> str:
             "  (<code>/cancel</code> to abort a flow in progress)",
             "",
             "<b>4. Learn more</b>",
-            "  <code>/strategy</code> — selection & staking (½ Kelly × Brier)",
+            "  <code>/strategy</code> — selection & staking (Kelly 0.65 × Brier)",
             "  <code>/help</code> — full command list",
             "",
             "🌅 Every morning (~05:00 Paris): auto <code>/top5</code>.",
@@ -483,12 +492,13 @@ def format_bot_strategy_message() -> str:
             "<b>2. Pick selection</b>",
             "• <b>Today</b> matches (Europe/Paris), valid odds",
             "• <b>Model favorite</b> = highest model probability",
-            "• <b>/top5</b>: model favorite, proba &gt;60%, EV 15–100%, majors, top 5 by proba",
+            "• <b>/top5</b> & <b>/1pick1day</b>: hybrid selection — proba ≥80%, EV tier1 15–30%, "
+            "tier2 30–50% (fill to 5/day), majors, sorted by proba",
+            "• <b>/1pick1day</b>: rank 1 of that hybrid Top 5",
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
-            "• <b>/1pick1day</b>: best EV-eligible pick per circuit (proba ↓), ATP vs WTA, majors",
             "",
             "<b>3. Staking (Kelly)</b>",
-            "• <b>½ Kelly</b> (conservative vs full Kelly)",
+            "• <b>Kelly 0.65</b> (fractional Kelly, Brier-adjusted)",
             "• <b>Brier</b> adjustment by segment (surface / tour)",
             "• <b>15% cap</b> of available bankroll per bet",
             "",
@@ -511,10 +521,10 @@ def format_bot_help_message() -> str:
             f"ℹ️ <b>{BRAND_NAME} Bot — Help</b>",
             "",
             "<b>/1pick1day</b> · /1d1p",
-            "  One pick per day · best EV-eligible per circuit · EV 15–100% · majors.",
+            "  One pick per day · best from hybrid Top 5 (rank 1) · majors.",
             "",
             "<b>/top5</b> · /top",
-            "  Top 5 model proba · <b>proba &gt;60%</b> · <b>EV 15–100%</b> · ATP/WTA 250+.",
+            "  Hybrid Top 5 · <b>proba ≥80%</b> · EV tier1 15–30% + tier2 30–50% · ATP/WTA 250+.",
             "  <b>Bet</b> button under each match.",
             "",
             "<b>/today</b>",
@@ -559,7 +569,7 @@ def format_top5_telegram_message(
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
-        _telegram_pick_criteria_line(),
+        _telegram_pick_criteria_line(hybrid=True),
     ]
     if source == "morning":
         lines.append("🌅 Morning auto-send")
@@ -625,7 +635,7 @@ def format_top5_interactive_header(
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
-        _telegram_pick_criteria_line(),
+        _telegram_pick_criteria_line(hybrid=True),
     ]
     if source == "manual":
         lines.append("📲 On-demand · <b>Bet</b> mode")
@@ -1244,9 +1254,10 @@ def format_1d1p_telegram_message(
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
         tg(
-            "Majors 250+ · best EV-eligible pick per circuit · EV 15–100%",
-            "Majeurs 250+ · meilleur candidat EV par circuit · EV 15–100 %",
+            "Majors 250+ · best pick from hybrid Top 5 selection (rank 1)",
+            "Majeurs 250+ · meilleur pick de la sélection hybride Top 5 (rang 1)",
         ),
+        _telegram_pick_criteria_line(hybrid=True),
         "━━━━━━━━━━━━━━━━━━━━",
     ]
     if not pick:

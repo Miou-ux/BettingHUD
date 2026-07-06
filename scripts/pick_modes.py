@@ -1,8 +1,8 @@
 """Sélection unifiée des picks — web, Telegram, Discord.
 
 Modes :
-  - ``1pick1day`` : par circuit, premier classé proba ↓ avec EV 15–100 % ; meilleur ATP vs WTA
-  - ``top5``      : favori modèle, proba >60 %, EV 15–100 %, majeurs, max 5
+  - ``1pick1day`` : meilleur pick de la sélection hybride du jour (même logique que Top 5, rank 1)
+  - ``top5``      : sélection hybride P≥80 %, EV tier1 15–30 % + tier2 30–50 %, max 5, majeurs
   - ``today``     : Live Tracker / Today's Pick — value bets EV ≥15 %, majeurs + mineurs
 """
 from __future__ import annotations

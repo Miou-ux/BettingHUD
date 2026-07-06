@@ -6,6 +6,83 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Sélection hybride Top 5 / 1 Day 1 Pick — juillet 2026
+
+| Livrable | Détail |
+|----------|--------|
+| **Règle** | P≥80 %, rel≥80, tier1 EV 15–30 %, tier2 EV 30–50 % (complément), max 5/jour, tri proba ↓ |
+| **Top 5** | `collect_hybrid_proba_picks()` via `pick_modes.TOP5` |
+| **1D1P** | Rang 1 de la même sélection hybride (`load_1d1p_today_pick`) |
+| **Code central** | `scripts/hybrid_pick_selection.py` |
+| **Hors périmètre** | `/jour` Live Tracker, Paris du jour mineurs — logique value bet inchangée |
+| **Doc** | **`docs/HYBRID_PICK_SELECTION.md`** · **`docs/TELEGRAM_TOP5.md`** § 3.4 · **`docs/ONE_DAY_ONE_PICK.md`** |
+| **Backtest 2026** | Hybride cap 5 : +296 € flat, hit 87,5 % (vs prod ancien +265 €, 65,8 %) |
+| **CourtAlpha** | Aligner `one_day_one_pick.py` replay sur hybride (dépôt CourtAlpha) |
+| **Deploy** | `courtalpha-api`, `bettinghud-telegram-bot`, `bettinghud-dashboard` |
+
+---
+
+## 0. Mise à jour 3 juillet 2026 — Kelly **0,65** (ex-½)
+
+| Livrable | Détail |
+|----------|--------|
+| **Règle** | Fraction Kelly de base **0,65** × facteur Brier segment, plafond **15 %** BR / liquidité |
+| **Code** | `scripts/kelly_policy.py` → `KELLY_BASE_FRAC` ; `bets_db._algo_kelly_stake_frac` ; `simulate_top10_proba_2026.KELLY_BASE` ; dashboard `KELLY_RECO_ADAPTIVE_BASE_FRAC` |
+| **Périmètre** | Top 5, 1D1P, Telegram **Bet**, Live Tracker, CourtAlpha (reco mise) |
+| **Backtest 2026 Top5** | +16 714 € Kelly (vs +6 377 € en 0,5), DD 16,8 % (vs 13,1 %) |
+| **Doc** | `PREDICTION_ET_MISE.md` · `TELEGRAM_TOP5.md` · `ONE_DAY_ONE_PICK.md` |
+
+---
+
+**Docs** : **`docs/DATA_RELIABILITY.md`** (§ `duplicate_model_prob`) · **`docs/TELEGRAM_TOP5.md`** § 3.4 · **`docs/BACKTEST_PROD_TOP5_2025_2026.md`** § 2
+
+| Livrable | Détail |
+|----------|--------|
+| **Règle** | Les matchs du cluster **`duplicate_model_prob`** (même `capped_p1_prob` sur ≥ 2 matchs distincts) sont **exclus de la publication Top 5** — pas seulement pénalisés au score |
+| **Code** | `scripts/match_rank_quality.py` → `has_duplicate_model_prob_flag()`, `excluded_duplicate_model_prob_from_top5()` |
+| **Sélection** | `collect_top5_proba_picks()` · `filter_telegram_display_picks()` · backtest `backtest_prod_top5_2026.py` |
+| **Périmètre** | Top 5 Telegram matin, `/top5`, API CourtAlpha `/api/picks/top5`, **1 Day 1 Pick** — **pas** Paris du jour `/jour` |
+| **Backfill rang** | Le pick suivant au tri proba ↑ remplace le slot libéré (max 5/jour conservé) |
+| **Backtest 2026** | vs prod actuel sur l’année : flat **+2 €**, hit **+5,4 pp**, DD **−8,8 pp** ; exclusion `dup` seule **+20 €** flat (voir analyse juillet 2026) |
+| **Tests** | `tests/test_daily_top_proba_store.py` · `tests/test_match_rank_quality.py` |
+| **Prod** | Scripts déployés + restart `courtalpha-api`, `bettinghud-telegram-bot`, `bettinghud-dashboard` |
+
+**Contexte** : la pénalité score (`BETTINGHUD_DUP_PROB_PENALTY`, défaut **−20**) laissait passer des picks à rel 80 (ex. Wimbledon R1 juin 2026, hit ~38 % sur 8 picks live). L’exclusion publication est validée sur **476 picks** 2026 hybride, pas sur la seule fenêtre post-lancement (~96 picks).
+
+---
+
+## 0. Mise à jour 26 juin 2026 — 1D1P repli EV+ si proba &lt; 70 %
+
+**Docs** : **`docs/ONE_DAY_ONE_PICK.md`** · **`docs/DISCORD_1D1P.md`**
+
+| Livrable | Détail |
+|----------|--------|
+| **Règle** | Pick standard EV 15–100 % ; si `p_model_fav` &lt; 70 % → repli premier candidat **EV &gt; 0** par circuit (cap 100 %) |
+| **Code** | `scripts/discord_1d1p_core.py` → `select_1d1p_pick()` (TG, Discord, web live via `load_1d1p_today_pick`) |
+| **Replay web** | `CourtAlpha/api/services/one_day_one_pick.py` — `_select_one_pick_per_day` aligné |
+| **Backtest** | `scripts/backtest_prod_1d1p_2026.py` |
+| **Republication** | `scripts/repost_1d1p_today.py --apply` (Discord + canal TG + bot) |
+
+---
+
+## 0. Mise à jour juin 2026 (c) — Backtest Top 5 prod 2025/2026 + couverture fiabilité
+
+**Doc** : **`docs/BACKTEST_PROD_TOP5_2025_2026.md`** · **`docs/DATA_RELIABILITY.md`** (§ persistance étendue)
+
+| Livrable | Détail |
+|----------|--------|
+| **Backtest prod** | `scripts/backtest_prod_top5_2026.py` — logique `collect_top5_proba_picks` (pas Pack 1/2) ; `--year 2025` ou `2026` |
+| **Cadre favori CSV** | `enrich_favorite_rows()` dans le backtest (aligné live) |
+| **Fiabilité DB** | `scripts/backfill_db_reliability_scores.py` — backfill prod 855/855 picks live |
+| **Fiabilité CSV** | `enrich_backtest_csv_reliability.py` + `backtest_csv_pick_rows.py` |
+| **Persistance capture** | `ensure_match_reliability_scored()` ; `bets_db.py` COALESCE |
+| **Audit hit rate** | `scripts/_audit_backtest_2025_hit_rate.py` — biais sélection / orientation CSV |
+| **Supprimé** | `_run_prod_top5_2026_backtest.py` (utilisait Pack 1 par erreur) |
+
+Résultats synthèse : 2026 partiel **+352 € flat** (290 picks) ; 2025 **+1 730 € flat** (651 picks) — interpréter hit rate avec prudence (voir doc).
+
+---
+
 ## 0. Mise à jour 23 juin 2026 (b) — Filtre fiabilité data ≥ 80
 
 | Livrable | Détail |
@@ -229,7 +306,7 @@ BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/rebuild_live_projection.py
 
 | Commande | Alias | Contenu |
 |----------|-------|---------|
-| `/strategie` | `/strategy` | Synthèse sélection (Top 5, EV 15–100 %) + mise Kelly ½ × Brier, cap 15 % |
+| `/strategie` | `/strategy` | Synthèse sélection (Top 5, EV 15–100 %) + mise Kelly 0,65 × Brier, cap 15 % |
 
 Fichiers : `scripts/telegram_top5_notify.py` (`format_bot_strategy_message`), `scripts/telegram_bot_daemon.py`.
 
