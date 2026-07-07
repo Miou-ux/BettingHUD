@@ -16,7 +16,7 @@ import argparse
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -125,7 +125,7 @@ def capture_shadow_picks(
     cal_day = calendar_date or _today_paris()
     matches, meta = load_today_matches_for_daily_top_proba()
     picks = select_candidate_picks(matches, calendar_date=cal_day)
-    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     built_at = float((meta or {}).get("built_at") or 0.0) or None
 
     conn = open_db(db_path)
@@ -201,7 +201,7 @@ def sync_shadow_results(*, db_path: str = DB_PATH_DEFAULT, strategy_key: str = S
             """,
             (strategy_key,),
         ).fetchall()
-        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         n = 0
         for r in rows:
             p1 = canonical_player(r["player1"])
