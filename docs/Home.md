@@ -35,6 +35,8 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[BACKTEST_PARAM_OPTIMIZATION]] | Recherche auto EV min/max, top N (walk-forward, score composite) |
 | [[BACKTEST_RG_2026]] | **Backtest Roland-Garros 2026** — Top 5 proba vs EV vs p≥65 % |
 | [[BACKTEST_PROD_TOP5_2025_2026]] | **Top 5 prod réel** — replay 2025/2026, fiabilité, audit hit rate, scripts |
+| [[HYBRID_PICK_SELECTION]] | Sélection hybride **Top 5 / 1D1P** (règles verrouillées P/EV/rel) |
+| [[SHADOW_TEST_TOP5]] | **Shadow test** stratégie candidate Top 5 (capture, sync, go/no-go) |
 | [[COMMS_LOCALE]] | **Langue TG & Discord** — communications publiques en **anglais** |
 | [[ONE_DAY_ONE_PICK]] | **1 Day 1 Pick** — sélection, web, TG, Discord, cron, dépannage |
 | [[TELEGRAM_TOP5]] | **Bot Telegram** — `/today`, `/top5`, `/1pick1day`, envoi matinal (EN) |
@@ -85,8 +87,18 @@ streamlit run app/dashboard.py
 # Snapshot live du jour
 py -3 scripts/rebuild_live_projection.py
 
+# Diagnostic fiabilité live (version score + entonnoir)
+py -3 scripts/diagnose_reliability_funnel.py
+py -3 scripts/diagnose_reliability_funnel.py --rescore
+
+# Comparaison v3 vs scores stockés (historique 2025/2026)
+py -3 scripts/compare_reliability_v3_backtest.py --year 2025 2026
+
 # Pipeline matin
 py -3 scripts/morning_live_pipeline.py
+
+# Shadow test Top5 candidat (capture/sync/report)
+py -3 scripts/shadow_top5.py --capture --sync-results --report
 
 # Backtest Top 5 prod (2025 / 2026) — voir docs/BACKTEST_PROD_TOP5_2025_2026.md
 py -3 scripts/backtest_prod_top5_2026.py --year 2026

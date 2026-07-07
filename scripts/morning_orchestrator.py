@@ -287,6 +287,20 @@ def run_publish_step(*, _log) -> bool:
     return True
 
 
+def run_shadow_step(*, _log) -> None:
+    """Non-blocking shadow capture for strategy experiments."""
+    try:
+        from scripts.shadow_top5 import capture_shadow_picks
+
+        out = capture_shadow_picks()
+        _log(
+            f"Shadow Top5 capturé : {out.get('n_picks', 0)} pick(s) "
+            f"(strategy={out.get('strategy_key')})."
+        )
+    except Exception as exc:
+        _log(f"Shadow Top5 ignoré (erreur non bloquante) : {exc}")
+
+
 def run_publish_chain(*, _log, force_tours_sync: bool = False) -> int:
     """Chaîne complète pour le cron 05:00. Retourne 0 seulement si tout a réussi."""
     _log("=== Chaîne matinale : sync tours → build → publications ===")
@@ -309,6 +323,7 @@ def run_publish_chain(*, _log, force_tours_sync: bool = False) -> int:
         _log("Chaîne interrompue : publications en échec.")
         return 3
 
+    run_shadow_step(_log=_log)
     _log("=== Chaîne matinale terminée avec succès ===")
     return 0
 

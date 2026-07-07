@@ -22,6 +22,32 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Mise en place Shadow Test Top 5 — 7 juillet 2026
+
+| Livrable | Détail |
+|----------|--------|
+| **Objectif** | Tester une stratégie candidate en prod **sans impacter** la publication Top 5 / 1D1P |
+| **Stratégie candidate** | `top5_ev25_rel85_p80` : P≥80 %, EV≥25 %, rel≥85, cap 5/jour, tri proba ↓ |
+| **Code** | `scripts/shadow_top5.py` (capture, sync résultats, reporting) |
+| **Stockage** | Nouvelle table SQLite `shadow_top5_picks` (`data/bettinghud.db`) |
+| **Orchestration** | `scripts/morning_orchestrator.py` : capture shadow non bloquante après publications 05:00 |
+| **Doc** | `docs/SHADOW_TEST_TOP5.md` |
+
+---
+
+## 0. Mise à jour 6 juillet 2026 — Fiabilité data v3 déployée PROD
+
+| Livrable | Détail |
+|----------|--------|
+| **Score v3** | `data_reliability_version=3` : `hist_te_soft` (−8), duplicate par `(proba, tournoi)`, malus `ref_date_stale` limité aux références > 12 mois |
+| **Code** | `scripts/match_rank_quality.py`, `scripts/reliability_context.py`, `scripts/daily_top_proba_store.py`, `app/dashboard.py` |
+| **Diagnostic** | `scripts/diagnose_reliability_funnel.py` (snapshot live) |
+| **A/B historique** | `scripts/compare_reliability_v3_backtest.py` (pool, picks, ROI ; interprétation prudente) |
+| **Déploiement** | rebuild complet `scripts/rebuild_live_projection.py` + restart services prod |
+| **Résultat PROD (06/07)** | Snapshot v3 reconstruit : 23 matchs raw, **18 rel ≥ 80**, 8 value bets EV ≥ 15 %, Top 5 hybride 0 (règles P/EV) |
+
+---
+
 ## 0. Mise à jour 3 juillet 2026 — Kelly **0,65** (ex-½)
 
 | Livrable | Détail |
