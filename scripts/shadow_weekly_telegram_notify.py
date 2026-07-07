@@ -114,19 +114,22 @@ def format_report(prod: dict, shadow: dict, start: str, end: str) -> str:
     d_kelly = shadow["kelly_profit"] - prod["kelly_profit"]
     d_hit = shadow["hit_pct"] - prod["hit_pct"]
 
-    table = [
-        "Canal   n   set  hit%   flatROI   Kelly€",
-        f"Prod   {prod['n_total']:>3}  {prod['n_settled']:>3}  {prod['hit_pct']:>5.1f}  {prod['flat_roi_pct']:>+7.1f}%  {prod['kelly_profit']:>+7.1f}",
-        f"Shadow {shadow['n_total']:>3}  {shadow['n_settled']:>3}  {shadow['hit_pct']:>5.1f}  {shadow['flat_roi_pct']:>+7.1f}%  {shadow['kelly_profit']:>+7.1f}",
-    ]
-
     out = [
         "<b>🧪 Shadow Top5 hebdo</b>",
         f"<i>{now}</i>",
         f"Période: <code>{start}</code> → <code>{end}</code>",
         "",
         "<b>Comparatif</b>",
-        "<pre>" + "\n".join(table) + "</pre>",
+        (
+            "Prod — "
+            f"n={prod['n_total']} | settled={prod['n_settled']} | hit={prod['hit_pct']:.1f}% | "
+            f"flatROI={prod['flat_roi_pct']:+.1f}% | Kelly={prod['kelly_profit']:+.1f}€"
+        ),
+        (
+            "Shadow — "
+            f"n={shadow['n_total']} | settled={shadow['n_settled']} | hit={shadow['hit_pct']:.1f}% | "
+            f"flatROI={shadow['flat_roi_pct']:+.1f}% | Kelly={shadow['kelly_profit']:+.1f}€"
+        ),
         f"Δ Shadow-Prod: hit {d_hit:+.1f} pp | flatROI {d_flat_roi:+.1f} pp | Kelly {d_kelly:+.1f}€",
         "",
         f"{icon} <b>Verdict: {decision}</b>",
