@@ -115,24 +115,24 @@ def format_report(prod: dict, shadow: dict, start: str, end: str) -> str:
     d_hit = shadow["hit_pct"] - prod["hit_pct"]
 
     out = [
-        "<b>🧪 Shadow Top5 hebdo</b>",
-        f"<i>{now}</i>",
-        f"Période: <code>{start}</code> → <code>{end}</code>",
+        "Shadow Top5 hebdo",
+        f"Horodatage: {now}",
+        f"Periode: {start} -> {end}",
         "",
-        "<b>Comparatif</b>",
+        "Comparatif",
         (
-            "Prod — "
+            "Prod: "
             f"n={prod['n_total']} | settled={prod['n_settled']} | hit={prod['hit_pct']:.1f}% | "
-            f"flatROI={prod['flat_roi_pct']:+.1f}% | Kelly={prod['kelly_profit']:+.1f}€"
+            f"flatROI={prod['flat_roi_pct']:+.1f}% | Kelly={prod['kelly_profit']:+.1f} EUR"
         ),
         (
-            "Shadow — "
+            "Shadow: "
             f"n={shadow['n_total']} | settled={shadow['n_settled']} | hit={shadow['hit_pct']:.1f}% | "
-            f"flatROI={shadow['flat_roi_pct']:+.1f}% | Kelly={shadow['kelly_profit']:+.1f}€"
+            f"flatROI={shadow['flat_roi_pct']:+.1f}% | Kelly={shadow['kelly_profit']:+.1f} EUR"
         ),
-        f"Δ Shadow-Prod: hit {d_hit:+.1f} pp | flatROI {d_flat_roi:+.1f} pp | Kelly {d_kelly:+.1f}€",
+        f"Delta Shadow-Prod: hit {d_hit:+.1f} pp | flatROI {d_flat_roi:+.1f} pp | Kelly {d_kelly:+.1f} EUR",
         "",
-        f"{icon} <b>Verdict: {decision}</b>",
+        f"{icon} Verdict: {decision}",
     ]
     for r in reasons:
         out.append(f"· {r}")
@@ -158,7 +158,7 @@ def run_weekly_notify(*, dry_run: bool = False, db_path: str | None = None) -> d
             sys.stdout.reconfigure(encoding="utf-8")
         except Exception:
             pass
-        print(text.replace("<b>", "**").replace("</b>", "**").replace("<i>", "_").replace("</i>", "_").replace("<code>", "`").replace("</code>", "`"))
+        print(text)
         return {"ok": True, "dry_run": True, "start": start, "end": end}
 
     from scripts.telegram_top5_notify import send_telegram_message
