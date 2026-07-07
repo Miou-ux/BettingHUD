@@ -95,11 +95,11 @@ def _metrics(conn: sqlite3.Connection, strategy_key: str, start: str, end: str) 
 def _go_no_go(prod: dict, shadow: dict) -> tuple[str, list[str]]:
     reasons: list[str] = []
     if shadow["n_settled"] < 10:
-        reasons.append("sample trop faible (<10 settled)")
+        reasons.append("sample trop faible (moins de 10 settled)")
     if shadow["flat_roi_pct"] <= prod["flat_roi_pct"]:
-        reasons.append("flat ROI shadow <= prod")
+        reasons.append("flat ROI shadow inferieur ou egal a prod")
     if shadow["kelly_profit"] <= prod["kelly_profit"]:
-        reasons.append("kelly profit shadow <= prod")
+        reasons.append("kelly profit shadow inferieur ou egal a prod")
     if reasons:
         return "NO-GO", reasons
     return "GO", ["shadow > prod en flat ROI et Kelly profit"]
