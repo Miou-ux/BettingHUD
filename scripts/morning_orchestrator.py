@@ -51,6 +51,13 @@ def _min_te_profile_ratio() -> float:
         return 0.5
 
 
+def _publish_fallback_snapshot_max_age_sec() -> int:
+    try:
+        return max(3600, int(os.getenv("BETTINGHUD_MORNING_PUBLISH_FALLBACK_MAX_AGE_SEC", "21600")))
+    except ValueError:
+        return 21600
+
+
 def _sync_meta_ok_today(tours_iso: str, cal: str) -> bool:
     if not tours_iso:
         return False
@@ -118,6 +125,9 @@ def ensure_tours_sync(*, _log, force: bool = False) -> bool:
     record_step("tours_sync", ok=ok, rc=rc, detail={"elapsed_sec": round(elapsed, 1)})
     if not ok:
         _log(f"Sync tours ÉCHEC (rc={rc}, {elapsed:.0f} s).")
+        if validate_tours_data(_log=_log):
+            _log("Données tours encore valides malgré l'échec sync — poursuite chaîne.")
+            return True
         return False
     _log(f"Sync tours OK ({elapsed:.0f} s).")
     return validate_tours_data(_log=_log)
@@ -155,8 +165,10 @@ def validate_build(*, _log) -> bool:
         conn.close()
 
     if int(n_top or 0) < 1:
-        _log("ÉCHEC garde-fou build : aucune ligne daily_top_proba_picks pour aujourd'hui.")
-        return False
+        _log(
+            "ATTENTION : aucune ligne daily_top_proba_picks pour aujourd'hui "
+            "(publication matinale à vide autorisée)."
+        )
 
     try:
         from app.dashboard import _count_te_profiles_complete
@@ -174,6 +186,30 @@ def validate_build(*, _log) -> bool:
     _log(
         f"Garde-fou build OK : {len(matches)} match(s), âge snapshot {age_sec:.0f}s, "
         f"top_proba_rows={n_top}."
+    )
+    return True
+
+
+def snapshot_ok_for_publish_fallback(*, _log) -> bool:
+    """Snapshot existant utilisable pour publier si le build 05:00 a échoué."""
+    from scripts.live_snapshot import load_latest_live_snapshot
+
+    matches, meta = load_latest_live_snapshot(max_age_sec=24 * 3600)
+    built_at = float((meta or {}).get("built_at") or 0.0)
+    age_sec = time.time() - built_at if built_at > 0 else -1.0
+    max_age = _publish_fallback_snapshot_max_age_sec()
+    if not matches:
+        _log("Fallback publication impossible : snapshot vide.")
+        return False
+    if built_at <= 0 or age_sec < 0 or age_sec > max_age:
+        _log(
+            f"Fallback publication impossible : snapshot trop vieux "
+            f"(âge={age_sec:.0f}s, max fallback={max_age}s)."
+        )
+        return False
+    _log(
+        f"Fallback publication : snapshot utilisable ({len(matches)} match(s), "
+        f"âge {age_sec:.0f}s)."
     )
     return True
 
@@ -256,12 +292,18 @@ def run_publish_chain(*, _log, force_tours_sync: bool = False) -> int:
     _log("=== Chaîne matinale : sync tours → build → publications ===")
 
     if not ensure_tours_sync(_log=_log, force=force_tours_sync):
-        _log("Chaîne interrompue après sync tours.")
-        return 1
+        _log(
+            "Sync tours en échec — poursuite build/publications "
+            "(scrape TE + snapshot ne dépendent pas du sync tours)."
+        )
 
-    if not run_build_step(_log=_log):
-        _log("Chaîne interrompue après build (publications non envoyées).")
-        return 2
+    build_ok = run_build_step(_log=_log)
+    if not build_ok:
+        if snapshot_ok_for_publish_fallback(_log=_log):
+            _log("Build échoué — tentative publications avec snapshot existant.")
+        else:
+            _log("Chaîne interrompue après build (publications non envoyées).")
+            return 2
 
     if not run_publish_step(_log=_log):
         _log("Chaîne interrompue : publications en échec.")

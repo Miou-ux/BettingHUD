@@ -143,15 +143,23 @@ def _load_socle(conn: sqlite3.Connection) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _parse_tourney_date_int(td: object) -> int | None:
+    s = str(td or "").strip().replace("-", "")[:8]
+    return int(s) if s.isdigit() and len(s) == 8 else None
+
+
 def _load_existing_keys(conn: sqlite3.Connection) -> set[tuple]:
     keys: set[tuple] = set()
     rows = conn.execute(
         "SELECT tourney_date, tourney_name, winner_name, loser_name FROM matches_recent"
     ).fetchall()
     for td, tn, w, l in rows:
+        di = _parse_tourney_date_int(td)
+        if di is None:
+            continue
         keys.add(
             (
-                int(str(td).replace("-", "")[:8]),
+                di,
                 str(tn or "").strip(),
                 str(w or "").strip(),
                 str(l or "").strip(),
