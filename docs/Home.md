@@ -99,6 +99,7 @@ py -3 scripts/morning_live_pipeline.py
 
 # Shadow test Top5 candidat (capture/sync/report)
 py -3 scripts/shadow_top5.py --capture --sync-results --report
+py -3 scripts/shadow_weekly_telegram_notify.py --dry-run
 
 # Backtest Top 5 prod (2025 / 2026) — voir docs/BACKTEST_PROD_TOP5_2025_2026.md
 py -3 scripts/backtest_prod_top5_2026.py --year 2026

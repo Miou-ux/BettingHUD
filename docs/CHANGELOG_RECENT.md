@@ -31,6 +31,7 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **Code** | `scripts/shadow_top5.py` (capture, sync résultats, reporting) |
 | **Stockage** | Nouvelle table SQLite `shadow_top5_picks` (`data/bettinghud.db`) |
 | **Orchestration** | `scripts/morning_orchestrator.py` : capture shadow non bloquante après publications 05:00 |
+| **Hebdo admin** | `scripts/shadow_weekly_telegram_notify.py` + cron `deploy/cron/shadow-weekly-telegram` |
 | **Doc** | `docs/SHADOW_TEST_TOP5.md` |
 
 ---

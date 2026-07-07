@@ -290,12 +290,15 @@ def run_publish_step(*, _log) -> bool:
 def run_shadow_step(*, _log) -> None:
     """Non-blocking shadow capture for strategy experiments."""
     try:
-        from scripts.shadow_top5 import capture_shadow_picks
+        from scripts.shadow_top5 import capture_shadow_suite
 
-        out = capture_shadow_picks()
+        out = capture_shadow_suite()
+        cand = out.get("candidate") or {}
+        prod = out.get("prod") or {}
         _log(
-            f"Shadow Top5 capturé : {out.get('n_picks', 0)} pick(s) "
-            f"(strategy={out.get('strategy_key')})."
+            "Shadow Top5 capturé : "
+            f"candidate={cand.get('n_picks', 0)} pick(s), "
+            f"prod={prod.get('n_picks', 0)} pick(s)."
         )
     except Exception as exc:
         _log(f"Shadow Top5 ignoré (erreur non bloquante) : {exc}")

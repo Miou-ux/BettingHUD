@@ -34,10 +34,12 @@ from scripts.bets_db import (
     open_db,
 )
 from scripts.daily_top_proba_store import collect_top5_proba_picks, load_today_matches_for_daily_top_proba
+from scripts.pick_modes import Channel, PickMode, load_picks
 from scripts.scraper_results import canonical_player
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 STRATEGY_KEY = "top5_ev25_rel85_p80"
+PROD_STRATEGY_KEY = "top5_prod_hybrid"
 TABLE = "shadow_top5_picks"
 
 
@@ -186,21 +188,111 @@ def capture_shadow_picks(
     }
 
 
-def sync_shadow_results(*, db_path: str = DB_PATH_DEFAULT, strategy_key: str = STRATEGY_KEY) -> int:
+def capture_prod_baseline_picks(
+    *,
+    db_path: str = DB_PATH_DEFAULT,
+    strategy_key: str = PROD_STRATEGY_KEY,
+    calendar_date: str | None = None,
+) -> dict[str, Any]:
+    cal_day = calendar_date or _today_paris()
+    res = load_picks(PickMode.TOP5, channel=Channel.WEB)
+    picks = [dict(p) for p in (res.picks or [])]
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    built_at = float((res.meta or {}).get("built_at") or 0.0) or None
+
+    conn = open_db(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_shadow_schema(conn)
+        for i, pick in enumerate(picks, start=1):
+            rank = int(pick.get("rank") or i)
+            conn.execute(
+                f"""
+                INSERT INTO {TABLE}(
+                    strategy_key, calendar_date, rank, match_name, player1, player2,
+                    fav_player, p_model_fav, odd_fav, ev_fav_pct, data_reliability_score,
+                    tournament, surface, snapshot_built_at, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(strategy_key, calendar_date, rank) DO UPDATE SET
+                    match_name=excluded.match_name,
+                    player1=excluded.player1,
+                    player2=excluded.player2,
+                    fav_player=excluded.fav_player,
+                    p_model_fav=excluded.p_model_fav,
+                    odd_fav=excluded.odd_fav,
+                    ev_fav_pct=excluded.ev_fav_pct,
+                    data_reliability_score=excluded.data_reliability_score,
+                    tournament=excluded.tournament,
+                    surface=excluded.surface,
+                    snapshot_built_at=excluded.snapshot_built_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    strategy_key,
+                    cal_day,
+                    rank,
+                    str(pick.get("match_name") or ""),
+                    pick.get("player1"),
+                    pick.get("player2"),
+                    pick.get("fav_player"),
+                    float(pick.get("p_model_fav") or 0.0),
+                    float(pick.get("odd_fav") or 0.0),
+                    float(pick.get("ev_fav_pct") or 0.0),
+                    int(float(pick.get("data_reliability_score") or 0)),
+                    pick.get("tournament"),
+                    pick.get("surface"),
+                    built_at,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "strategy_key": strategy_key,
+        "calendar_date": cal_day,
+        "n_picks": len(picks),
+        "snapshot_built_at": built_at,
+    }
+
+
+def capture_shadow_suite(
+    *,
+    db_path: str = DB_PATH_DEFAULT,
+    calendar_date: str | None = None,
+) -> dict[str, Any]:
+    out_candidate = capture_shadow_picks(db_path=db_path, calendar_date=calendar_date)
+    out_prod = capture_prod_baseline_picks(db_path=db_path, calendar_date=calendar_date)
+    return {"candidate": out_candidate, "prod": out_prod}
+
+
+def sync_shadow_results(*, db_path: str = DB_PATH_DEFAULT, strategy_key: str | None = None) -> int:
     conn = open_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
         ensure_shadow_schema(conn)
         ensure_match_results_cache(conn)
-        rows = conn.execute(
-            f"""
-            SELECT id, calendar_date, player1, player2, fav_player, odd_fav, p_model_fav
-            FROM {TABLE}
-            WHERE strategy_key = ?
-              AND COALESCE(status, 'En cours') = 'En cours'
-            """,
-            (strategy_key,),
-        ).fetchall()
+        if strategy_key:
+            rows = conn.execute(
+                f"""
+                SELECT id, calendar_date, player1, player2, fav_player, odd_fav, p_model_fav
+                FROM {TABLE}
+                WHERE strategy_key = ?
+                  AND COALESCE(status, 'En cours') = 'En cours'
+                """,
+                (strategy_key,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT id, calendar_date, player1, player2, fav_player, odd_fav, p_model_fav
+                FROM {TABLE}
+                WHERE COALESCE(status, 'En cours') = 'En cours'
+                """
+            ).fetchall()
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         n = 0
         for r in rows:
@@ -290,7 +382,7 @@ def report_shadow(*, db_path: str = DB_PATH_DEFAULT, strategy_key: str = STRATEG
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Shadow test capture/sync/report for candidate Top5.")
-    ap.add_argument("--capture", action="store_true", help="Capture today's shadow picks")
+    ap.add_argument("--capture", action="store_true", help="Capture today's candidate + prod baseline picks")
     ap.add_argument("--sync-results", action="store_true", help="Sync settled results from match_results")
     ap.add_argument("--report", action="store_true", help="Print shadow performance summary")
     ap.add_argument("--strategy-key", default=STRATEGY_KEY)
@@ -300,12 +392,13 @@ def main() -> int:
     acted = False
     if args.capture:
         acted = True
-        out = capture_shadow_picks(db_path=args.db_path, strategy_key=args.strategy_key)
+        out = capture_shadow_suite(db_path=args.db_path)
         print(out)
     if args.sync_results:
         acted = True
-        n = sync_shadow_results(db_path=args.db_path, strategy_key=args.strategy_key)
-        print({"synced": n, "strategy_key": args.strategy_key})
+        key = None if args.strategy_key.strip().lower() == "all" else args.strategy_key
+        n = sync_shadow_results(db_path=args.db_path, strategy_key=key)
+        print({"synced": n, "strategy_key": key or "all"})
     if args.report:
         acted = True
         print(report_shadow(db_path=args.db_path, strategy_key=args.strategy_key))

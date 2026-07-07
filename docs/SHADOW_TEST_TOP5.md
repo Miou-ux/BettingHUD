@@ -76,3 +76,21 @@ Go si, sur la fenêtre:
 3. performance stable semaine par semaine (pas uniquement sur un seul pic).
 
 Sinon: garder prod et itérer une autre variante (`strategy_key` différente).
+
+## 6. Rapport hebdo Telegram admin
+
+Script:
+
+```bash
+/opt/bettinghud/venv/bin/python scripts/shadow_weekly_telegram_notify.py --dry-run
+/opt/bettinghud/venv/bin/python scripts/shadow_weekly_telegram_notify.py
+```
+
+Contenu:
+- période glissante J-7 à J-1
+- métriques `Prod` vs `Shadow` (n, hit, flat PnL/ROI, Kelly profit)
+- verdict automatique `GO` / `NO-GO`
+
+Cron prod:
+- fichier source: `deploy/cron/shadow-weekly-telegram`
+- log: `/opt/bettinghud/data/logs/shadow_weekly_telegram.log`
