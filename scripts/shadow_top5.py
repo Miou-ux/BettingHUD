@@ -39,6 +39,7 @@ from scripts.scraper_results import canonical_player
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 STRATEGY_KEY = "top5_ev25_rel85_p80"
+STRATEGY_B_KEY = "top5_p80_ev15_30_rel80"
 PROD_STRATEGY_KEY = "top5_prod_hybrid"
 TABLE = "shadow_top5_picks"
 
@@ -118,6 +119,36 @@ def select_candidate_picks(matches: list[dict], *, calendar_date: str) -> list[d
     return out
 
 
+def select_candidate_b_picks(matches: list[dict], *, calendar_date: str) -> list[dict]:
+    pool = collect_top5_proba_picks(
+        matches,
+        limit=None,
+        ev_min_frac=0.15,
+        ev_max_frac=0.30,
+        today_only=True,
+        major_only=True,
+        min_proba_frac=0.80,
+        calendar_date=calendar_date,
+    )
+    filtered = [
+        p
+        for p in pool
+        if int(float(p.get("data_reliability_score") or 0)) >= 80
+    ]
+    filtered.sort(
+        key=lambda r: (
+            -float(r.get("p_model_fav") or 0.0),
+            str(r.get("match_name") or "").lower(),
+        )
+    )
+    out: list[dict] = []
+    for i, row in enumerate(filtered[:5], start=1):
+        pick = dict(row)
+        pick["rank"] = i
+        out.append(pick)
+    return out
+
+
 def capture_shadow_picks(
     *,
     db_path: str = DB_PATH_DEFAULT,
@@ -127,6 +158,76 @@ def capture_shadow_picks(
     cal_day = calendar_date or _today_paris()
     matches, meta = load_today_matches_for_daily_top_proba()
     picks = select_candidate_picks(matches, calendar_date=cal_day)
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    built_at = float((meta or {}).get("built_at") or 0.0) or None
+
+    conn = open_db(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_shadow_schema(conn)
+        for pick in picks:
+            conn.execute(
+                f"""
+                INSERT INTO {TABLE}(
+                    strategy_key, calendar_date, rank, match_name, player1, player2,
+                    fav_player, p_model_fav, odd_fav, ev_fav_pct, data_reliability_score,
+                    tournament, surface, snapshot_built_at, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(strategy_key, calendar_date, rank) DO UPDATE SET
+                    match_name=excluded.match_name,
+                    player1=excluded.player1,
+                    player2=excluded.player2,
+                    fav_player=excluded.fav_player,
+                    p_model_fav=excluded.p_model_fav,
+                    odd_fav=excluded.odd_fav,
+                    ev_fav_pct=excluded.ev_fav_pct,
+                    data_reliability_score=excluded.data_reliability_score,
+                    tournament=excluded.tournament,
+                    surface=excluded.surface,
+                    snapshot_built_at=excluded.snapshot_built_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    strategy_key,
+                    cal_day,
+                    int(pick.get("rank") or 0),
+                    str(pick.get("match_name") or ""),
+                    pick.get("player1"),
+                    pick.get("player2"),
+                    pick.get("fav_player"),
+                    float(pick.get("p_model_fav") or 0.0),
+                    float(pick.get("odd_fav") or 0.0),
+                    float(pick.get("ev_fav_pct") or 0.0),
+                    int(float(pick.get("data_reliability_score") or 0)),
+                    pick.get("tournament"),
+                    pick.get("surface"),
+                    built_at,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "strategy_key": strategy_key,
+        "calendar_date": cal_day,
+        "n_picks": len(picks),
+        "snapshot_built_at": built_at,
+    }
+
+
+def capture_shadow_b_picks(
+    *,
+    db_path: str = DB_PATH_DEFAULT,
+    strategy_key: str = STRATEGY_B_KEY,
+    calendar_date: str | None = None,
+) -> dict[str, Any]:
+    cal_day = calendar_date or _today_paris()
+    matches, meta = load_today_matches_for_daily_top_proba()
+    picks = select_candidate_b_picks(matches, calendar_date=cal_day)
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     built_at = float((meta or {}).get("built_at") or 0.0) or None
 
@@ -265,8 +366,9 @@ def capture_shadow_suite(
     calendar_date: str | None = None,
 ) -> dict[str, Any]:
     out_candidate = capture_shadow_picks(db_path=db_path, calendar_date=calendar_date)
+    out_candidate_b = capture_shadow_b_picks(db_path=db_path, calendar_date=calendar_date)
     out_prod = capture_prod_baseline_picks(db_path=db_path, calendar_date=calendar_date)
-    return {"candidate": out_candidate, "prod": out_prod}
+    return {"candidate_a": out_candidate, "candidate_b": out_candidate_b, "prod": out_prod}
 
 
 def sync_shadow_results(*, db_path: str = DB_PATH_DEFAULT, strategy_key: str | None = None) -> int:

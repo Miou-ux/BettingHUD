@@ -2,14 +2,21 @@
 
 Objectif : comparer une stratégie candidate au Top 5 prod **sans impacter les notifications ni les mises réelles**.
 
-## 1. Stratégie candidate actuelle
+## 1. Stratégies shadow
 
-- `strategy_key`: `top5_ev25_rel85_p80`
-- périmètre : majors ATP/WTA 250+ main draw
-- proba favori modèle `>= 80%`
-- EV favori `>= 25%`
-- `data_reliability_score >= 85`
-- tri proba desc, cap `5/jour`
+- **A** `top5_ev25_rel85_p80`
+  - majors ATP/WTA 250+ main draw
+  - proba favori `>= 80%`
+  - EV `>= 25%`
+  - `data_reliability_score >= 85`
+  - cap `5/jour`
+
+- **B** `top5_p80_ev15_30_rel80`
+  - majors ATP/WTA 250+ main draw
+  - proba favori `>= 80%`
+  - EV entre `15%` et `30%`
+  - `data_reliability_score >= 80`
+  - cap `5/jour`
 
 Code : `scripts/shadow_top5.py`
 
@@ -88,8 +95,9 @@ Script:
 
 Contenu:
 - période glissante J-7 à J-1
-- métriques `Prod` vs `Shadow` (n, hit, flat PnL/ROI, Kelly profit)
-- verdict automatique `GO` / `NO-GO`
+- métriques `Prod` vs `Shadow A` vs `Shadow B` (n, hit, flat PnL/ROI, Kelly profit)
+- verdict par variante (`GO` / `NO-GO`)
+- **action globale**: `KEEP` / `TEST+` / `SWITCH`
 
 Cron prod:
 - fichier source: `deploy/cron/shadow-weekly-telegram`

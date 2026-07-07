@@ -293,11 +293,13 @@ def run_shadow_step(*, _log) -> None:
         from scripts.shadow_top5 import capture_shadow_suite
 
         out = capture_shadow_suite()
-        cand = out.get("candidate") or {}
+        cand_a = out.get("candidate_a") or {}
+        cand_b = out.get("candidate_b") or {}
         prod = out.get("prod") or {}
         _log(
             "Shadow Top5 capturé : "
-            f"candidate={cand.get('n_picks', 0)} pick(s), "
+            f"A={cand_a.get('n_picks', 0)} pick(s), "
+            f"B={cand_b.get('n_picks', 0)} pick(s), "
             f"prod={prod.get('n_picks', 0)} pick(s)."
         )
     except Exception as exc:
