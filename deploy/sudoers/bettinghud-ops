@@ -1,0 +1,4 @@
+Cmnd_Alias BETTINGHUD_RESTART = /bin/systemctl restart bettinghud-dashboard, \
+                                /bin/systemctl restart bettinghud-daemon, \
+                                /bin/systemctl restart bettinghud-telegram-bot
+ubuntu ALL=(ALL) NOPASSWD: BETTINGHUD_RESTART

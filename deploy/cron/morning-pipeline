@@ -1,6 +1,6 @@
 # Pipeline matin BettingHUD — Europe/Paris
 CRON_TZ=Europe/Paris
-# 02:00 — scrape Tennis Explorer + snapshot (préparation web/daemon, pas de publication)
-0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only >> /opt/bettinghud/data/logs/morning_build_cron.log 2>&1
-# 05:00 — chaîne sync tours → build → publications (1D1P, Top 5, canal) — voir morning_orchestrator.py
-0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --morning-publish >> /opt/bettinghud/data/logs/morning_publish_cron.log 2>&1
+# 02:00 — scrape TE + snapshot (alerte TG si échec)
+0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning build 02:00" --log data/logs/morning_build_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only
+# 05:00 — sync tours → build → publications (alerte TG si échec)
+0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning publish 05:00" --log data/logs/morning_publish_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --morning-publish

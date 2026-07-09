@@ -1,0 +1,8 @@
+# Ops P0 — backup DB serveur + watchdog santé (Europe/Paris)
+CRON_TZ=Europe/Paris
+
+# 04:15 — backup SQLite local sur le serveur (rétention 30j)
+15 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/backup_prod_db_server.py >> /opt/bettinghud/data/logs/backup_db_server.log 2>&1
+
+# Toutes les 5 min — health dashboard + heartbeat daemon (+ restart auto)
+*/5 * * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/prod_health_watchdog.py >> /opt/bettinghud/data/logs/health_watchdog.log 2>&1

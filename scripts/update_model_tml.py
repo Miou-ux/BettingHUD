@@ -25,7 +25,7 @@ def _log(msg: str) -> None:
     print(f"[{_ts()}] {msg}", flush=True)
 
 
-def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None, db_path=None):
+def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None, db_path=None, segment_calib=False):
     t_pipeline = time.perf_counter()
     current_year = datetime.utcnow().year
     _log(f"=== Pipeline TML + ML | min_year={min_year} max_year={current_year} ===")
@@ -50,16 +50,29 @@ def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_p
     _log(f"Instance TennisMLModel créée en {t_load:.2f}s")
 
     t2 = time.perf_counter()
-    ml.train(
-        min_year=min_year,
-        model_path=output_pkl,
-        feature_plot_path=feature_plot_path,
-    )
+    if segment_calib:
+        os.environ["BETTINGHUD_SEGMENT_CALIB"] = "1"
+    else:
+        os.environ.pop("BETTINGHUD_SEGMENT_CALIB", None)
+    train_rc = 0
+    try:
+        ml.train(
+            min_year=min_year,
+            model_path=output_pkl,
+            feature_plot_path=feature_plot_path,
+        )
+    except Exception as exc:
+        train_rc = 1
+        _log(f"[ERROR] Entraînement ML échoué: {exc}")
     dt_train = time.perf_counter() - t2
-    _log(f"Fin entraînement ML — durée {dt_train:.1f}s ({dt_train/60:.1f} min)")
-    _log("Clusters « Player style » : consulter le bloc stdout « --- Player style clusters --- » (tri Ace%, random_state=42).")
-    _log("Matchup Synergy v4.6 : matrice style×style×surface + priors ATP/WTA (bayésien) persistés dans le bundle.")
-    _log("Style Drift v4.6 : détection transition (52 semaines vs 10 derniers matchs) incluse dans les features.")
+    if train_rc == 0:
+        _log(f"Fin entraînement ML — durée {dt_train:.1f}s ({dt_train/60:.1f} min)")
+        _log("Clusters « Player style » : consulter le bloc stdout « --- Player style clusters --- » (tri Ace%, random_state=42).")
+        _log("Matchup Synergy v4.6 : matrice style×style×surface + priors ATP/WTA (bayésien) persistés dans le bundle.")
+        _log("Style Drift v4.6 : détection transition (52 semaines vs 10 derniers matchs) incluse dans les features.")
+    else:
+        _log(f"Pipeline interrompu après échec train ({dt_train:.1f}s).")
+        return train_rc
 
     dt_total = time.perf_counter() - t_pipeline
     _log(f"=== TERMINÉ — total pipeline {dt_total:.1f}s ({dt_total/60:.1f} min) ===")
@@ -78,6 +91,26 @@ def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_p
         _log("Horodatage last_ml_train_ts enregistré dans bets_meta.")
     except Exception as exc:
         _log(f"[WARN] Impossible d'écrire last_ml_train_ts: {exc}")
+
+    hook_default = "1" if str(os.getenv("BETTINGHUD_ENV", "")).strip().lower() == "prod" else "0"
+    if os.getenv("BETTINGHUD_POST_ML_TRAIN_HOOK", hook_default).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from scripts.post_ml_train_hook import run_post_ml_train_hook
+
+            hook_rc = run_post_ml_train_hook()
+            if hook_rc != 0:
+                return hook_rc
+        except Exception as exc:
+            _log(f"[ERROR] Post-train hook: {exc}")
+            try:
+                from scripts.ops_telegram_alert import send_ops_alert
+
+                send_ops_alert("Post-train hook — exception", str(exc)[:500])
+            except Exception:
+                pass
+            return 1
+
+    return 0
 
 
 if __name__ == "__main__":
@@ -106,11 +139,18 @@ if __name__ == "__main__":
         default=None,
         help="Chemin du PNG d'importance des features (défaut : dérivé de --output-pkl).",
     )
+    parser.add_argument(
+        "--segment-calib",
+        action="store_true",
+        help="Calibration isotonique par segment (ATP_Clay, WTA_Grass, …) en plus BO3/BO5.",
+    )
     args = parser.parse_args()
-    update_model(
+    rc = update_model(
         min_year=args.min_year,
         skip_sync=args.skip_sync,
         output_pkl=args.output_pkl,
         feature_plot_path=args.feature_plot,
         db_path=args.db_path,
+        segment_calib=args.segment_calib,
     )
+    raise SystemExit(int(rc))

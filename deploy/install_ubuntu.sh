@@ -63,6 +63,17 @@ if [[ -f "${APP_DIR}/deploy/nginx/bettinghud.conf" ]]; then
   sudo systemctl restart nginx
 fi
 
+echo "[7/7] Crons PROD (deploy/cron/*)…"
+if [[ -d "${APP_DIR}/deploy/cron" ]]; then
+  for f in "${APP_DIR}"/deploy/cron/*; do
+    [[ -f "${f}" ]] || continue
+  base="$(basename "${f}")"
+  sudo cp "${f}" "/etc/cron.d/bettinghud-${base}"
+  sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-${base}"
+  sudo chmod 644 "/etc/cron.d/bettinghud-${base}"
+  done
+fi
+
 echo "=== Installation terminée ==="
 echo "Prochaine étape : copier data/ et models/ depuis ton PC, puis :"
 echo "  sudo systemctl start bettinghud-dashboard bettinghud-daemon"
