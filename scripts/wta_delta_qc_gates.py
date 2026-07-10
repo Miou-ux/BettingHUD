@@ -82,20 +82,14 @@ def run_wta_delta_qc_gates(
     delta = df[df["tourney_date"] >= cutoff_ts].copy()
 
     main_files = [p for p in files if "qual_itf" not in os.path.basename(p).lower()]
-    qual_files = [p for p in files if "qual_itf" in os.path.basename(p).lower()]
     main_dfs = [pd.read_csv(p, low_memory=False) for p in main_files]
     main_df = pd.concat(main_dfs, ignore_index=True) if main_dfs else df.iloc[0:0].copy()
     if len(main_df):
         main_df["tourney_date"] = pd.to_datetime(main_df["tourney_date"], format="%Y%m%d", errors="coerce")
         main_df = main_df.dropna(subset=["tourney_date"])
-    qual_dfs = [pd.read_csv(p, low_memory=False) for p in qual_files]
-    qual_df = pd.concat(qual_dfs, ignore_index=True) if qual_dfs else df.iloc[0:0].copy()
-    if len(qual_df):
-        qual_df["tourney_date"] = pd.to_datetime(qual_df["tourney_date"], format="%Y%m%d", errors="coerce")
-        qual_df = qual_df.dropna(subset=["tourney_date"])
     main_delta = main_df[main_df["tourney_date"] >= cutoff_ts].copy() if len(main_df) else main_df
 
-    for chk in check_c_integrity(df, delta, main_delta, files, main_df=main_df, qual_df=qual_df):
+    for chk in check_c_integrity(df, delta, main_delta, files):
         if chk.code != "C1":
             continue
         if chk.status == "FAIL":
