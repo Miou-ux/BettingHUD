@@ -20,20 +20,25 @@ def _wta_raw_dir() -> Path:
 
 
 def _rank_rate_post_cutoff_sqlite(db_path: str, cutoff: int) -> tuple[float, int, int]:
+    cutoff_s = str(cutoff)
+    cutoff_iso = f"{cutoff_s[:4]}-{cutoff_s[4:6]}-{cutoff_s[6:8]}"
     conn = sqlite3.connect(db_path)
     try:
         total = conn.execute(
-            "SELECT COUNT(*) FROM wta_matches WHERE tourney_date > ?",
-            (str(cutoff),),
+            """
+            SELECT COUNT(*) FROM wta_matches
+            WHERE CAST(REPLACE(SUBSTR(tourney_date, 1, 10), '-', '') AS INTEGER) > ?
+            """,
+            (int(cutoff_s),),
         ).fetchone()[0]
         with_ranks = conn.execute(
             """
             SELECT COUNT(*) FROM wta_matches
-            WHERE tourney_date > ?
+            WHERE CAST(REPLACE(SUBSTR(tourney_date, 1, 10), '-', '') AS INTEGER) > ?
               AND winner_rank IS NOT NULL AND loser_rank IS NOT NULL
               AND CAST(winner_rank AS REAL) > 0 AND CAST(loser_rank AS REAL) > 0
             """,
-            (str(cutoff),),
+            (int(cutoff_s),),
         ).fetchone()[0]
     finally:
         conn.close()
