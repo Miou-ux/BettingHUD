@@ -1,38 +1,66 @@
 # Archive WTA Sackmann — sauvegarde & restauration
 
-Dernière mise à jour : **18 juin 2026**.
+Dernière mise à jour : **10 juillet 2026**.
 
 L’archive sous `data/raw/tennis_wta/` est la **dernière copie connue** du dépôt [JeffSackmann/tennis_wta](https://github.com/JeffSackmann/tennis_wta) (repo **404** depuis juin 2026). Elle alimente `wta_matches` en SQLite, le ML WTA et `stats_engine`. **Ne pas modifier sans backup.**
 
-**Voir aussi :** [[OPS_PROD_DEPANNAGE]], `scripts/_wta_delta_brier_plan.md`, `scripts/backup_wta_sackmann_archive.py`.
+**Voir aussi :** [[OPS_PROD_DEPANNAGE]] § 6.4 · [[CHANGELOG_RECENT]] · `scripts/_wta_delta_acceptance.md` · `scripts/backup_wta_sackmann_archive.py`.
 
 ---
 
-## Contenu de l’archive (prod, 18/06/2026)
+## Contenu de l’archive (prod, 10/07/2026)
 
 | Élément | Détail |
 |---------|--------|
 | **Chemin live** | `/opt/bettinghud/data/raw/tennis_wta/` (~78 Mo) |
-| **Alimentation** | Pipeline **delta WTA** (`sync_wta_delta` + enrich) + **`refresh_wta_rankings_current.py`** (rangs depuis matchs récents / cache TE) — cron **03:30** |
+| **Alimentation** | Pipeline **delta WTA** (voir ci-dessous) — cron **03:30** `bettinghud-data-sync` |
 | **Schéma** | 49 colonnes Sackmann (`wta_matches_*.csv`) |
 | **Fichiers** | 35 CSV : main 2010–2026, qual/ITF 2010–2026, `wta_players.csv`, `wta_rankings_current.csv` |
 
-### Fraîcheur des matchs (après merge delta, 18/06/2026)
+### Fraîcheur des matchs (prod, 10/07/2026)
 
-| Fichier | `max(tourney_date)` |
-|---------|---------------------|
-| `wta_matches_2026.csv` | **20260614** (main tour + delta tennis-data) |
-| `wta_matches_qual_itf_2026.csv` | **20260602** (socle + delta partiel) |
-| SQLite `wta_matches` | **~407 233** lignes · max **2026-06-14** |
+| Fichier / table | `max(tourney_date)` | Source |
+|-----------------|---------------------|--------|
+| `wta_matches_2026.csv` (main) | **2026-07-10** | tennis-data + pont **Flashscore** |
+| `wta_matches_qual_itf_2026.csv` | **2026-07-10** | pont **Flashscore** (prematch TE ITF) — tennis-data **sans ITF** dans le xlsx 2026 |
+| `wta_rankings_current.csv` | ranking_date **2026-07-10** | `refresh_wta_rankings_current.py` (matchs + cache TE) |
+| SQLite `wta_matches` | **406 666** lignes · max **2026-07-10** | `ingest_sackmann_wta.py` après pipeline |
 
-### Modèle ML (post-merge)
+### Pipeline delta (post-Sackmann)
 
-| Bundle | `global_test_brier` | `tour_WTA` |
-|--------|---------------------|------------|
-| `xgb_model_tml_v47.pkl` (actuel) | **0.1749** | **0.1718** |
-| `xgb_model_tml_v47_pre_wta_delta.pkl` (rollback) | 0.1816 | 0.1664 |
+| Étape | Script | Rôle |
+|-------|--------|------|
+| 1 | `sync_wta_delta.py` | Matchs tennis-data.co.uk → CSV main / qual_itf |
+| 2 | `enrich_wta_delta_metadata.py` | IDs, âges, bio, dédup |
+| 3 | `refresh_wta_rankings_current.py --ingest` | `wta_rankings_current.csv` + SQLite `rankings_wta_current` |
+| 4 | `enrich_wta_delta_te_stats.py` | Stats service **Flashscore** |
+| 5 | `sync_wta_flashscore_results.py` | Pont lag ~1 sem. → **main + qual/ITF** |
+| 6 | `backfill_wta_delta_ranks.py` | Rangs match-time (historique + classement + cache TE) |
+| 7 | `pipeline_quality.py` | Ingest SQLite + index |
 
-Retrain prod : **18/06/2026** · gate J6 **PASS**.
+**Important :** le backfill rangs tourne **après** Flashscore (évite les trous sur les lignes FS sans `WRank`).
+
+### Source tennis-data — probe ITF
+
+```bash
+./venv/bin/python scripts/_probe_tdcuk_wta_tiers.py --year 2026 --refresh
+```
+
+Verdict prod (10/07) : **`source_no_itf_in_xlsx`** — le xlsx 2026w ne contient que le main tour (WTA250+). Le qual/ITF ne peut pas avancer via tennis-data seul.
+
+### Modèle ML (prod, retrain 10/07/2026)
+
+| Bundle | `global_test_brier` | `tour_WTA` | `tour_ATP` | Notes |
+|--------|---------------------|------------|------------|-------|
+| `xgb_model_tml_v47.pkl` (**actif**) | **0.1830** | **0.1692** | 0.1906 | Retrain manuel post-enrichissement WTA (`--min-year 2020`) |
+| `xgb_model_tml_v47.pkl.elo_backup` | 0.1749 | 0.1718 | 0.1775 | Avant retrain 10/07 |
+| `xgb_model_tml_v47_pre_wta_delta.pkl` | 0.1816 | 0.1664 | 0.1900 | Rollback juin (sans delta récent) |
+
+**Modèle unique ATP+WTA** : un retrain WTA peut déplacer le Brier ATP (split temporel 80/20 commun, Elo/styles partagés). Voir [[CHANGELOG_RECENT]] § WTA 10/07.
+
+```bash
+./venv/bin/python scripts/_probe_ml_bundle_brier.py
+```
 
 ### Classements WTA courants (juillet 2026)
 

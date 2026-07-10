@@ -1,6 +1,6 @@
 # Ops production & dépannage (PROD)
 
-Dernière mise à jour : **18 juin 2026**.
+Dernière mise à jour : **10 juillet 2026**.
 
 Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d’environnement, incidents rencontrés en mise en production et procédures de correction.
 
@@ -304,11 +304,48 @@ Le fichier source corrigé : `deploy/systemd/bettinghud-dashboard.service`.
 
 ### 6.4 WTA Sackmann — archive & delta prod
 
-Le dépôt GitHub **JeffSackmann/tennis_wta** est **indisponible** (404, juin 2026). L’archive sous `data/raw/tennis_wta/` sur prod est enrichie par le **pipeline delta** (tennis-data + stats Flashscore).
+Le dépôt GitHub **JeffSackmann/tennis_wta** est **indisponible** (404, juin 2026). L’archive sous `data/raw/tennis_wta/` sur prod est enrichie par le **pipeline delta** (tennis-data + Flashscore + TE).
 
-**Documentation complète :** [[WTA_SACKMANN_ARCHIVE]] · crons : [[CRONS_SEMAINE]]
+**Documentation complète :** [[WTA_SACKMANN_ARCHIVE]] · crons : [[CRONS_SEMAINE]] · changelog : [[CHANGELOG_RECENT]] § WTA 10/07.
 
-**État prod (18/06/2026)** : delta déployé · max match WTA **2026-06-14** · Brier global **0.1749** · rollback modèle : `xgb_model_tml_v47_pre_wta_delta.pkl`.
+**État prod (10/07/2026)** :
+
+| Métrique | Valeur |
+|----------|--------|
+| `wta_matches` max | **2026-07-10** (406 666 lignes) |
+| qual/ITF CSV max | **2026-07-10** (ex-06-02) |
+| `rankings_wta_current` max | **2026-07-10** |
+| Brier `tour_WTA` (bundle actif) | **0.1692** |
+| Rollback modèle | `xgb_model_tml_v47.pkl.elo_backup` (18/06) · `xgb_model_tml_v47_pre_wta_delta.pkl` |
+
+**Sync quotidien (03:30)** — ordre canonique dans `sync_tours_daily.py` :
+
+1. `sync_wta_delta` → `enrich_wta_delta_metadata --dedup`
+2. `refresh_wta_rankings_current --ingest`
+3. `enrich_wta_delta_te_stats` (Flashscore serve)
+4. `sync_wta_flashscore_results` (main **+ qual/ITF**)
+5. `backfill_wta_delta_ranks` (**après** Flashscore)
+6. `pipeline_quality` → `build_feature_store` → `refresh_elo_maps_fast`
+
+**Vérification rapide** :
+
+```bash
+cd /opt/bettinghud
+./venv/bin/python scripts/_probe_tdcuk_wta_tiers.py --year 2026
+./venv/bin/python scripts/_probe_ml_wta_rows.py
+./venv/bin/python scripts/_probe_ml_bundle_brier.py
+./venv/bin/python scripts/check_wta_delta_acceptance.py \
+  --raw-dir data/raw/tennis_wta --db-path data/bettinghud.db --cutoff-date 20260526
+```
+
+**Retrain manuel** (après gros enrichissement WTA) :
+
+```bash
+./venv/bin/python scripts/update_model_tml.py --min-year 2020 --skip-sync
+./venv/bin/python scripts/rebuild_live_projection.py
+```
+
+Log retrain 10/07 : `data/logs/ml_retrain_manual_20260710.log`.
 
 **Backup** :
 
@@ -317,8 +354,6 @@ py scripts/backup_wta_sackmann_archive.py --remote bettinghud --retain 12
 ```
 
 Cron hebdo : `deploy/cron/wta-sackmann-backup` (dimanche **02:15**).
-
-**Sync quotidien (03:30)** : `sync_tours_daily.py` → `sync_wta_delta` + `enrich_wta_delta_te_stats` — **plus** `fetch_wta_sackmann_raw.py`.
 
 **Ingest manuel** (si besoin) :
 

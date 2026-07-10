@@ -28,8 +28,30 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **Probe source** | `_probe_tdcuk_wta_tiers.py` — verdict `source_no_itf_in_xlsx` (tennis-data sans ITF) |
 | **Prod données** | qual/ITF max **2026-07-10** (ex-06-02) ; rangs post-cutoff **1256/1510** |
 | **Retrain** | `update_model_tml.py --min-year 2020 --skip-sync` · Brier `tour_WTA` **0.1692** (ex-0.1718) |
+| **Modèle joint ATP+WTA** | Brier global **0.1830** (+0.0081) et `tour_ATP` **0.1906** (+0.0131) — split 80/20 commun + features partagées ; rollback : `xgb_model_tml_v47.pkl.elo_backup` |
+| **Vérif** | `_probe_ml_bundle_brier.py` · `_probe_tdcuk_wta_tiers.py` · `_probe_ml_wta_rows.py` |
+
+### Pipeline WTA quotidien (prod, depuis 10/07/2026)
+
+```
+03:30 sync_tours_daily
+  sync_wta_delta
+  → enrich_wta_delta_metadata --dedup
+  → refresh_wta_rankings_current --ingest
+  → enrich_wta_delta_te_stats
+  → sync_wta_flashscore_results (main + qual/ITF)
+  → backfill_wta_delta_ranks
+  → pipeline_quality (ingest SQLite)
+  → build_feature_store + refresh_elo_maps_fast
+
+02:00 morning_live_pipeline
+  → refresh_wta_rankings_current + ingest_rankings_current
+  → scrape + rebuild snapshot
+```
 
 ---
+
+# Ops PROD — doublon cron matin supprimé (10 juillet 2026)
 
 | Élément | Détail |
 |---------|--------|
