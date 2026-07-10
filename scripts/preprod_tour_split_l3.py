@@ -29,8 +29,8 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from scripts.ml_model import TennisMLModel  # noqa: E402
-from scripts.ml_tour_router import enable_preprod_routing  # noqa: E402
 
+ROUTING_CONFIG = ROOT / "models" / ".ml_tour_routing_preprod.json"
 PREPROD_DB = ROOT / "data" / "preprod" / "bettinghud_prod_snapshot.db"
 ATP_BUNDLE = ROOT / "models" / "candidates" / "xgb_atp_only_l3.pkl"
 WTA_BUNDLE = ROOT / "models" / "candidates" / "xgb_wta_only_l3.pkl"
@@ -247,17 +247,17 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"\n[report] {REPORT_JSON}")
 
     if args.enable_routing:
-        cfg = enable_preprod_routing(
-            atp_bundle=str(ATP_BUNDLE.relative_to(ROOT)).replace("\\", "/"),
-            wta_bundle=str(WTA_BUNDLE.relative_to(ROOT)).replace("\\", "/"),
-        )
-        cfg["routing_level"] = 3
-        cfg["train_scope"] = "ATP-only + WTA-only separate"
-        Path(ROOT / "models" / ".ml_tour_routing_preprod.json").write_text(
-            json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        _log("[routing] models/.ml_tour_routing_preprod.json (niveau 3)")
+        cfg = {
+            "version": 1,
+            "routing_level": 3,
+            "train_scope": "ATP-only + WTA-only separate",
+            "atp_bundle": str(ATP_BUNDLE.relative_to(ROOT)).replace("\\", "/"),
+            "wta_bundle": str(WTA_BUNDLE.relative_to(ROOT)).replace("\\", "/"),
+            "enabled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        ROUTING_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        ROUTING_CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _log(f"[routing] {ROUTING_CONFIG} (niveau 3)")
 
     return 0
 
