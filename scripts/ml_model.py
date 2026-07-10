@@ -2613,13 +2613,13 @@ class TennisMLModel:
             q75_ret = max(float(ret_abs.quantile(0.75)) if not ret_abs.empty else 100.0, 50.0)
             wta_mask = (X_train["tour_encoded"] == 1.0).astype(float)
             if tf == "ATP":
-                wta_boost = np.ones(len(X_train), dtype=float)
+                wta_boost_arr = np.ones(len(X_train), dtype=float)
             elif tf == "WTA":
-                wta_boost = np.full(len(X_train), 1.5, dtype=float)
+                wta_boost_arr = np.full(len(X_train), 1.5, dtype=float)
             else:
-                wta_boost = 1.0 + 0.5 * wta_mask  # 1.5× for WTA rows
+                wta_boost_arr = (1.0 + 0.5 * wta_mask).to_numpy(dtype=float)
             w_train = (
-                wta_boost.values
+                wta_boost_arr
                 * (
                     1.0
                     + 0.65 * (serv_abs / q75_serv).clip(upper=1.0)
