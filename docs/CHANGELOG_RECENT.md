@@ -37,7 +37,7 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 | Élément | Détail |
 |---------|--------|
-| **P0-A alias** | `data/wta_name_aliases.json` + `scripts/wta_name_aliases.py` — corrections tennis-data (ex. Quevedo→Lys) ; intégré dans `fill_ranks`, matching Flashscore |
+| **P0-A alias** | `config/wta_name_aliases.json` + `scripts/wta_name_aliases.py` — corrections tennis-data (ex. Quevedo→Lys) ; intégré dans `fill_ranks`, matching Flashscore |
 | **P0-B serve** | 2ᵉ passe `enrich_wta_delta_te_stats.py --main-tour-only` après backfill rangs (lignes `w_svpt` NULL) |
 | **P0-C QC** | `scripts/wta_delta_qc_gates.py` (C1 doublons, D1 rangs main, couverture SQLite) → fusionné dans `qc_post_sync` + alerte TG ops |
 | **P0-D ATP live** | `stats_engine` : pont `matches_recent` `source='flashscore'` si match TML absent (dédup par date+noms) |

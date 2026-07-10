@@ -12,13 +12,19 @@ import pandas as pd
 from scripts.wta_sackmann_common import DEFAULT_CUTOFF, norm_name_key, parse_yyyymmdd
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ALIASES_PATH = ROOT / "data" / "wta_name_aliases.json"
+DEFAULT_ALIASES_PATH = ROOT / "config" / "wta_name_aliases.json"
+LEGACY_ALIASES_PATH = ROOT / "data" / "wta_name_aliases.json"
 
 
 @lru_cache(maxsize=1)
 def load_alias_config(path: str | Path | None = None) -> dict[str, Any]:
-    p = Path(path) if path else DEFAULT_ALIASES_PATH
-    if not p.is_file():
+    if path:
+        p = Path(path)
+    elif DEFAULT_ALIASES_PATH.is_file():
+        p = DEFAULT_ALIASES_PATH
+    elif LEGACY_ALIASES_PATH.is_file():
+        p = LEGACY_ALIASES_PATH
+    else:
         return {"name_aliases": {}, "row_corrections": []}
     with open(p, encoding="utf-8") as fh:
         data = json.load(fh)

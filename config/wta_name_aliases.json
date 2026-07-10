@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "comment": "Alias noms WTA delta (tennis-data / Flashscore). Clés = norm_name_key du nom erroné.",
+  "name_aliases": {
+    "quevedo k.": "lys e.",
+    "quevedo": "lys e.",
+    "k. quevedo": "lys e."
+  },
+  "row_corrections": [
+    {
+      "tourney_date": 20260529,
+      "winner_substr": "Svitolina",
+      "wrong_name_substr": "Quevedo",
+      "side": "loser",
+      "correct_name": "Lys E.",
+      "note": "tennis-data wrong loser; Flashscore vs Lys"
+    }
+  ]
+}

@@ -329,7 +329,7 @@ Le dépôt GitHub **JeffSackmann/tennis_wta** est **indisponible** (404, juin 20
 7. `wta_name_aliases.py` (post-FS) → `enrich_wta_delta_te_stats --main-tour-only` (retry serve)
 8. `pipeline_quality` → `build_feature_store` → `refresh_elo_maps_fast` → **`qc_post_sync`** (gates WTA + alerte TG)
 
-**Alias noms WTA** : éditer `data/wta_name_aliases.json` (corrections ligne à ligne + map alias). Appliquer manuellement :
+**Alias noms WTA** : éditer `config/wta_name_aliases.json` (corrections ligne à ligne + map alias). Appliquer manuellement :
 
 ```bash
 ./venv/bin/python scripts/wta_name_aliases.py --work-dir data/raw/tennis_wta
