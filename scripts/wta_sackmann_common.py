@@ -1,8 +1,11 @@
 """Shared helpers for WTA Sackmann delta pipeline (preprod)."""
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -147,6 +150,29 @@ def dedup_key(row: dict | pd.Series) -> tuple:
         str(row.get("winner_name", "") or "").strip(),
         str(row.get("loser_name", "") or "").strip(),
     )
+
+
+def is_qual_itf_tier(tier: object, tourney_name: object = None) -> bool:
+    """True si la ligne doit aller dans ``wta_matches_qual_itf_*`` (ITF / qual)."""
+    t = str(tier or "").upper().strip()
+    tn = str(tourney_name or "").upper()
+    if "ITF" in t or t.startswith("Q") or "QUAL" in t:
+        return True
+    if "ITF" in tn:
+        return True
+    return False
+
+
+def is_qual_itf_route(
+    category: object,
+    tier: object,
+    tourney_name: object = None,
+    tourney_level: object = None,
+) -> bool:
+    """Routage qual/ITF (Flashscore bridge, prematch TE category ITF)."""
+    if str(category or "").upper() == "ITF":
+        return True
+    return is_qual_itf_tier(tier, tourney_name)
 
 
 def tier_to_level(tier: object) -> str:
@@ -429,29 +455,222 @@ def lookup_rank_at(
     return rank, pts
 
 
+def _days_between_yyyymmdd(a: int, b: int) -> int:
+    from datetime import date
+
+    def _to_d(x: int) -> date:
+        return date(x // 10000, (x // 100) % 100, x % 100)
+
+    return abs((_to_d(b) - _to_d(a)).days)
+
+
+def lookup_rank_forward(
+    history: dict[int, list[tuple[int, float, float]]],
+    pid: int,
+    tourney_date: int,
+    *,
+    max_days: int = 60,
+) -> tuple[float | None, float | None]:
+    """Premier rang observé dans les ``max_days`` après la date du match (débuts / trou historique)."""
+    recs = history.get(pid)
+    if not recs:
+        return None, None
+    for td, r, p in recs:
+        if td < tourney_date:
+            continue
+        if _days_between_yyyymmdd(tourney_date, td) > max_days:
+            break
+        return r, p if not (isinstance(p, float) and pd.isna(p)) else None
+    return None, None
+
+
+def resolve_player_id_for_rank(
+    row: dict[str, Any] | pd.Series,
+    side: str,
+    name_to_id: dict[str, int] | None,
+) -> int | None:
+    """Résout un player_id réel (< 900000) depuis l'ID ligne ou le nom."""
+    pid_col = f"{side}_id"
+    name_col = f"{side}_name"
+    try:
+        pid = int(float(row.get(pid_col)))
+        if pid < 900000:
+            return pid
+    except (TypeError, ValueError):
+        pass
+    if not name_to_id:
+        return None
+    nk = norm_name_key(row.get(name_col))
+    if not nk:
+        return None
+    return name_to_id.get(nk)
+
+
+def load_current_rankings_map(
+    work_dir: Path | str,
+    db_path: str | None = None,
+) -> dict[int, tuple[float, float]]:
+    """player_id -> (rank, points) depuis wta_rankings_current.csv et optionnellement SQLite."""
+    out: dict[int, tuple[float, float]] = {}
+    work = Path(work_dir)
+    path = work / "wta_rankings_current.csv"
+    if path.is_file():
+        try:
+            rk = pd.read_csv(path, low_memory=False)
+            id_col = "player_id" if "player_id" in rk.columns else ("player" if "player" in rk.columns else None)
+            rank_col = "rank" if "rank" in rk.columns else ("ranking" if "ranking" in rk.columns else None)
+            pts_col = "points" if "points" in rk.columns else None
+            if id_col and rank_col:
+                for _, row in rk.iterrows():
+                    try:
+                        pid = int(float(row[id_col]))
+                        rank = float(row[rank_col])
+                    except (TypeError, ValueError):
+                        continue
+                    if rank <= 0 or rank >= 1500:
+                        continue
+                    pts = float("nan")
+                    if pts_col and pd.notna(row.get(pts_col)):
+                        try:
+                            pts = float(row[pts_col])
+                        except (TypeError, ValueError):
+                            pass
+                    out[pid] = (rank, pts)
+        except Exception:
+            pass
+
+    if db_path and os.path.isfile(db_path):
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT player_id, ranking, points FROM rankings_wta_current "
+                    "WHERE ranking IS NOT NULL AND ranking > 0 AND ranking < 1500"
+                ).fetchall()
+                for pid, rank, pts in rows:
+                    try:
+                        pid_i = int(pid)
+                        rank_f = float(rank)
+                        pts_f = float(pts) if pts is not None else float("nan")
+                    except (TypeError, ValueError):
+                        continue
+                    prev = out.get(pid_i)
+                    if prev is None or rank_f < prev[0]:
+                        out[pid_i] = (rank_f, pts_f)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    return out
+
+
+def build_te_cache_rank_maps(
+    work_dir: Path | str | None = None,
+    name_to_id: dict[str, int] | None = None,
+    *,
+    cache_dir: Path | str | None = None,
+) -> tuple[dict[int, tuple[float, float]], dict[str, tuple[float, float]]]:
+    """(by_player_id, by_norm_name) depuis ``data/cache/player_*.json`` (TE)."""
+    by_pid: dict[int, tuple[float, float]] = {}
+    by_name: dict[str, tuple[float, float]] = {}
+    cache = Path(cache_dir or Path("data") / "cache")
+    if not cache.is_dir():
+        return by_pid, by_name
+
+    name_to_id = dict(name_to_id or {})
+    work = Path(work_dir) if work_dir else None
+    if work and (work / "wta_players.csv").is_file():
+        try:
+            pdf = pd.read_csv(work / "wta_players.csv", low_memory=False)
+            for _, row in pdf.iterrows():
+                fn = str(row.get("first_name") or "").strip()
+                ln = str(row.get("last_name") or "").strip()
+                try:
+                    pid = int(float(row.get("player_id")))
+                except (TypeError, ValueError):
+                    continue
+                from scripts.player_identity import canonical_name, to_lastname_initial
+
+                for nm in (f"{fn} {ln}".strip(), ln):
+                    nk = canonical_name(to_lastname_initial(nm)) or nm.lower()
+                    if nk:
+                        name_to_id.setdefault(nk, pid)
+        except Exception:
+            pass
+
+    for path in cache.glob("player_*.json"):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        rank = data.get("rank")
+        try:
+            rank_i = int(rank)
+        except (TypeError, ValueError):
+            continue
+        if rank_i <= 0 or rank_i >= 1500:
+            continue
+        slug = path.stem[7:] if path.stem.startswith("player_") else path.stem
+        norm_slug = re.sub(r"[^a-z0-9]+", "", slug.lower())
+        pid: int | None = None
+        for norm, p in name_to_id.items():
+            if norm_slug and (norm_slug in norm or norm in norm_slug):
+                pid = int(p)
+                break
+        pts = float("nan")
+        if pid is not None:
+            by_pid[pid] = (float(rank_i), pts)
+        nk_slug = norm_name_key(slug.replace("-", " "))
+        if nk_slug:
+            by_name[nk_slug] = (float(rank_i), pts)
+    return by_pid, by_name
+
+
 def fill_ranks_if_missing(
     row: dict[str, Any],
     *,
     tourney_date: int,
     rank_history: dict[int, list[tuple[int, float, float]]],
     current_rankings: dict[int, tuple[float, float]] | None = None,
+    name_to_id: dict[str, int] | None = None,
+    te_rank_by_pid: dict[int, tuple[float, float]] | None = None,
+    te_rank_by_name: dict[str, tuple[float, float]] | None = None,
 ) -> int:
-    """Complète winner/loser rank (+ points) depuis l'historique ou rankings courants. Retourne nb champs remplis."""
+    """Complète winner/loser rank (+ points) depuis historique, forward, classement ou cache TE."""
     filled = 0
     cur = current_rankings or {}
+    te_pid = te_rank_by_pid or {}
+    te_name = te_rank_by_name or {}
     for side, pid_col, rank_col, pts_col in (
         ("winner", "winner_id", "winner_rank", "winner_rank_points"),
         ("loser", "loser_id", "loser_rank", "loser_rank_points"),
     ):
         if _rank_val_ok(row.get(rank_col)):
             continue
-        try:
-            pid = int(float(row.get(pid_col)))
-        except (TypeError, ValueError):
-            continue
-        rank, pts = lookup_rank_at(rank_history, pid, tourney_date)
-        if rank is None and pid in cur:
-            rank, pts = cur[pid]
+        pid = resolve_player_id_for_rank(row, side, name_to_id)
+        if pid is None:
+            try:
+                pid = int(float(row.get(pid_col)))
+            except (TypeError, ValueError):
+                pid = None
+        rank, pts = None, None
+        if pid is not None and pid < 900000:
+            rank, pts = lookup_rank_at(rank_history, pid, tourney_date)
+            if rank is None:
+                rank, pts = lookup_rank_forward(rank_history, pid, tourney_date)
+            if rank is None and pid in cur:
+                rank, pts = cur[pid]
+            if rank is None and pid in te_pid:
+                rank, pts = te_pid[pid]
+        if rank is None:
+            nk = norm_name_key(row.get(f"{side}_name"))
+            if nk and nk in te_name:
+                rank, pts = te_name[nk]
         if rank is not None:
             row[rank_col] = rank
             filled += 1

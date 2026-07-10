@@ -73,16 +73,37 @@ def _run_py_with_args(script_relative: str, extra_args: list[str]) -> int:
         return 1
 
 
-def _run_wta_delta_on_raw() -> int:
-    """sync_wta_delta + enrich sur data/raw/tennis_wta (prod)."""
+def _wta_delta_extra_args() -> list[str]:
     wta_dir = _wta_raw_dir()
-    os.makedirs(wta_dir, exist_ok=True)
     extra = ["--work-dir", wta_dir]
     try:
         from scripts.wta_sackmann_common import DEFAULT_CUTOFF
     except Exception:
         DEFAULT_CUTOFF = 20260526  # type: ignore[misc, assignment]
     extra += ["--cutoff-date", str(DEFAULT_CUTOFF)]
+    return extra
+
+
+def _run_wta_rank_backfill() -> int:
+    """Backfill rangs après sync_wta_delta + pont Flashscore (évite trous FS)."""
+    extra = _wta_delta_extra_args()
+    _append_log("WTA delta: backfill rangs match-time (post-Flashscore)")
+    rc = _run_py_with_args(
+        "backfill_wta_delta_ranks.py",
+        extra + ["--db-path", os.path.join(ROOT, "data", "bettinghud.db")],
+    )
+    if rc != 0:
+        _append_log("backfill_wta_delta_ranks.py a echoue (non bloquant).")
+    else:
+        _append_log("backfill_wta_delta_ranks.py OK.")
+    return rc
+
+
+def _run_wta_delta_on_raw() -> int:
+    """sync_wta_delta + enrich sur data/raw/tennis_wta (prod)."""
+    wta_dir = _wta_raw_dir()
+    os.makedirs(wta_dir, exist_ok=True)
+    extra = _wta_delta_extra_args()
     _append_log("WTA delta: lancement sync_wta_delta.py")
     rc = _run_py_with_args("sync_wta_delta.py", extra)
     if rc != 0:
@@ -168,6 +189,7 @@ def run_sync_bundle() -> int:
         rc = 1
     else:
         _append_log("sync_wta_flashscore_results.py OK.")
+    _run_wta_rank_backfill()
     if _run_py("sync_tml_recent.py") != 0:
         _append_log("sync_tml_recent.py rapporte erreur.")
         rc = 1

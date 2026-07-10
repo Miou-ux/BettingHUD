@@ -29,8 +29,10 @@ from scripts.wta_sackmann_common import (  # noqa: E402
     build_player_profile_lookup,
     build_rank_history,
     build_wta_players_table,
+    build_te_cache_rank_maps,
     dedup_key,
     fill_ranks_if_missing,
+    load_current_rankings_map,
     parse_yyyymmdd,
     row_completeness_score,
 )
@@ -44,35 +46,8 @@ def _qual_match_paths(work_dir: Path) -> list[Path]:
     ]
 
 
-def _load_current_rankings(work_dir: Path) -> dict[int, tuple[float, float]]:
-    """player_id -> (rank, points) depuis wta_rankings_current.csv si présent."""
-    path = work_dir / "wta_rankings_current.csv"
-    if not path.is_file():
-        return {}
-    try:
-        rk = pd.read_csv(path, low_memory=False)
-    except Exception:
-        return {}
-    id_col = "player_id" if "player_id" in rk.columns else ("player" if "player" in rk.columns else None)
-    rank_col = "rank" if "rank" in rk.columns else ("ranking" if "ranking" in rk.columns else None)
-    pts_col = "points" if "points" in rk.columns else None
-    if not id_col or not rank_col:
-        return {}
-    out: dict[int, tuple[float, float]] = {}
-    for _, row in rk.iterrows():
-        try:
-            pid = int(float(row[id_col]))
-            rank = float(row[rank_col])
-        except (TypeError, ValueError):
-            continue
-        pts = float("nan")
-        if pts_col and pd.notna(row.get(pts_col)):
-            try:
-                pts = float(row[pts_col])
-            except (TypeError, ValueError):
-                pass
-        out[pid] = (rank, pts)
-    return out
+def _load_current_rankings(work_dir: Path, db_path: str | None = None) -> dict[int, tuple[float, float]]:
+    return load_current_rankings_map(work_dir, db_path=db_path)
 
 
 def reorganize_work_dir_by_year(work_dir: Path) -> dict:
@@ -179,6 +154,7 @@ def enrich_metadata(
 
     rank_history = build_rank_history(all_df)
     current_rankings = _load_current_rankings(work_dir)
+    te_by_pid, te_by_name = build_te_cache_rank_maps(work_dir, name_to_id)
     ranks_filled = 0
 
     changed_cells = 0
@@ -213,6 +189,9 @@ def enrich_metadata(
                 tourney_date=td,
                 rank_history=rank_history,
                 current_rankings=current_rankings,
+                name_to_id=name_to_id,
+                te_rank_by_pid=te_by_pid,
+                te_rank_by_name=te_by_name,
             )
             for col in SACKMANN_COLUMNS:
                 if col not in rec:

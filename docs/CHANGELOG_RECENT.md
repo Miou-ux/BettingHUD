@@ -19,7 +19,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
-# Ops PROD — doublon cron matin supprimé (10 juillet 2026)
+# WTA — backfill rangs, pont FS qual/ITF, retrain ML (10 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Backfill rangs** | `backfill_wta_delta_ranks.py` + TE cache dans `fill_ranks_if_missing` ; cron : Flashscore **puis** backfill |
+| **Pont qual/ITF** | `sync_wta_flashscore_results` : prematch TE **WTA+ITF** → `wta_matches_qual_itf_*` (+ rangs à l’insertion) |
+| **Probe source** | `_probe_tdcuk_wta_tiers.py` — verdict `source_no_itf_in_xlsx` (tennis-data sans ITF) |
+| **Prod données** | qual/ITF max **2026-07-10** (ex-06-02) ; rangs post-cutoff **1256/1510** |
+| **Retrain** | `update_model_tml.py --min-year 2020 --skip-sync` · Brier `tour_WTA` **0.1692** (ex-0.1718) |
+
+---
 
 | Élément | Détail |
 |---------|--------|

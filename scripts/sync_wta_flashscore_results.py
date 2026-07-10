@@ -33,9 +33,14 @@ from scripts.wta_sackmann_common import (  # noqa: E402
     DEFAULT_CUTOFF,
     SACKMANN_COLUMNS,
     build_age_lookup,
+    build_rank_history,
+    build_te_cache_rank_maps,
     dedup_key,
     empty_row,
     estimate_age,
+    fill_ranks_if_missing,
+    is_qual_itf_route,
+    load_current_rankings_map,
     next_synthetic_player_id,
     norm_name_key,
     surface_norm,
@@ -154,8 +159,9 @@ def _load_prematch_context(*, lookback_days: int = 21) -> dict[tuple[frozenset[s
             continue
         if df.empty or "category" not in df.columns:
             continue
-        wta = df[df["category"].astype(str).str.upper() == "WTA"]
-        for _, row in wta.iterrows():
+        cats = df["category"].astype(str).str.upper()
+        subset = df[cats.isin(["WTA", "ITF"])]
+        for _, row in subset.iterrows():
             p1 = _clean_player_name(row.get("player1"))
             p2 = _clean_player_name(row.get("player2"))
             if not p1 or not p2 or "/" in p1 or "/" in p2:
@@ -171,11 +177,14 @@ def _load_prematch_context(*, lookback_days: int = 21) -> dict[tuple[frozenset[s
             if not tname:
                 continue
             tier_raw = str(row.get("tourney_winner_points") or "")
+            if str(row.get("category") or "").upper() == "ITF" and not tier_raw:
+                tier_raw = "ITF"
             surf = resolve_tournament_surface(tname)
             out[(pair, td)] = {
                 "tourney_name": tname,
                 "surface": surf,
                 "tier_raw": tier_raw,
+                "category": str(row.get("category") or "WTA"),
             }
             # Also index ±1 day (timezone / FS date skew)
             for delta in (-1, 1):
@@ -206,6 +215,10 @@ def _row_from_game(
     cutoff: int,
     fetch_stats: bool,
     session,
+    rank_history: dict,
+    current_rankings: dict,
+    te_by_pid: dict,
+    te_by_name: dict,
 ) -> dict | None:
     if not _finished_bo3(game):
         return None
@@ -245,6 +258,22 @@ def _row_from_game(
     out["best_of"] = 3
     out["round"] = "R32"
 
+    fill_ranks_if_missing(
+        out,
+        tourney_date=td,
+        rank_history=rank_history,
+        current_rankings=current_rankings,
+        name_to_id=name_to_id,
+        te_rank_by_pid=te_by_pid,
+        te_rank_by_name=te_by_name,
+    )
+    out["_qual_itf"] = is_qual_itf_route(
+        meta.get("category"),
+        meta.get("tier_raw"),
+        tourney_name,
+        out.get("tourney_level"),
+    )
+
     if fetch_stats and game.get("AA"):
         try:
             service = fetch_match_service_stats(str(game["AA"]), session=session)
@@ -274,8 +303,12 @@ def sync_flashscore_results(
     work_dir = Path(work_dir)
     existing = _load_existing_keys(work_dir)
     player_ids = _load_player_ids(work_dir)
-    age_lookup = build_age_lookup(_load_socle_matches(work_dir))
-    name_to_id = build_name_to_player_id(_load_socle_matches(work_dir))
+    socle = _load_socle_matches(work_dir)
+    age_lookup = build_age_lookup(socle)
+    name_to_id = build_name_to_player_id(socle)
+    rank_history = build_rank_history(socle)
+    current_rankings = load_current_rankings_map(work_dir)
+    te_by_pid, te_by_name = build_te_cache_rank_maps(work_dir, name_to_id)
     prematch_ctx = _load_prematch_context()
 
     idx = FlashscoreIndex()
@@ -297,6 +330,10 @@ def sync_flashscore_results(
             cutoff=cutoff,
             fetch_stats=fetch_stats and not dry_run,
             session=session,
+            rank_history=rank_history,
+            current_rankings=current_rankings,
+            te_by_pid=te_by_pid,
+            te_by_name=te_by_name,
         )
         if row is None:
             if _finished_bo3(game) and _game_date_int(game) and _game_date_int(game) >= cutoff:
@@ -312,15 +349,27 @@ def sync_flashscore_results(
         existing.add(k)
         candidates.append(row)
 
-    by_year: dict[int, list[dict]] = {}
+    by_year_main: dict[int, list[dict]] = {}
+    by_year_qual: dict[int, list[dict]] = {}
     for row in candidates:
         y = int(str(row["tourney_date"])[:4])
-        by_year.setdefault(y, []).append(row)
+        qual = bool(row.pop("_qual_itf", False))
+        bucket = by_year_qual if qual else by_year_main
+        bucket.setdefault(y, []).append(row)
 
     appended = 0
+    appended_qual = 0
     if not dry_run:
-        for year, rows in by_year.items():
-            path = work_dir / f"wta_matches_{year}.csv"
+
+        def _append_rows(year: int, rows: list[dict], *, qual_itf: bool) -> int:
+            if not rows:
+                return 0
+            fname = (
+                f"wta_matches_qual_itf_{year}.csv"
+                if qual_itf
+                else f"wta_matches_{year}.csv"
+            )
+            path = work_dir / fname
             df_new = pd.DataFrame(rows)[list(SACKMANN_COLUMNS)]
             if path.is_file():
                 df_old = pd.read_csv(path, low_memory=False)
@@ -328,12 +377,18 @@ def sync_flashscore_results(
             else:
                 df_out = df_new
             df_out.to_csv(path, index=False)
-            appended += len(rows)
+            return len(rows)
+
+        for year, rows in by_year_main.items():
+            appended += _append_rows(year, rows, qual_itf=False)
+        for year, rows in by_year_qual.items():
+            appended_qual += _append_rows(year, rows, qual_itf=True)
 
     return {
         "cutoff": cutoff,
         "candidates": len(candidates),
         "appended": appended,
+        "appended_qual_itf": appended_qual,
         "skipped_duplicates": skipped_dup,
         "skipped_no_prematch_context": skipped_no_ctx,
         "dry_run": dry_run,
