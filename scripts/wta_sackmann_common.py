@@ -500,7 +500,12 @@ def resolve_player_id_for_rank(
         pass
     if not name_to_id:
         return None
-    nk = norm_name_key(row.get(name_col))
+    try:
+        from scripts.wta_name_aliases import canonical_wta_name_key
+
+        nk = canonical_wta_name_key(row.get(name_col))
+    except Exception:
+        nk = norm_name_key(row.get(name_col))
     if not nk:
         return None
     return name_to_id.get(nk)
@@ -668,7 +673,12 @@ def fill_ranks_if_missing(
             if rank is None and pid in te_pid:
                 rank, pts = te_pid[pid]
         if rank is None:
-            nk = norm_name_key(row.get(f"{side}_name"))
+            try:
+                from scripts.wta_name_aliases import canonical_wta_name_key
+
+                nk = canonical_wta_name_key(row.get(f"{side}_name"))
+            except Exception:
+                nk = norm_name_key(row.get(f"{side}_name"))
             if nk and nk in te_name:
                 rank, pts = te_name[nk]
         if rank is not None:

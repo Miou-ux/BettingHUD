@@ -320,12 +320,21 @@ Le dépôt GitHub **JeffSackmann/tennis_wta** est **indisponible** (404, juin 20
 
 **Sync quotidien (03:30)** — ordre canonique dans `sync_tours_daily.py` :
 
-1. `sync_wta_delta` → `enrich_wta_delta_metadata --dedup`
-2. `refresh_wta_rankings_current --ingest`
-3. `enrich_wta_delta_te_stats` (Flashscore serve)
-4. `sync_wta_flashscore_results` (main **+ qual/ITF**)
-5. `backfill_wta_delta_ranks` (**après** Flashscore)
-6. `pipeline_quality` → `build_feature_store` → `refresh_elo_maps_fast`
+1. `sync_wta_delta` → `wta_name_aliases.py`
+2. `enrich_wta_delta_metadata --dedup`
+3. `refresh_wta_rankings_current --ingest`
+4. `enrich_wta_delta_te_stats` (Flashscore serve)
+5. `sync_wta_flashscore_results` (main **+ qual/ITF**)
+6. `backfill_wta_delta_ranks` (**après** Flashscore)
+7. `wta_name_aliases.py` (post-FS) → `enrich_wta_delta_te_stats --main-tour-only` (retry serve)
+8. `pipeline_quality` → `build_feature_store` → `refresh_elo_maps_fast` → **`qc_post_sync`** (gates WTA + alerte TG)
+
+**Alias noms WTA** : éditer `data/wta_name_aliases.json` (corrections ligne à ligne + map alias). Appliquer manuellement :
+
+```bash
+./venv/bin/python scripts/wta_name_aliases.py --work-dir data/raw/tennis_wta
+./venv/bin/python scripts/backfill_wta_delta_ranks.py --work-dir data/raw/tennis_wta
+```
 
 **Vérification rapide** :
 
@@ -334,6 +343,7 @@ cd /opt/bettinghud
 ./venv/bin/python scripts/_probe_tdcuk_wta_tiers.py --year 2026
 ./venv/bin/python scripts/_probe_ml_wta_rows.py
 ./venv/bin/python scripts/_probe_ml_bundle_brier.py
+./venv/bin/python scripts/wta_delta_qc_gates.py
 ./venv/bin/python scripts/check_wta_delta_acceptance.py \
   --raw-dir data/raw/tennis_wta --db-path data/bettinghud.db --cutoff-date 20260526
 ```

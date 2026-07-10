@@ -110,6 +110,12 @@ def _run_wta_delta_on_raw() -> int:
         _append_log("sync_wta_delta.py a echoue.")
         return rc
     _append_log("sync_wta_delta.py OK.")
+    _append_log("WTA delta: apply name aliases (tennis-data / FS)")
+    rc_alias = _run_py_with_args("wta_name_aliases.py", extra)
+    if rc_alias != 0:
+        _append_log("wta_name_aliases.py a echoue (non bloquant).")
+    else:
+        _append_log("wta_name_aliases.py OK.")
     _append_log("WTA delta: lancement enrich_wta_delta_metadata.py")
     rc = _run_py_with_args("enrich_wta_delta_metadata.py", extra + ["--dedup"])
     if rc != 0:
@@ -190,6 +196,17 @@ def run_sync_bundle() -> int:
     else:
         _append_log("sync_wta_flashscore_results.py OK.")
     _run_wta_rank_backfill()
+    _append_log("WTA delta: re-apply name aliases post-Flashscore")
+    _run_py_with_args("wta_name_aliases.py", _wta_delta_extra_args())
+    _append_log("WTA delta: retry serve enrich main tour (lignes w_svpt NULL)")
+    rc_serve2 = _run_py_with_args(
+        "enrich_wta_delta_te_stats.py",
+        _wta_delta_extra_args() + ["--main-tour-only"],
+    )
+    if rc_serve2 != 0:
+        _append_log("enrich_wta_delta_te_stats.py retry a echoue (non bloquant).")
+    else:
+        _append_log("enrich_wta_delta_te_stats.py retry OK.")
     if _run_py("sync_tml_recent.py") != 0:
         _append_log("sync_tml_recent.py rapporte erreur.")
         rc = 1

@@ -35,8 +35,10 @@ def _needs_enrich(row: pd.Series) -> bool:
     return v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == ""
 
 
-def _load_delta_rows(work_dir: Path, cutoff: int) -> tuple[list[Path], pd.DataFrame]:
+def _load_delta_rows(work_dir: Path, cutoff: int, *, main_tour_only: bool = False) -> tuple[list[Path], pd.DataFrame]:
     paths = [p for p in sorted(work_dir.glob("wta_matches*.csv")) if "doubles" not in p.name.lower()]
+    if main_tour_only:
+        paths = [p for p in paths if "qual_itf" not in p.name.lower()]
     frames = []
     for p in paths:
         df = pd.read_csv(p, low_memory=False)
@@ -56,8 +58,9 @@ def enrich_work_dir(
     cutoff: int = DEFAULT_CUTOFF,
     max_matches: int | None = None,
     delay_s: float = 1.75,
+    main_tour_only: bool = False,
 ) -> dict:
-    _, delta = _load_delta_rows(work_dir, cutoff)
+    _, delta = _load_delta_rows(work_dir, cutoff, main_tour_only=main_tour_only)
     if delta.empty:
         return {"enriched": 0, "skipped": 0, "failed": 0, "message": "aucune ligne delta sans stats"}
 
@@ -104,12 +107,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cutoff-date", type=int, default=DEFAULT_CUTOFF)
     ap.add_argument("--max-matches", type=int, default=None)
     ap.add_argument("--delay-s", type=float, default=1.75)
+    ap.add_argument(
+        "--main-tour-only",
+        action="store_true",
+        help="Ignore qual/ITF CSV files (retry pass on main tour 250+).",
+    )
     args = ap.parse_args(argv)
     stats = enrich_work_dir(
         Path(args.work_dir),
         cutoff=args.cutoff_date,
         max_matches=args.max_matches,
         delay_s=args.delay_s,
+        main_tour_only=bool(args.main_tour_only),
     )
     print(stats)
     return 0

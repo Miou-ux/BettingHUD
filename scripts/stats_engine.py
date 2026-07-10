@@ -1,15 +1,13 @@
 """
 Engine de stats joueurs avec source par tour explicite :
 
-  - ATP -> TennisMyLife (table `matches_recent` filtrée `source='tennismylife'`).
-           Player IDs : codes alphanumériques ATP officiels (ex. 'B0BI', 'R485').
-
-  - WTA -> Jeff Sackmann (`wta_matches` + `rankings_wta_current` + `players_wta`
-           si présente, sinon noms extraits des matchs).
+  - ATP -> TennisMyLife (``matches_recent`` ``source='tennismylife'``) + pont
+    Flashscore (``source='flashscore'``) si le match TML n'existe pas encore.
+  - WTA -> ``wta_matches`` (Sackmann + delta).
            Player IDs : entiers Sackmann (ex. 214544 = Sabalenka).
 
-Aucun fallback Sackmann sur l'ATP : si un joueur ATP n'est pas dans TML, il
-retombe sur les valeurs par défaut. Aucun fallback TML sur la WTA non plus.
+Aucun fallback Sackmann sur l'ATP : si un joueur ATP n'est pas dans TML ni le pont
+Flashscore récent, il retombe sur les valeurs par défaut. Aucun fallback TML sur la WTA non plus.
 
 Le tour est déterminé par `tour_hint='ATP'|'WTA'`. Si le hint est absent, on
 essaie d'inférer (lookup nom ATP d'abord, sinon WTA).
@@ -264,14 +262,50 @@ class TennisStatsEngine:
         conn = self._connect()
         try:
             try:
-                self.matches_atp_df = pd.read_sql(
+                df_tml = pd.read_sql(
                     "SELECT * FROM matches_recent WHERE source='tennismylife'",
                     conn,
                 )
             except Exception:
-                self.matches_atp_df = pd.DataFrame()
+                df_tml = pd.DataFrame()
+            try:
+                df_fs = pd.read_sql(
+                    "SELECT * FROM matches_recent WHERE source='flashscore'",
+                    conn,
+                )
+            except Exception:
+                df_fs = pd.DataFrame()
         finally:
             conn.close()
+
+        frames = []
+        if not df_tml.empty:
+            df_tml["_src_pri"] = 0
+            frames.append(df_tml)
+        if not df_fs.empty:
+            df_fs["_src_pri"] = 1
+            frames.append(df_fs)
+        if frames:
+            merged = pd.concat(frames, ignore_index=True, sort=False)
+            merged["tourney_date"] = pd.to_datetime(merged["tourney_date"], errors="coerce")
+            merged = merged.dropna(subset=["tourney_date"])
+
+            def _atp_dedupe_key(row: pd.Series) -> tuple:
+                td = row["tourney_date"]
+                td_s = td.strftime("%Y%m%d") if hasattr(td, "strftime") else str(td)[:8]
+                w = _canonical_player_index_key(str(row.get("winner_name") or ""))
+                l = _canonical_player_index_key(str(row.get("loser_name") or ""))
+                return (td_s, w, l)
+
+            merged["_dedupe"] = merged.apply(_atp_dedupe_key, axis=1)
+            merged = merged.sort_values(["_dedupe", "_src_pri"], kind="mergesort")
+            merged = merged.drop_duplicates(subset=["_dedupe"], keep="first")
+            merged = merged.drop(columns=["_dedupe", "_src_pri"], errors="ignore")
+            self.matches_atp_df = merged.sort_values("tourney_date", kind="mergesort").reset_index(
+                drop=True
+            )
+        else:
+            self.matches_atp_df = pd.DataFrame()
 
         if not self.matches_atp_df.empty:
             self.matches_atp_df["tourney_date"] = pd.to_datetime(

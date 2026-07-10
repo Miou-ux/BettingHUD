@@ -95,6 +95,13 @@ def parse_fs_games(feed_text: str) -> list[dict]:
 
 def _name_score(winner: str, loser: str, home: str, away: str) -> float:
     """Pair score; each player must match their FS counterpart (not just one surname)."""
+    try:
+        from scripts.wta_name_aliases import canonicalize_wta_display_name
+
+        winner = canonicalize_wta_display_name(winner)
+        loser = canonicalize_wta_display_name(loser)
+    except Exception:
+        pass
     wk, lk = norm_name_key(winner), norm_name_key(loser)
     hk, ak = norm_name_key(home), norm_name_key(away)
 

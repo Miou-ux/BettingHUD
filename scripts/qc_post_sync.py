@@ -37,6 +37,28 @@ def _date_int(val: object) -> int | None:
     return int(s) if s.isdigit() and len(s) == 8 else None
 
 
+def _qc_alert_enabled() -> bool:
+    return os.getenv("BETTINGHUD_WTA_QC_ALERT", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _send_qc_ops_alert(report: QcReport) -> None:
+    if not _qc_alert_enabled():
+        return
+    if report.ok and not report.warnings:
+        return
+    try:
+        from scripts.ops_telegram_alert import send_ops_alert
+
+        lines = report.summary_lines()[1:6]
+        body = "\n".join(lines)
+        if report.blocking:
+            send_ops_alert("QC post-sync FAIL", body)
+        elif report.warnings:
+            send_ops_alert("QC post-sync WARN", body)
+    except Exception:
+        pass
+
+
 def run_qc_post_sync(db_path: str | None = None) -> QcReport:
     from scripts.bets_db import DB_PATH_DEFAULT, get_data_freshness_snapshot
 
@@ -91,6 +113,15 @@ def run_qc_post_sync(db_path: str | None = None) -> QcReport:
     else:
         report.add_warning("feature_store_missing", "player_feature_store.joblib absent")
 
+    try:
+        from scripts.wta_delta_qc_gates import run_wta_delta_qc_gates
+
+        wta_gates = run_wta_delta_qc_gates(db_path=dbp)
+        report.merge(wta_gates)
+    except Exception as exc:
+        report.add_warning("wta_delta_gates_error", str(exc)[:200])
+
+    _send_qc_ops_alert(report)
     return report
 
 

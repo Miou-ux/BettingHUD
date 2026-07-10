@@ -31,18 +31,34 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **Modèle joint ATP+WTA** | Brier global **0.1830** (+0.0081) et `tour_ATP` **0.1906** (+0.0131) — split 80/20 commun + features partagées ; rollback : `xgb_model_tml_v47.pkl.elo_backup` |
 | **Vérif** | `_probe_ml_bundle_brier.py` · `_probe_tdcuk_wta_tiers.py` · `_probe_ml_wta_rows.py` |
 
-### Pipeline WTA quotidien (prod, depuis 10/07/2026)
+---
+
+# WTA données P0 — alias noms, serve retry, QC gates, ATP FS live (10 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **P0-A alias** | `data/wta_name_aliases.json` + `scripts/wta_name_aliases.py` — corrections tennis-data (ex. Quevedo→Lys) ; intégré dans `fill_ranks`, matching Flashscore |
+| **P0-B serve** | 2ᵉ passe `enrich_wta_delta_te_stats.py --main-tour-only` après backfill rangs (lignes `w_svpt` NULL) |
+| **P0-C QC** | `scripts/wta_delta_qc_gates.py` (C1 doublons, D1 rangs main, couverture SQLite) → fusionné dans `qc_post_sync` + alerte TG ops |
+| **P0-D ATP live** | `stats_engine` : pont `matches_recent` `source='flashscore'` si match TML absent (dédup par date+noms) |
+| **Pipeline** | `sync_tours_daily` : aliases avant metadata + après Flashscore ; retry serve main ; `qc_post_sync` alerte si FAIL/WARN |
+
+### Pipeline WTA quotidien (prod, depuis P0 10/07/2026)
 
 ```
 03:30 sync_tours_daily
   sync_wta_delta
+  → wta_name_aliases.py
   → enrich_wta_delta_metadata --dedup
   → refresh_wta_rankings_current --ingest
   → enrich_wta_delta_te_stats
   → sync_wta_flashscore_results (main + qual/ITF)
   → backfill_wta_delta_ranks
+  → wta_name_aliases.py (post-FS)
+  → enrich_wta_delta_te_stats --main-tour-only (retry serve)
   → pipeline_quality (ingest SQLite)
   → build_feature_store + refresh_elo_maps_fast
+  → qc_post_sync (+ wta_delta_qc_gates, alerte TG si FAIL)
 
 02:00 morning_live_pipeline
   → refresh_wta_rankings_current + ingest_rankings_current
