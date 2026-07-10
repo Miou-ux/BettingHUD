@@ -20,6 +20,7 @@ from sklearn.model_selection import StratifiedKFold
 from xgboost import XGBClassifier
 
 _ML_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_ML_DIR)
 if _ML_DIR not in sys.path:
     sys.path.insert(0, _ML_DIR)
 from tournament_geo import haversine_km, tournament_site_lon_lat_tz  # noqa: E402
@@ -35,6 +36,12 @@ from value_detector import ValueDetector  # noqa: E402
 logger = logging.getLogger(__name__)
 _ELO_IMPUTE_COUNTS: dict[tuple[str, str, str], int] = defaultdict(int)
 _ELO_IMPUTE_EXAMPLES: deque[tuple[str, str, str, object, float]] = deque(maxlen=12)
+
+
+def _resolve_project_path(path: str) -> str:
+    if os.path.isabs(path):
+        return path
+    return os.path.join(_PROJECT_ROOT, path)
 
 # Rang sémantique 0->3 après tri déterministe (moyenne Ace% dans le cluster sur les points d'ajustement) :
 STYLE_SEMANTIC_LABELS = (
@@ -281,6 +288,11 @@ def resolve_match_brier_segment_key(
             loader()
     except Exception:
         pass
+    if hasattr(ml, "model_for_inference"):
+        t = str(tour or "").strip().upper()
+        if t not in ("ATP", "WTA"):
+            t = "WTA" if "wta" in str(tour or "").lower() else "ATP"
+        ml = ml.model_for_inference(t)
     t = str(tour or "").strip().upper()
     if t not in ("ATP", "WTA"):
         t = "WTA" if "wta" in str(tour or "").lower() else "ATP"
@@ -319,6 +331,11 @@ def resolve_segment_brier_score(ml: object, seg_key: object) -> float:
     sk = str(seg_key or "").strip()
     if sk in ("dual_bo3", "dual_bo5"):
         sk = ""
+    if hasattr(ml, "model_for_inference"):
+        if sk.startswith("WTA_") or sk == "tour_WTA":
+            ml = ml.model_for_inference("WTA")
+        elif sk.startswith("ATP_") or sk == "tour_ATP":
+            ml = ml.model_for_inference("ATP")
     d = getattr(ml, "segment_brier_scores", None) or {}
     if sk and sk in d:
         return float(d[sk])
@@ -376,6 +393,7 @@ class TennisMLModel:
         self.segment_blend_weight = 0.7
         self.segment_brier_scores = {}
         self.global_test_brier = 0.12
+        self.segment_isotonic: dict[str, IsotonicRegression] = {}
         self.style_kmeans: Optional[KMeans] = None
         self.style_rank_map = None  # np.ndarray length K : brut sklearn -> rang sémantique 0..K-1
         self.style_semantic_calibration: Optional[dict] = None  # mean_aces par brut, logs entraînement / bundle
@@ -438,8 +456,57 @@ class TennisMLModel:
             "style_cross_surface_impact",
             "clutch_diff",
         ]
-        self.model_path = "models/xgb_model_tml_v47.pkl"
+        try:
+            from scripts.ml_bundle_registry import resolve_active_bundle_rel
+
+            self.model_path = resolve_active_bundle_rel()
+        except Exception:
+            self.model_path = "models/xgb_model_tml_v47.pkl"
         self.feature_plot_path = "models/feature_importance_tml_v47.png"
+        self._tour_router = None
+        if not getattr(self, "_skip_tour_router", False):
+            self._init_tour_router()
+
+    @classmethod
+    def from_bundle(cls, bundle_rel: str, db_path: str = "data/bettinghud.db") -> "TennisMLModel":
+        """Instance chargée depuis un bundle précis (sans routage imbriqué)."""
+        inst = cls.__new__(cls)
+        inst._skip_tour_router = True
+        TennisMLModel.__init__(inst, db_path=db_path)
+        inst._skip_tour_router = True
+        inst._tour_router = None
+        inst.model_path = str(bundle_rel).replace("\\", "/")
+        inst.model = None
+        inst.calibrator_bo3 = None
+        inst.calibrator_bo5 = None
+        inst._xgb_base_fitted = None
+        return inst
+
+    def _init_tour_router(self) -> None:
+        try:
+            from scripts.ml_tour_router import TourModelRouter, load_routing_config
+
+            cfg = load_routing_config()
+            if cfg:
+                self._tour_router = TourModelRouter(cfg, db_path=self.db_path)
+        except Exception:
+            self._tour_router = None
+
+    def model_for_inference(self, tour: object = None) -> "TennisMLModel":
+        """Backend ML pour un circuit (routage PREPROD niveau 1) ou self."""
+        router = getattr(self, "_tour_router", None)
+        if router is None:
+            return self
+        return router.model_for(tour)
+
+    def _inference_backend(self, tour: object = None) -> "TennisMLModel":
+        return self.model_for_inference(tour)
+
+    def tour_routing_status(self) -> dict | None:
+        router = getattr(self, "_tour_router", None)
+        if router is None:
+            return None
+        return router.status()
 
     def _build_monotone_constraints(self) -> str:
         """Construit les contraintes monotones XGBoost alignées sur `self.features`."""
@@ -1008,6 +1075,9 @@ class TennisMLModel:
     def _build_temporal_features(self, df, data_lag_days: int = 0):
         # per-player rolling match history: deque of
         #   (dt, won, mins, sets, ssr, round_depth, is_3plus_setter, tourney_id)
+        # Keep rolling windows bounded. Unbounded per-player histories make each
+        # subsequent match more expensive to scan and become prohibitively slow on
+        # the larger PREPROD WTA corpus.
         hist = {}
         # per-player/per-surface rolling history: (date, won, hold_rate, break_rate, surf_elo_pre)
         hist_surface = {}
@@ -1025,6 +1095,9 @@ class TennisMLModel:
         hist_tac = defaultdict(lambda: deque(maxlen=260))
         player_last_geo = {}
         last_date = {}
+        tournament_context_cache = {}
+        tournament_key_cache = {}
+        tournament_geo_cache = {}
 
         # H2H directional stats
         pair_wins = {}
@@ -1078,6 +1151,12 @@ class TennisMLModel:
         w_mins7d, l_mins7d = [], []
         w_tb52, l_tb52 = [], []
 
+        HIST_MAXLEN = 180
+        HIST_SURFACE_MAXLEN = 120
+        HIST_STYLE_MAXLEN = 120
+        HIST_CLUTCH_MAXLEN = 120
+        HIST_MICRO_MAXLEN = 40
+
         td7 = pd.Timedelta(days=7)
         td52w = pd.Timedelta(days=364)
         td90 = pd.Timedelta(days=90)
@@ -1128,7 +1207,10 @@ class TennisMLModel:
                 w_tb52.append(0.5); l_tb52.append(0.5)
                 continue
 
-            altitude, indoor, country_ioc = self._infer_tournament_context(row.tourney_name)
+            row_tourney_name = getattr(row, "tourney_name", None)
+            if row_tourney_name not in tournament_context_cache:
+                tournament_context_cache[row_tourney_name] = self._infer_tournament_context(row_tourney_name)
+            altitude, indoor, country_ioc = tournament_context_cache[row_tourney_name]
             altitude_list.append(altitude)
             indoor_list.append(indoor)
 
@@ -1150,7 +1232,9 @@ class TennisMLModel:
             w_inact_decay.append(self._inactivity_decay(w_days_rest[-1]))
             l_inact_decay.append(self._inactivity_decay(l_days_rest[-1]))
 
-            nt = self._normalize_tourney_key(getattr(row, "tourney_name", None))
+            if row_tourney_name not in tournament_key_cache:
+                tournament_key_cache[row_tourney_name] = self._normalize_tourney_key(row_tourney_name)
+            nt = tournament_key_cache[row_tourney_name]
             y = int(pd.Timestamp(dt).year)
             lvl_cell = getattr(row, "tourney_level", None)
             if lvl_cell is None or (isinstance(lvl_cell, float) and np.isnan(lvl_cell)):
@@ -1174,7 +1258,9 @@ class TennisMLModel:
             else:
                 spd = float(lookup_surface_speed(getattr(row, "tourney_name", None), getattr(row, "surface", None)))
 
-            clat, clon, ctz = tournament_site_lon_lat_tz(getattr(row, "tourney_name", None))
+            if row_tourney_name not in tournament_geo_cache:
+                tournament_geo_cache[row_tourney_name] = tournament_site_lon_lat_tz(row_tourney_name)
+            clat, clon, ctz = tournament_geo_cache[row_tourney_name]
 
             def _mean_tac_vec(dq, ref_dt):
                 if dq is None or len(dq) == 0:
@@ -1349,7 +1435,7 @@ class TennisMLModel:
             ):
                 dq = hist.get(pid)
                 if dq is None:
-                    dq = deque()
+                    dq = deque(maxlen=HIST_MAXLEN)
                     hist[pid] = dq
 
                 # wins in last 7 days (clear positive signal: a player who keeps winning
@@ -1396,7 +1482,7 @@ class TennisMLModel:
                 skey = (pid, surface)
                 sdq = hist_surface.get(skey)
                 if sdq is None:
-                    sdq = deque()
+                    sdq = deque(maxlen=HIST_SURFACE_MAXLEN)
                     hist_surface[skey] = sdq
 
                 cutoff90 = ref_dt - td90
@@ -1424,7 +1510,7 @@ class TennisMLModel:
             ):
                 mdq = hist_micro.get(pid)
                 if mdq is None:
-                    mdq = deque()
+                    mdq = deque(maxlen=HIST_MICRO_MAXLEN)
                     hist_micro[pid] = mdq
                 m10 = list(mdq)[-10:]
                 if m10:
@@ -1573,8 +1659,8 @@ class TennisMLModel:
             l_ace_rate = self._safe_ratio(row.l_ace, row.l_svpt, default=0.06)
             w_serve_win = self._safe_ratio((float(row.w_1stWon) if pd.notna(row.w_1stWon) else 0.0) + (float(row.w_2ndWon) if pd.notna(row.w_2ndWon) else 0.0), row.w_svpt, default=0.60)
             l_serve_win = self._safe_ratio((float(row.l_1stWon) if pd.notna(row.l_1stWon) else 0.0) + (float(row.l_2ndWon) if pd.notna(row.l_2ndWon) else 0.0), row.l_svpt, default=0.60)
-            hist_style.setdefault(wid, deque()).append((dt, w_ace_rate, w_serve_win, w_break))
-            hist_style.setdefault(lid, deque()).append((dt, l_ace_rate, l_serve_win, l_break))
+            hist_style.setdefault(wid, deque(maxlen=HIST_STYLE_MAXLEN)).append((dt, w_ace_rate, w_serve_win, w_break))
+            hist_style.setdefault(lid, deque(maxlen=HIST_STYLE_MAXLEN)).append((dt, l_ace_rate, l_serve_win, l_break))
             w_fst_in_pct = self._safe_ratio(row.w_1stWon, row.w_1stIn, default=np.nan)
             l_fst_in_pct = self._safe_ratio(row.l_1stWon, row.l_1stIn, default=np.nan)
             w_bp_sv_m = self._safe_ratio(row.w_bpSaved, row.w_bpFaced, default=np.nan)
@@ -1587,8 +1673,8 @@ class TennisMLModel:
             l_bp_saved = self._safe_ratio(row.l_bpSaved, row.l_bpFaced, default=np.nan)
             w_bp_conv = self._safe_ratio(loser_breaks_suffered, row.l_bpFaced, default=np.nan)
             l_bp_conv = self._safe_ratio(winner_breaks_suffered, row.w_bpFaced, default=np.nan)
-            hist_clutch.setdefault(wid, deque()).append((dt, w_bp_saved, w_bp_conv, w_tb_won, tb_played))
-            hist_clutch.setdefault(lid, deque()).append((dt, l_bp_saved, l_bp_conv, l_tb_won, tb_played))
+            hist_clutch.setdefault(wid, deque(maxlen=HIST_CLUTCH_MAXLEN)).append((dt, w_bp_saved, w_bp_conv, w_tb_won, tb_played))
+            hist_clutch.setdefault(lid, deque(maxlen=HIST_CLUTCH_MAXLEN)).append((dt, l_bp_saved, l_bp_conv, l_tb_won, tb_played))
 
             # update micro rolling stats
             w_first_pct = self._safe_ratio(row.w_1stWon, row.w_1stIn, default=np.nan)
@@ -1617,8 +1703,8 @@ class TennisMLModel:
             l_service_lost = np.nan if pd.isna(l_serve_win) else max(0.01, 1.0 - float(l_serve_win))
             w_dom = np.nan if pd.isna(w_return_pts) or pd.isna(w_service_lost) else float(w_return_pts) / float(w_service_lost)
             l_dom = np.nan if pd.isna(l_return_pts) or pd.isna(l_service_lost) else float(l_return_pts) / float(l_service_lost)
-            hist_micro.setdefault(wid, deque()).append((dt, w_first_pct, w_bp_conv, w_dom))
-            hist_micro.setdefault(lid, deque()).append((dt, l_first_pct, l_bp_conv, l_dom))
+            hist_micro.setdefault(wid, deque(maxlen=HIST_MICRO_MAXLEN)).append((dt, w_first_pct, w_bp_conv, w_dom))
+            hist_micro.setdefault(lid, deque(maxlen=HIST_MICRO_MAXLEN)).append((dt, l_first_pct, l_bp_conv, l_dom))
 
             player_last_geo[wid] = (clat, clon, ctz)
             player_last_geo[lid] = (clat, clon, ctz)
@@ -1735,35 +1821,54 @@ class TennisMLModel:
             print(f"  style_surface_winrate_index: {len(mm)} combinaisons style×style×surface")
         print("--- Fin rapport styles joueur ---\n")
 
-    def prepare_data(self, min_year: int = 2010):
-        """Charge ATP (TML) + WTA (Sackmann) depuis ``min_year`` inclus (année calendaire)."""
+    def prepare_data(self, min_year: int = 2010, tour_filter: str | None = None):
+        """Charge ATP (TML) + WTA (Sackmann) depuis ``min_year`` inclus (année calendaire).
+
+        ``tour_filter`` : ``None`` (joint ATP+WTA), ``"ATP"`` ou ``"WTA"`` (entraînement / hold-out isolé).
+        """
         y0 = int(min_year)
         if y0 < 1990 or y0 > 2035:
             y0 = 2010
-        print(f"Chargement et préparation des données (ATP TML + WTA Sackmann, min_year={y0})...")
+        tf = (tour_filter or "").strip().upper()
+        if tf and tf not in ("ATP", "WTA"):
+            raise ValueError(f"tour_filter invalide: {tour_filter!r} (attendu ATP, WTA ou None)")
+        scope = tf if tf else "ATP+WTA"
+        print(
+            f"Chargement et préparation des données ({scope}, min_year={y0})..."
+        )
         conn = sqlite3.connect(self.db_path)
-        try:
-            df_atp = pd.read_sql(
-                "SELECT * FROM matches_recent "
-                "WHERE source='tennismylife' AND CAST(substr(tourney_date,1,4) AS INTEGER) >= ?",
-                conn,
-                params=(y0,),
-            )
-            print(f"  TennisMyLife (ATP) rows: {len(df_atp)}")
-        except Exception as e:
-            conn.close()
-            raise RuntimeError(f"Table matches_recent indisponible. Lance d'abord sync_tml_recent.py ({e})")
-        try:
-            df_wta = pd.read_sql(
-                "SELECT * FROM wta_matches "
-                "WHERE CAST(substr(tourney_date,1,4) AS INTEGER) >= ?",
-                conn,
-                params=(y0,),
-            )
-            print(f"  Sackmann (WTA) rows: {len(df_wta)}")
-        except Exception as e:
-            print(f"  [WARN] Table wta_matches indisponible — entraînement ATP uniquement ({e})")
-            df_wta = pd.DataFrame()
+        df_atp = pd.DataFrame()
+        df_wta = pd.DataFrame()
+        if tf != "WTA":
+            try:
+                df_atp = pd.read_sql(
+                    "SELECT * FROM matches_recent "
+                    "WHERE source='tennismylife' AND CAST(substr(tourney_date,1,4) AS INTEGER) >= ?",
+                    conn,
+                    params=(y0,),
+                )
+                print(f"  TennisMyLife (ATP) rows: {len(df_atp)}")
+            except Exception as e:
+                conn.close()
+                if tf == "ATP":
+                    raise RuntimeError(
+                        f"Table matches_recent indisponible. Lance sync_tml_recent.py ({e})"
+                    )
+                print(f"  [WARN] matches_recent ATP indisponible ({e})")
+        if tf != "ATP":
+            try:
+                df_wta = pd.read_sql(
+                    "SELECT * FROM wta_matches "
+                    "WHERE CAST(substr(tourney_date,1,4) AS INTEGER) >= ?",
+                    conn,
+                    params=(y0,),
+                )
+                print(f"  Sackmann (WTA) rows: {len(df_wta)}")
+            except Exception as e:
+                if tf == "WTA":
+                    conn.close()
+                    raise RuntimeError(f"Table wta_matches indisponible ({e})")
+                print(f"  [WARN] Table wta_matches indisponible ({e})")
         conn.close()
         if df_atp.empty and df_wta.empty:
             raise RuntimeError("Aucune donnée d'entraînement disponible.")
@@ -2324,7 +2429,97 @@ class TennisMLModel:
             out[~m] = bo3.predict_proba(X.iloc[idx3])[:, 1]
         if idx5.size:
             out[m] = bo5.predict_proba(X.iloc[idx5])[:, 1]
+        out = self._apply_segment_isotonic(X, out)
         return np.asarray(out, dtype=float).ravel()
+
+    @staticmethod
+    def _segment_key_candidates_from_row(row: pd.Series) -> list[str]:
+        ttour = int(pd.to_numeric(row.get("tour_encoded"), errors="coerce") or 0)
+        tsurf = int(pd.to_numeric(row.get("surface_encoded"), errors="coerce") or 0)
+        tlv = int(round(float(pd.to_numeric(row.get("tournament_level_encoded"), errors="coerce") or 1)))
+        surf_names = {0: "Hard", 1: "Clay", 2: "Grass", 3: "Carpet"}
+        tour_names = {0: "ATP", 1: "WTA"}
+        tnm = tour_names.get(ttour, "ATP")
+        snm = surf_names.get(tsurf, "Hard")
+        inv = {3: "G", 2: "M", 1: "A"}
+        lv = inv.get(tlv, "A")
+        return [f"{tnm}_{snm}_{lv}", f"{tnm}_{snm}", f"surf_{snm}", f"tour_{tnm}"]
+
+    def _fit_segment_isotonic_calibrators(
+        self,
+        X: pd.DataFrame,
+        y,
+        y_prob: np.ndarray,
+        *,
+        min_samples: int = 200,
+    ) -> dict[str, IsotonicRegression]:
+        """Isotonic par segment (finest key) sur tranche calibration du train."""
+        yv = np.asarray(y).astype(int).ravel()
+        pv = np.asarray(y_prob, dtype=float).ravel()
+        ttour = pd.to_numeric(X["tour_encoded"], errors="coerce").fillna(0).astype(int).to_numpy()
+        tsurf = pd.to_numeric(X["surface_encoded"], errors="coerce").fillna(0).astype(int).to_numpy()
+        tlv = pd.to_numeric(X["tournament_level_encoded"], errors="coerce").fillna(1.0)
+        tlv = np.asarray(np.round(tlv.to_numpy(dtype=float)), dtype=int)
+        surf_names = {0: "Hard", 1: "Clay", 2: "Grass", 3: "Carpet"}
+        tour_names = {0: "ATP", 1: "WTA"}
+
+        def _masks_for_key(key: str) -> np.ndarray | None:
+            if key.startswith("tour_"):
+                tid = 0 if key.endswith("ATP") else 1
+                return ttour == tid
+            if key.startswith("surf_"):
+                snm = key.split("_", 1)[1]
+                sid = next((k for k, v in surf_names.items() if v == snm), None)
+                return tsurf == sid if sid is not None else None
+            parts = key.split("_")
+            if len(parts) == 2:
+                tnm, snm = parts
+                tid = 0 if tnm == "ATP" else 1
+                sid = next((k for k, v in surf_names.items() if v == snm), None)
+                return (ttour == tid) & (tsurf == sid) if sid is not None else None
+            if len(parts) == 3:
+                tnm, snm, lv = parts
+                tid = 0 if tnm == "ATP" else 1
+                sid = next((k for k, v in surf_names.items() if v == snm), None)
+                lid = {"G": 3, "M": 2, "A": 1}.get(lv, 1)
+                return (ttour == tid) & (tsurf == sid) & (tlv == lid) if sid is not None else None
+            return None
+
+        keys_to_try = [
+            "ATP_Hard_G", "ATP_Clay_G", "ATP_Grass_G", "ATP_Hard_M", "ATP_Clay_M",
+            "WTA_Hard_G", "WTA_Clay_G", "WTA_Clay_M",
+            "ATP_Hard", "ATP_Clay", "ATP_Grass", "WTA_Hard", "WTA_Clay", "WTA_Grass",
+            "surf_Hard", "surf_Clay", "surf_Grass", "tour_ATP", "tour_WTA",
+        ]
+        out: dict[str, IsotonicRegression] = {}
+        for key in keys_to_try:
+            m = _masks_for_key(key)
+            if m is None:
+                continue
+            nn = int(np.sum(m))
+            if nn < min_samples:
+                continue
+            yt = yv[m]
+            if np.unique(yt).size < 2:
+                continue
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(pv[m], yt)
+            out[key] = iso
+        return out
+
+    def _apply_segment_isotonic(self, X: pd.DataFrame, probs: np.ndarray) -> np.ndarray:
+        cal = getattr(self, "segment_isotonic", None) or {}
+        if not cal:
+            return np.asarray(probs, dtype=float)
+        out = np.asarray(probs, dtype=float).copy()
+        for i in range(len(out)):
+            row = X.iloc[i]
+            for key in self._segment_key_candidates_from_row(row):
+                iso = cal.get(key)
+                if iso is not None:
+                    out[i] = float(iso.predict([out[i]])[0])
+                    break
+        return out
 
     def _xgb_for_importance(self):
         if getattr(self, "_xgb_base_fitted", None) is not None:
@@ -2339,18 +2534,55 @@ class TennisMLModel:
         except Exception:
             return None
 
+    def eval_temporal_holdout(
+        self,
+        *,
+        min_year: int = 2010,
+        tour_filter: str | None = None,
+    ) -> dict[str, object]:
+        """Brier hold-out 80/20 (même protocole que ``train``) sur le bundle chargé."""
+        from sklearn.metrics import brier_score_loss
+
+        self._load_bundle_if_needed()
+        tf = (tour_filter or "").strip().upper() or None
+        dataset = self.prepare_data(min_year=min_year, tour_filter=tf)
+        X = dataset[self.features]
+        y = dataset["target"]
+        split_idx = int(len(dataset) * 0.8)
+        X_test, y_test = X.iloc[split_idx:], y.iloc[split_idx:]
+        routing = dataset.loc[X_test.index, list(self.ROUTING_COLS_BO5)]
+        y_prob = np.asarray(
+            self.predict_proba_calibrated_routed(X_test, routing=routing),
+            dtype=float,
+        ).ravel()
+        brier = float(brier_score_loss(y_test, y_prob))
+        seg_b, seg_n = self.brier_segments_test_split(X_test, y_test, y_prob)
+        return {
+            "tour_filter": tf or "joint",
+            "min_year": int(min_year),
+            "n_total": int(len(dataset)),
+            "n_test": int(len(y_test)),
+            "n_train": int(split_idx),
+            "global_test_brier": brier,
+            "segment_brier_scores": seg_b,
+            "segment_test_sizes": seg_n,
+        }
+
     def train(
         self,
         min_year: int = 2010,
         model_path: Optional[str] = None,
         feature_plot_path: Optional[str] = None,
+        tour_filter: str | None = None,
     ):
         """Entraîne le pipeline complet.
 
         ``min_year`` : première année de matchs incluse (SQL ATP/WTA).
+        ``tour_filter`` : ``None`` (joint), ``"ATP"`` ou ``"WTA"`` (split niveau 3).
         ``model_path`` / ``feature_plot_path`` : chemins de sortie optionnels pour un run A/B
         sans modifier durablement ``self.model_path`` (restaurés en fin de méthode).
         """
+        tf = (tour_filter or "").strip().upper() or None
         _saved_mp = self.model_path
         _saved_fp = self.feature_plot_path
         if model_path:
@@ -2361,7 +2593,7 @@ class TennisMLModel:
                 root, _ = os.path.splitext(self.model_path)
                 self.feature_plot_path = root + "_importance.png"
         try:
-            dataset = self.prepare_data(min_year=min_year)
+            dataset = self.prepare_data(min_year=min_year, tour_filter=tf)
             X = dataset[self.features]
             y = dataset["target"]
 
@@ -2380,7 +2612,12 @@ class TennisMLModel:
             q75_serv = max(float(serv_abs.quantile(0.75)) if not serv_abs.empty else 100.0, 50.0)
             q75_ret = max(float(ret_abs.quantile(0.75)) if not ret_abs.empty else 100.0, 50.0)
             wta_mask = (X_train["tour_encoded"] == 1.0).astype(float)
-            wta_boost = 1.0 + 0.5 * wta_mask  # 1.5× for WTA rows
+            if tf == "ATP":
+                wta_boost = np.ones(len(X_train), dtype=float)
+            elif tf == "WTA":
+                wta_boost = np.full(len(X_train), 1.5, dtype=float)
+            else:
+                wta_boost = 1.0 + 0.5 * wta_mask  # 1.5× for WTA rows
             w_train = (
                 wta_boost.values
                 * (
@@ -2417,6 +2654,8 @@ class TennisMLModel:
             n_bo5 = int(np.sum(m_bo5))
             n_bo3 = int(np.sum(~m_bo5))
             print(f"Calibration duale isotonic — sous-ensemble BO5 (ATP+GC) : {n_bo5} lignes, BO3 : {n_bo3} lignes.")
+            if tf == "WTA" and n_bo5 > 0:
+                print(f"  [INFO] BO5={n_bo5} en entraînement WTA-only (WTA Majeurs = BO3 en live ; calibrateur BO5 peu utilisé).")
             idx5 = np.flatnonzero(m_bo5)
             idx3 = np.flatnonzero(~m_bo5)
             w_np = np.asarray(w_train, dtype=float).ravel()
@@ -2462,6 +2701,32 @@ class TennisMLModel:
                 ),
                 dtype=float,
             ).ravel()
+
+            _seg_calib = os.getenv("BETTINGHUD_SEGMENT_CALIB", "").strip().lower() in ("1", "true", "yes")
+            if _seg_calib:
+                calib_start = int(len(X_train) * 0.75)
+                X_cal = X_train.iloc[calib_start:]
+                y_cal = y_train.iloc[calib_start:]
+                routing_cal = dataset.loc[X_cal.index, list(self.ROUTING_COLS_BO5)]
+                y_prob_cal = np.asarray(
+                    self.predict_proba_calibrated_routed(X_cal, routing=routing_cal),
+                    dtype=float,
+                ).ravel()
+                self.segment_isotonic = self._fit_segment_isotonic_calibrators(
+                    X_cal, y_cal.values, y_prob_cal, min_samples=200
+                )
+                print(f"\nCalibration segment isotonic — {len(self.segment_isotonic)} segments")
+                for sk in sorted(self.segment_isotonic):
+                    print(f"  {sk}")
+                y_prob = np.asarray(
+                    self.predict_proba_calibrated_routed(
+                        X_test, routing=dataset.loc[X_test.index, list(self.ROUTING_COLS_BO5)]
+                    ),
+                    dtype=float,
+                ).ravel()
+            else:
+                self.segment_isotonic = {}
+
             y_pred = (y_prob >= 0.5).astype(int)
 
             acc = accuracy_score(y_test, y_pred)
@@ -2546,6 +2811,9 @@ class TennisMLModel:
                 "features": self.features,
                 "segment_brier_scores": self.segment_brier_scores,
                 "global_test_brier": self.global_test_brier,
+                "tour_filter": tf or "joint",
+                "train_scope": tf or "ATP+WTA",
+                "segment_isotonic": getattr(self, "segment_isotonic", {}) or {},
                 "style_kmeans": self.style_kmeans,
                 "style_rank_map": self.style_rank_map,
                 "style_semantic_calibration": self.style_semantic_calibration,
@@ -2560,9 +2828,10 @@ class TennisMLModel:
     def _load_bundle_if_needed(self):
         if self.model is not None:
             return
-        if not os.path.exists(self.model_path):
+        model_path = _resolve_project_path(self.model_path)
+        if not os.path.exists(model_path):
             raise Exception("Modèle non entraîné et non trouvé.")
-        loaded = joblib.load(self.model_path)
+        loaded = joblib.load(model_path)
         if isinstance(loaded, dict) and "model" in loaded:
             self.calibrator_bo3 = loaded.get("calibrator_bo3") or loaded["model"]
             self.calibrator_bo5 = loaded.get("calibrator_bo5") or self.calibrator_bo3
@@ -2610,6 +2879,7 @@ class TennisMLModel:
             self.features = loaded.get("features", self.features)
             self.segment_brier_scores = loaded.get("segment_brier_scores", {})
             self.global_test_brier = float(loaded.get("global_test_brier", 0.12))
+            self.segment_isotonic = loaded.get("segment_isotonic", {}) or {}
             self.style_kmeans = loaded.get("style_kmeans")
             self.style_rank_map = loaded.get("style_rank_map")
             self.style_semantic_calibration = loaded.get("style_semantic_calibration")
@@ -2791,6 +3061,9 @@ class TennisMLModel:
         p1_days_inactivity_pre_te=None,
         p2_days_inactivity_pre_te=None,
     ):
+        if getattr(self, "_tour_router", None) is not None:
+            loc = {k: v for k, v in locals().items() if k != "self"}
+            return self._inference_backend(tour).predict_match(**loc)
         self._load_bundle_if_needed()
 
         surface_map = {"Hard": 0, "Clay": 1, "Grass": 2, "Carpet": 3}

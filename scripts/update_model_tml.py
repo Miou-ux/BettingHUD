@@ -25,10 +25,11 @@ def _log(msg: str) -> None:
     print(f"[{_ts()}] {msg}", flush=True)
 
 
-def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None, db_path=None, segment_calib=False):
+def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_path=None, db_path=None, segment_calib=False, tour_filter=None):
     t_pipeline = time.perf_counter()
     current_year = datetime.utcnow().year
-    _log(f"=== Pipeline TML + ML | min_year={min_year} max_year={current_year} ===")
+    scope = (tour_filter or "ATP+WTA").upper()
+    _log(f"=== Pipeline TML + ML | scope={scope} min_year={min_year} max_year={current_year} ===")
 
     t0 = time.perf_counter()
     if skip_sync:
@@ -60,6 +61,7 @@ def update_model(min_year=2010, skip_sync=False, output_pkl=None, feature_plot_p
             min_year=min_year,
             model_path=output_pkl,
             feature_plot_path=feature_plot_path,
+            tour_filter=tour_filter,
         )
     except Exception as exc:
         train_rc = 1
@@ -144,6 +146,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Calibration isotonique par segment (ATP_Clay, WTA_Grass, …) en plus BO3/BO5.",
     )
+    parser.add_argument(
+        "--tour-filter",
+        type=str,
+        default=None,
+        choices=("ATP", "WTA"),
+        help="Entraînement isolé ATP ou WTA (split niveau 3 PREPROD).",
+    )
     args = parser.parse_args()
     rc = update_model(
         min_year=args.min_year,
@@ -152,5 +161,6 @@ if __name__ == "__main__":
         feature_plot_path=args.feature_plot,
         db_path=args.db_path,
         segment_calib=args.segment_calib,
+        tour_filter=args.tour_filter,
     )
     raise SystemExit(int(rc))
