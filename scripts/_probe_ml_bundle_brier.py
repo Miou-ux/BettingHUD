@@ -41,6 +41,9 @@ def main() -> int:
     backup = active + ".elo_backup"
     if os.path.isfile(backup):
         paths.append(("elo_backup", backup))
+    pre_wta = os.path.join(os.path.dirname(active), "xgb_model_tml_v47_pre_wta_delta.pkl")
+    if os.path.isfile(pre_wta):
+        paths.append(("pre_wta_delta", pre_wta))
 
     print("=== ML bundle performance ===\n")
     for label, p in paths:
