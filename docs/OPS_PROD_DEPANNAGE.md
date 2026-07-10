@@ -8,6 +8,92 @@ Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d�
 
 ---
 
+## 0. Incident CourtAlpha replay (8 juillet 2026)
+
+**Symptôme** : CourtAlpha premium affiche une **500** sur :
+
+- `Best pick` historique (`/api/picks/one-day-one-pick`)
+- `Top 5 probas > historique` (`/api/picks/top5-replay`)
+
+### Cause racine
+
+1. **Fichier script absent sur PROD** : `api/services/top5_replay.py` dépend de `scripts/backtest_prod_top5_2026.py`, absent de `/opt/bettinghud/scripts/`.
+2. **Chemin bundle ML relatif** : `scripts/ml_model.py` résolvait `models/xgb_model_tml_v47.pkl` relativement au `cwd`. Depuis `/opt/courtalpha`, cela pointait hors de `/opt/bettinghud/models/`.
+
+### Symptômes observables
+
+```bash
+ssh bettinghud "journalctl -u courtalpha-api -n 80 --no-pager"
+```
+
+Erreurs typiques :
+
+- `ModuleNotFoundError: No module named 'scripts.backtest_prod_top5_2026'`
+- `Exception: Modèle non entraîné et non trouvé.`
+
+### Correctif
+
+```bash
+scp O:\Miouppy\Documents\BettingHUD\scripts\backtest_prod_top5_2026.py bettinghud:/opt/bettinghud/scripts/
+scp O:\Miouppy\Documents\BettingHUD\scripts\ml_model.py bettinghud:/opt/bettinghud/scripts/
+ssh bettinghud "sudo systemctl restart courtalpha-api"
+```
+
+### Vérification post-fix
+
+```bash
+ssh bettinghud "cd /opt/courtalpha && /opt/bettinghud/venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0, '/opt/courtalpha')
+sys.path.insert(0, '/opt/bettinghud')
+from api.services.top5_replay import build_top5_replay
+from api.services.one_day_one_pick import build_one_day_one_pick_replay
+print('top5', build_top5_replay(db_path='/opt/bettinghud/data/bettinghud.db')['period'])
+print('1d1p', build_one_day_one_pick_replay(db_path='/opt/bettinghud/data/bettinghud.db')['period'])
+PY"
+```
+
+---
+
+## 0bis. Incident CourtAlpha historique intraday écrasé (8 juillet 2026)
+
+**Symptôme** : un pick publié (ex. Kostyuk 06/07) apparaît sur Telegram/Discord mais disparaît de l'historique web (`/api/picks/top5-replay`, `/api/picks/one-day-one-pick`).
+
+### Cause
+
+- `daily_top_proba_picks` est upserté par clé `pick_key = {date|tour|rank}`.
+- Les captures intraday tardives remplacent les lignes publiées le matin.
+- Le replay lisait cette table SQL comme source unique => historique “état final du jour”, pas “publication”.
+
+### Correctif appliqué (final)
+
+- Replay historique : **source SQL `daily_top_proba_picks`** (comportement d'origine — ne pas remplacer globalement par JSONL, risque de tronquer l'historique fin mai).
+- Jour corrompu (`2026-07-06`) : **backfill ciblé** depuis `data/exports/daily_top_proba/2026-07-06.jsonl` (capture publication matin `>= 05:00` Paris).
+- **Prévention durable** (`scripts/bets_db.py`) : verrou publication — si `first_captured_ts >= 05:00` Paris pour un `pick_key`, les sources intraday (`portfolio_results_daemon`, `live_data_daemon`, `live_snapshot`, …) ne remplacent plus `match_name` / favori / proba / EV à ce rang.
+- Archive JSONL append-only inchangée (`data/exports/daily_top_proba/*.jsonl`) pour audit et backfill ponctuel.
+- Fallback robustesse si module `scripts.reliability_pick_match` indisponible (pas de 500).
+
+### Régression évitée
+
+Un patch intermédiaire (lecture JSONL globale ou reselection par rang stocké) avait **réduit** l'historique visible. En cas de doute : vérifier `period.start_date` (doit rester `2026-05-18`) et `n_days` (~26–27).
+
+### Diagnostic rapide
+
+```bash
+# Le pick existe-t-il dans les captures append-only du jour ?
+ssh bettinghud "python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/opt/bettinghud/data/exports/daily_top_proba/2026-07-06.jsonl')
+for i,line in enumerate(p.read_text(encoding='utf-8').splitlines(),1):
+    o=json.loads(line); picks=o.get('picks') or []
+    if any('Kostyuk' in str(x.get('match_name') or '') for x in picks):
+        print(i,o.get('captured_ts'),o.get('capture_source'))
+PY"
+```
+
+---
+
 ## 1. Résumé : que pousse-t-on où ?
 
 | Type | Mécanisme | PREPROD → PROD ? |
@@ -80,9 +166,11 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 
 | Créneau (Paris) | Fichier cron | Rôle |
 |-----------------|--------------|------|
-| **02:00** · **05:00** | `bettinghud-morning` | Build snapshot · publications TG/Discord |
+| **02:00** · **05:00** | `bettinghud-morning-pipeline` | Build snapshot · publications TG/Discord (wrapper alertes) |
 | **03:30** quotidien | `bettinghud-data-sync` | Sync ATP + **WTA delta** + ingest |
 | **04:00** dimanche | `bettinghud-data-sync` | Retrain ML hebdo |
+| **04:15** quotidien | `bettinghud-ops-p0` | Backup DB serveur |
+| ***/5 min** | `bettinghud-ops-p0` | Watchdog santé + restart auto |
 | **02:15** dimanche | `bettinghud-wta-backup` | Backup archive WTA |
 | **08:00** lundi | `bettinghud-ml-weekly` | Rapport Brier WTA → admin Telegram |
 | **04:55** quotidien | `bettinghud-acquisition-traffic` | Image OG stats |
@@ -91,6 +179,8 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 Logs : `morning_build_cron.log`, `morning_publish_cron.log`, `tours_auto_sync.log`, `ml_train_cron.log`, `ml_weekly_telegram.log`.
 
 **Déploiement** : fichiers cron en **LF** (pas CRLF). `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-<nom>`
+
+**Doublon cron matin (corrigé 10 juil. 2026)** : l’ancien fichier `/etc/cron.d/bettinghud-morning` (sans `cron_run_with_alert`) cohabitait avec `bettinghud-morning-pipeline` → deux jobs à 02:00 et 05:00, course sur le verrou snapshot (`Build snapshot échec ou verrou`). **Ne garder que** `bettinghud-morning-pipeline`. Suppression : `sudo rm -f /etc/cron.d/bettinghud-morning` (fait en prod le 10/07).
 
 **CourtAlphaX (X)** — **pause juin 2026** (crons commentés) · [[COURTALPHAX_X]]
 
@@ -293,6 +383,26 @@ find /opt/courtalpha/frontend/dist -type f -exec chmod 644 {} +
 ```bash
 sudo systemctl restart bettinghud-dashboard
 ```
+
+### 6.9 Déploiement fiabilité v3 (juillet 2026)
+
+**Symptôme** : code tiré mais pool live inchangé / snapshot ancien / score non v3.
+
+**Procédure courte** :
+
+```bash
+ssh bettinghud
+cd /opt/bettinghud
+git pull
+./venv/bin/pip install -r requirements.txt
+./venv/bin/python scripts/rebuild_live_projection.py
+sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+./venv/bin/python scripts/diagnose_reliability_funnel.py
+```
+
+**Attendu** : ligne `score version: 3` dans le diagnostic.
+
+**Important** : un `git pull` seul ne suffit pas ; le rebuild snapshot est obligatoire pour recalculer `data_reliability_score` live.
 
 ---
 

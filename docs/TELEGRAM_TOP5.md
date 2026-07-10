@@ -25,6 +25,8 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | **`/br`**, **`/brstats`** | Commandes Telegram | Bankroll utilisateur (synthèse / stats avancées) |
 | **Parier (inline)** | Bouton sous chaque pick **`/jour`**, **`/top5`** et **Top 5 matinal** | Cote perso → Kelly → confirmation → `user_bets` (`tracker_source=telegram_bet`) |
 
+> **Historique web CourtAlpha (juillet 2026)** : pour aligner l'historique avec les publications Telegram/Discord du matin, le replay Top5/1D1P prend la capture JSONL append-only de référence du jour (première capture `>= 05:00` Paris), puis synchronise le statut via SQL.
+
 ```mermaid
 flowchart LR
   subgraph prod [PROD serveur]
@@ -342,7 +344,7 @@ Autonomie crons / ML / enrichissement : voir [[CRONS_SEMAINE]] § *Autonomie PRO
 
 ### 6.1 Pipeline matin + Top 5 automatique
 
-Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
+Cron : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning-pipeline`
 
 | Heure (Paris) | Commande | Log |
 |---------------|----------|-----|

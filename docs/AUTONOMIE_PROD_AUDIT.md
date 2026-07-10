@@ -39,18 +39,22 @@
 
 `Restart=always` + `enabled` → crash recovery au boot. Voir [[PROD_RESILIENCE]].
 
-### Crons (`deploy/cron/` → `/etc/cron.d/`)
+### Crons (`deploy/cron/` → `/etc/cron.d/bettinghud-<nom>`)
 
-| Horaire (Paris) | Job | Log |
-|-----------------|-----|-----|
-| **02:00** | `morning_live_pipeline.py --build-only` | `morning_build_cron.log` |
-| **03:30** | `sync_tours_daily.py` (ATP + WTA) | `tours_auto_sync.log` |
-| **04:00** dim. | `update_model_tml.py --min-year 2020` | `ml_train_cron.log` |
-| **04:55** | `generate_og_snapshot.py` | `acquisition.log` |
-| **05:00** | `morning_live_pipeline.py --morning-publish` | `morning_publish_cron.log` |
-| **02:15** dim. | `backup_wta_sackmann_archive.py` | `wta_backup_cron.log` |
-| **08:00** lun. | `ml_weekly_telegram_notify.py` | `ml_weekly_telegram.log` |
-| **08:10** mar. | `shadow_weekly_telegram_notify.py` | `shadow_weekly_telegram.log` |
+| Horaire (Paris) | Job | Fichier cron | Log |
+|-----------------|-----|--------------|-----|
+| **02:00** | `morning_live_pipeline.py --build-only` | `bettinghud-morning-pipeline` | `morning_build_cron.log` |
+| **03:30** | `sync_tours_daily.py` (ATP + WTA) | `bettinghud-data-sync` | `tours_cron.log` |
+| **04:00** dim. | `update_model_tml.py --min-year 2020` | `bettinghud-data-sync` | `ml_train_cron.log` |
+| **04:15** | `backup_prod_db_server.py` | `bettinghud-ops-p0` | `backup_db_server.log` |
+| **04:55** | `generate_og_snapshot.py` | `bettinghud-acquisition-traffic` | `acquisition.log` |
+| **05:00** | `morning_live_pipeline.py --morning-publish` | `bettinghud-morning-pipeline` | `morning_publish_cron.log` |
+| ***/5 min** | `prod_health_watchdog.py` | `bettinghud-ops-p0` | `health_watchdog.log` |
+| **02:15** dim. | `backup_wta_sackmann_archive.py` | `bettinghud-wta-backup` | `wta_backup_cron.log` |
+| **08:00** lun. | `ml_weekly_telegram_notify.py` | `bettinghud-ml-weekly` | `ml_weekly_telegram.log` |
+| **08:10** mar. | `shadow_weekly_telegram_notify.py` | `bettinghud-shadow-weekly-telegram` | `shadow_weekly_telegram.log` |
+
+> **10 juil. 2026** : suppression du legacy `/etc/cron.d/bettinghud-morning` (doublon sans alertes TG). Voir [[OPS_PROD_DEPANNAGE]] § Cron.
 
 ### Portfolio daemon (toutes les 10 min)
 

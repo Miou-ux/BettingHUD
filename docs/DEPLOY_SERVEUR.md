@@ -201,7 +201,7 @@ Let’s Encrypt exige en général un nom de domaine. Alternatives :
 
 ## 7. Pipeline matin (cron) + Telegram
 
-Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
+Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning-pipeline`
 
 | Heure (Paris) | Commande | Log |
 |---------------|----------|-----|

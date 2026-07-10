@@ -128,12 +128,12 @@ Sans « auto power on », après une coupure il faut **allumer le serveur à la 
 | Dashboard Streamlit | `bettinghud-dashboard.service` | Oui |
 | Daemon portefeuille | `bettinghud-daemon.service` | Oui |
 | Reverse proxy | `nginx.service` | Oui |
-| Pipeline matin | `/etc/cron.d/bettinghud-morning` | Cron système |
+| Pipeline matin | `/etc/cron.d/bettinghud-morning-pipeline` | Cron système |
 
 Vérifier le cron :
 
 ```bash
-cat /etc/cron.d/bettinghud-morning
+cat /etc/cron.d/bettinghud-morning-pipeline
 ```
 
 ---

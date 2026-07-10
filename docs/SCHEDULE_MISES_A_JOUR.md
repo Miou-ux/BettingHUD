@@ -61,7 +61,7 @@ Toutes les 10 min (bettinghud-daemon)
 | | |
 |---|---|
 | **Script** | `scripts/morning_live_pipeline.py` |
-| **PROD** | Cron **02:00 Europe/Paris** — `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning` |
+| **PROD** | Cron **02:00 Europe/Paris** — `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning-pipeline` |
 | **PREPROD** | Manuel ou `register_morning_task.ps1` (défaut **05:00** locale) |
 | **Logs PROD** | `data/logs/morning_pipeline_cron.log` + `data/cache/logs/morning_pipeline_*.log` |
 

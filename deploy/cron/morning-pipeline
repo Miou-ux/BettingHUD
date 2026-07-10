@@ -1,4 +1,6 @@
 # Pipeline matin BettingHUD — Europe/Paris
+# Installé sur serveur : /etc/cron.d/bettinghud-morning-pipeline (via deploy/install_ubuntu.sh)
+# Ne pas recréer /etc/cron.d/bettinghud-morning (ancien nom, doublon supprimé juil. 2026)
 CRON_TZ=Europe/Paris
 # 02:00 — scrape TE + snapshot (alerte TG si échec)
 0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning build 02:00" --log data/logs/morning_build_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only

@@ -112,8 +112,9 @@ gantt
 
 | Fichier repo | Sur serveur | Contenu |
 |--------------|-------------|---------|
-| `deploy/cron/morning-pipeline` | `bettinghud-morning` | 02:00 + 05:00 |
+| `deploy/cron/morning-pipeline` | `bettinghud-morning-pipeline` | 02:00 + 05:00 (alertes TG) |
 | `deploy/cron/data-sync` | `bettinghud-data-sync` | 03:30 quotidien · 04:00 dim. ML |
+| `deploy/cron/ops-p0` | `bettinghud-ops-p0` | 04:15 backup · */5 min watchdog |
 | `deploy/cron/wta-sackmann-backup` | `bettinghud-wta-backup` | 02:15 dim. |
 | `deploy/cron/acquisition-traffic` | `bettinghud-acquisition-traffic` | 04:55 quot. · dim. 10h/11h/18h |
 | `deploy/cron/telegram-channel` | `bettinghud-telegram-channel` | dim. 10h |

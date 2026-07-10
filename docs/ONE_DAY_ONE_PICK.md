@@ -49,6 +49,10 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 | Affichage | Pick du jour (carte) + **historique date ↓** (récent en haut) + courbe bankroll |
 | Courbe | Ordre chronologique (calcul bankroll correct) |
 
+> **Correctif juillet 2026 (prod)** : verrou publication sur `daily_top_proba_picks`.  
+> Une fois un rang capturé le matin (`first_captured_ts >= 05:00` Paris), les passes intraday (`portfolio_results_daemon`, `live_data_daemon`, `live_snapshot`, etc.) **ne peuvent plus remplacer** le match publié à ce rang.  
+> Archive append-only conservée : `data/exports/daily_top_proba/{date}.jsonl`.
+
 ### 2.2 Telegram
 
 | Moment | Déclencheur | Détail |
@@ -166,7 +170,7 @@ Détail stockage : [[DAILY_TOP_PROBA_REPLAY]].
 
 ## 5. Cron PROD
 
-Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning`
+Fichier : `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning-pipeline`
 
 | Heure (Paris) | Commande | 1D1P |
 |---------------|----------|------|

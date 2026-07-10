@@ -6,6 +6,154 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ops PROD — doublon cron matin supprimé (10 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Build 02:00 et publish 05:00 en échec partiel (`code 1` / `code 2`, verrou snapshot) alors que la chaîne P0 finissait en succès |
+| **Cause** | Deux fichiers cron actifs : legacy `bettinghud-morning` (juin) + P0 `bettinghud-morning-pipeline` (juil.) — même horaire |
+| **Correctif** | `sudo rm -f /etc/cron.d/bettinghud-morning` en prod ; `install_ubuntu.sh` supprime ce legacy à l’install |
+| **Canonique** | `deploy/cron/morning-pipeline` → `/etc/cron.d/bettinghud-morning-pipeline` |
+
+---
+
+# Incident PROD CourtAlpha — picks publiés absents de l'historique (8 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme utilisateur** | Pick **Kostyuk (06/07)** vu sur Telegram/Discord mais absent de `/api/picks/top5-replay` et `/api/picks/one-day-one-pick` |
+| **Cause racine** | `daily_top_proba_picks` est un état **upsert par `pick_key={date|tour|rank}`** ; des captures intraday tardives écrasaient les picks publiés le matin |
+| **Preuve** | `data/exports/daily_top_proba/2026-07-06.jsonl` contient plusieurs captures avec Kostyuk (matin), mais la table SQL finale ne le contient plus |
+| **Correctif prod (final)** | 1) Replay historique **revenu sur `daily_top_proba_picks` SQL** (pas de remplacement global par JSONL, qui avait réduit l'historique fin mai). 2) **Backfill ciblé** du snapshot publication du `2026-07-06` depuis JSONL. 3) **Verrou durable** dans `upsert_daily_top_proba_picks` : après capture matin (`>= 05:00` Paris), les passes intraday ne peuvent plus écraser le match publié au même `pick_key` |
+| **Impact** | Historique complet restauré (`start_date=2026-05-18`, ~26–27 jours) **et** Kostyuk du 06/07 visible en Top5 + 1P1D ; régression bloquée à la source |
+| **Compat serveur** | Fallback ajouté si module optionnel `scripts.reliability_pick_match` absent (évite 500) |
+| **Validation** | `top5_replay` : 58 picks / 27 jours ; `one_day_one_pick` : 26 picks ; `Krueger A. vs Kostyuk M. (12)` au `2026-07-06` en **Gagné** |
+
+### Vérification post-fix (prod)
+
+```bash
+ssh bettinghud "cd /opt/courtalpha && /opt/bettinghud/venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0,'/opt/courtalpha')
+sys.path.insert(0,'/opt/bettinghud')
+from api.services.top5_replay import build_top5_replay
+from api.services.one_day_one_pick import build_one_day_one_pick_replay
+p5=build_top5_replay(db_path='/opt/bettinghud/data/bettinghud.db')
+p1=build_one_day_one_pick_replay(db_path='/opt/bettinghud/data/bettinghud.db')
+print([r for r in p5['picks'] if str(r.get('calendar_date'))=='2026-07-06'])
+print([r for r in p1['picks'] if str(r.get('calendar_date'))=='2026-07-06'])
+PY"
+```
+
+---
+
+# Incident PROD CourtAlpha — replay `Best pick` / `Top 5 probas > historique` (8 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | `GET /api/picks/top5-replay` renvoie **500** dans CourtAlpha ; écran « Top 5 probas > historique » vide |
+| **Route touchée** | `api/routes/picks.py` → `build_top5_replay()` (`/opt/courtalpha`) |
+| **Cause racine #1** | Dépendance Python absente côté serveur : `api/services/top5_replay.py` importe `scripts.backtest_prod_top5_2026`, mais le fichier n'était pas présent sous `/opt/bettinghud/scripts/` |
+| **Cause racine #2** | Résolution du bundle ML fragile hors repo BettingHUD : `TennisMLModel.model_path` restait relatif (`models/xgb_model_tml_v47.pkl`) ; depuis `/opt/courtalpha`, `load_1d1p_today_pick()` cherchait donc le bundle au mauvais endroit |
+| **Impact connexe** | `/api/picks/one-day-one-pick` pouvait aussi tomber en erreur « Modèle non entraîné et non trouvé » pour la même raison de chemin relatif |
+| **Vérification** | `journalctl -u courtalpha-api` : `ModuleNotFoundError: No module named 'scripts.backtest_prod_top5_2026'` |
+| **Correctif code** | `scripts/ml_model.py` résout désormais les bundles relatifs **depuis la racine du projet BettingHUD**, pas depuis le `cwd` appelant |
+| **Correctif déploiement** | Déployer aussi `scripts/backtest_prod_top5_2026.py` sur PROD avant restart `courtalpha-api` |
+
+### Commandes de diagnostic utiles
+
+```bash
+ssh bettinghud "journalctl -u courtalpha-api -n 80 --no-pager"
+ssh bettinghud "ls /opt/bettinghud/scripts/backtest_prod_top5_2026.py"
+ssh bettinghud "cd /opt/courtalpha && /opt/bettinghud/venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0, '/opt/courtalpha')
+sys.path.insert(0, '/opt/bettinghud')
+from api.services.top5_replay import build_top5_replay
+print(build_top5_replay(db_path='/opt/bettinghud/data/bettinghud.db')['period'])
+PY"
+```
+
+---
+
+# Exploration split ATP / WTA — niveau 1 (PREPROD uniquement)
+
+| Élément | Détail |
+|---------|--------|
+| **Statut** | **Exploration PREPROD** — aucun déploiement PROD, aucun impact publication Top 5 / 1D1P |
+| **Objectif** | Tester si un **bundle WTA candidat** (delta Sackmann + retrain) améliore le circuit WTA **sans dégrader l’ATP**, plutôt que de promouvoir un bundle unifié |
+| **Hypothèse** | Un retrain global sur données WTA enrichies peut améliorer `tour_WTA` mais dégrader `tour_ATP` / `ATP_Clay` ; le routage niveau 1 isole l’effet WTA |
+| **Mécanisme** | `TourModelRouter` (`scripts/ml_tour_router.py`) : **v47 baseline pour ATP**, **`xgb_wta_delta_candidate.pkl` pour WTA** |
+| **Garde-fou PROD** | `BETTINGHUD_ENV=prod` → routage **toujours ignoré**, même si `BETTINGHUD_ML_TOUR_ROUTING=1` |
+| **Doc opérationnelle** | **`docs/ML_BUNDLE_ROLLBACK.md`** § Routage ATP/WTA · **`docs/PREDICTION_ET_MISE.md`** § 1bis (distinction BO3/BO5 vs ATP/WTA) |
+| **Code** | `ml_tour_router.py`, `ml_bundle_cli.py tour-routing`, `ml_model.model_for_inference()` |
+| **Tests** | `tests/test_ml_tour_router.py` (garde-fou PROD, enable/disable config) |
+
+### Protocole d’évaluation (PREPROD)
+
+| Étape | Script | Rôle |
+|-------|--------|------|
+| 1. Activer routage | `ml_bundle_cli.py tour-routing on` + `BETTINGHUD_ML_TOUR_ROUTING=1` | Écrit `models/.ml_tour_routing_preprod.json` |
+| 2. Smoke | `preprod_tour_routing_smoke.py` | Vérifie chargement bundles + cohérence facade / backend |
+| 3. Hold-out Brier | `shadow_wta_candidate_replay.py` | Compare `segment_brier_scores` v47 vs candidat (`tour_WTA`, `tour_ATP`, mix pondéré) |
+| 4. Replay Top 5 | `preprod_tour_routing_replay.py` | Hybride cap 5 : v47 unifié vs routé ATP/WTA (mode rapide ou `--full-feature-store`) |
+| 5. Rollback | `ml_bundle_cli.py tour-routing off` | Supprime la config PREPROD |
+
+DB PREPROD typique : `data/preprod/bettinghud_wta_delta.db` (pipeline `run_wta_delta_preprod.py`).
+
+### Contexte Brier (référence juin 2026, voir `WTA_SACKMANN_ARCHIVE.md`)
+
+| Bundle | `global_test_brier` | `tour_WTA` |
+|--------|---------------------|------------|
+| v47 prod (unifié) | 0,1749 | 0,1718 |
+| v47 pré-delta (rollback) | 0,1816 | 0,1664 |
+
+Le candidat WTA delta peut être **meilleur en WTA** tout en **dégradant le global** (effet ATP) — d’où l’exploration routage avant tout `promote` unifié.
+
+### Décision attendue (non tranchée)
+
+| Option | Quand |
+|--------|-------|
+| **Routage niveau 1 en PROD** | Si replay Top 5 2026 routé ≤ v47 **et** `tour_WTA` candidat ≤ baseline — **pas encore validé** |
+| **`promote` bundle unifié** | Si gate J6 PASS **et** ATP non dégradé (seuils `ML_BUNDLE_ROLLBACK.md`) |
+| **Abandon candidat WTA** | Si routage et bundle unifié échouent aux gates |
+
+Les **résultats chiffrés** de chaque run replay restent dans la sortie console des scripts ; les consigner ici après un run significatif.
+
+---
+
+# Session documentation & QA — 8 juillet 2026
+
+| Action | Statut doc | Détail |
+|--------|------------|--------|
+| **Audit QA anti-fuite ML** (`minutes_played_last7d`, `tb_win_pct_52w`, ordre `hist.append`) | ✅ § ci-dessous + `PREDICTION_ET_MISE.md` §2 | Aucune fuite constatée sur les trois points vérifiés |
+| **Backtest utilisable sans modif** | ✅ § 5 + smoke test ci-dessous | `backtest_2026.py` aligné v47 ; features manquantes → 0.0 |
+| **Smoke test `build_dataset_with_identity`** | ✅ ci-dessous | 87 829 matchs → 175 658 lignes ; `missing_features []` ; `na_in_features 0` |
+| **Backup projet complet** | ✅ § 6 | `create_full_project_backup.py` + `RESTAURATION.md` dans le ZIP |
+| **Mise à jour docs** | ✅ | `ARCHITECTURE.md`, `PREDICTION_ET_MISE.md`, `MODELE_V45_*`, ce fichier |
+| **Rollback bundle ML** | ✅ | `docs/ML_BUNDLE_ROLLBACK.md` (index `Home.md`) |
+| **Exploration split ATP/WTA (PREPROD)** | ✅ | `CHANGELOG_RECENT.md` § dédié · `ML_BUNDLE_ROLLBACK.md` · `PREDICTION_ET_MISE.md` § 1bis · `ENVIRONNEMENTS.md` |
+
+### Audit QA ML — causalité features temporelles (juillet 2026)
+
+Vérification manuelle du pipeline `scripts/ml_model.py` (`_build_temporal_features`) après gain Brier ~0,174 :
+
+1. **`minutes_played_last7d_diff`** : `_sum_mins_last7d` ne lit que `hist[pid]` ; le match courant n’est ajouté à `hist` qu’**après** le calcul des features de la ligne → pas d’inclusion des minutes du match en cours.
+2. **`tb_win_pct_52w_diff`** : `_tb_win_pct_gliding` ne lit que `hist_tb` ; `_infer_tiebreaks_from_score(row.score)` sert à l’**append** post-features, pas au calcul de `w_tb52` / `l_tb52` pour la ligne courante.
+3. **Ordre deque** : section « update with current match » — `hist` / `hist_tb` / `hist_clutch` **append** systématiquement **après** toutes les features pré-match de la ligne.
+
+**Verdict** : pipeline cohérent sans correction de code requise pour ces trois points. Hardening optionnel : borne stricte `x[0] < ref_dt` ou exclusion par `match_id` (défense en profondeur, pas nécessaire tant que l’ordre append est respecté).
+
+### Smoke test backtest dataset (12 mai 2026, rejouable)
+
+```powershell
+py -3 -c "import sys, pandas as pd; sys.path.insert(0, '.'); from scripts.ml_model import TennisMLModel; from scripts.backtest_2026 import build_dataset_with_identity; ml = TennisMLModel('data/bettinghud.db'); ds, _, _ = build_dataset_with_identity(ml); print('missing', [f for f in ml.features if f not in ds.columns]); print('rows', len(ds))"
+```
+
+Résultat attendu : `missing []`, `rows` ≈ 175 658 (double orientation P1/P2). Durée ~12 min sur machine de dev. Warning pandas « fragmented DataFrame » (ligne ~248 `backtest_2026.py`) : cosmétique perf, non bloquant.
+
+---
+
 # Sélection hybride Top 5 / 1 Day 1 Pick — juillet 2026
 
 | Livrable | Détail |
@@ -827,6 +975,7 @@ Lancer : `python -m pytest tests/test_brier_segment_key.py tests/test_priority_s
 | `scripts/backtest_2026.py` | No-leak, priority_score, assert v47. |
 | `scripts/kelly_ab_analysis_2025.py` | Kelly A/B avec clé Brier segment live. |
 | `scripts/create_full_project_backup.py` | Archive + guide restauration. |
+| `scripts/ml_bundle_cli.py`, `scripts/ml_bundle_registry.py`, `scripts/ml_tour_router.py` | Freeze / rollback / promote v47 ; routage tour PREPROD (`ML_BUNDLE_ROLLBACK.md`). |
 | `app/dashboard.py` | UI live, daemon, alertes, refresh match, tri composite, `ref_date` build, garde-fou rang/proba. |
 | `scripts/audit_projection_day.py` | Audit écarts modèle/book + replay core/tactique. |
 | `scripts/audit_rg_wta_snapshot.py` | Audit French Open WTA. |
@@ -857,4 +1006,4 @@ Après déploiement : `python scripts/fetch_wta_sackmann_raw.py` puis `python sc
 - Après chaque **run d’entraînement** significatif : reporter dans `MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` (ou une page v47 dédiée) les **Brier globaux et segmentaires** mesurés sur le même protocole de test.
 - Aligner **`README.md`** racine (encore en partie sur v45) lors d’une prochaine passe README.
 
-*Dernière mise à jour de ce fichier : 26 mai 2026.*
+*Dernière mise à jour de ce fichier : 8 juillet 2026.*

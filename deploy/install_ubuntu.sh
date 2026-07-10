@@ -72,6 +72,8 @@ if [[ -d "${APP_DIR}/deploy/cron" ]]; then
   sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-${base}"
   sudo chmod 644 "/etc/cron.d/bettinghud-${base}"
   done
+  # Ancien nom (sans alertes TG) — doublon avec bettinghud-morning-pipeline
+  sudo rm -f /etc/cron.d/bettinghud-morning
 fi
 
 echo "=== Installation terminée ==="

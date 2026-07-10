@@ -576,7 +576,7 @@ sudo chmod 644 /etc/cron.d/bettinghud-courtalphax-x
 cat /etc/cron.d/bettinghud-courtalphax-x
 ```
 
-> Même règle LF que `bettinghud-morning` — voir [[OPS_PROD_DEPANNAGE]] § cron CRLF.
+> Même règle LF que `bettinghud-morning-pipeline` — voir [[OPS_PROD_DEPANNAGE]] § cron CRLF.
 
 ### 9.4 Tests PREPROD (Windows)
 

@@ -31,9 +31,10 @@ scp deploy/sudoers/bettinghud-ops "${HOST}:/tmp/bettinghud-ops.sudoers"
 ssh "${HOST}" bash -s <<'REMOTE'
 set -euo pipefail
 APP=/opt/bettinghud
-sudo cp /tmp/bettinghud-cron-p0/morning-pipeline /etc/cron.d/bettinghud-morning-pipeline
-sudo cp /tmp/bettinghud-cron-p0/data-sync /etc/cron.d/bettinghud-data-sync
-sudo cp /tmp/bettinghud-cron-p0/ops-p0 /etc/cron.d/bettinghud-ops-p0
+  sudo cp /tmp/bettinghud-cron-p0/morning-pipeline /etc/cron.d/bettinghud-morning-pipeline
+  sudo cp /tmp/bettinghud-cron-p0/data-sync /etc/cron.d/bettinghud-data-sync
+  sudo cp /tmp/bettinghud-cron-p0/ops-p0 /etc/cron.d/bettinghud-ops-p0
+  sudo rm -f /etc/cron.d/bettinghud-morning
 for f in /etc/cron.d/bettinghud-morning-pipeline /etc/cron.d/bettinghud-data-sync /etc/cron.d/bettinghud-ops-p0; do
   sudo sed -i 's/\r$//' "$f"
   sudo chmod 644 "$f"
