@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from scripts.wta_sackmann_common import DEFAULT_CUTOFF, norm_name_key, parse_yyyymmdd
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scripts.wta_sackmann_common import DEFAULT_CUTOFF, norm_name_key, parse_yyyymmdd
 DEFAULT_ALIASES_PATH = ROOT / "config" / "wta_name_aliases.json"
 LEGACY_ALIASES_PATH = ROOT / "data" / "wta_name_aliases.json"
 
@@ -133,7 +135,9 @@ def apply_aliases_to_work_dir(
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import os
 
+    os.chdir(ROOT)
     ap = argparse.ArgumentParser(description="Applique alias/corrections noms WTA sur work-dir CSV.")
     ap.add_argument("--work-dir", default=str(ROOT / "data" / "raw" / "tennis_wta"))
     ap.add_argument("--cutoff-date", type=int, default=DEFAULT_CUTOFF)
