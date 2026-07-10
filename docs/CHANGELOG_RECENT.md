@@ -6,6 +6,19 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# WTA — classements post-Sackmann + fix `book_gap_pp` (10 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Contexte** | Archive Sackmann figée au **2026-06-08** (repo GitHub 404) — `wta_rankings_current.csv` ne se mettait plus à jour |
+| **Refresh rangs** | `scripts/refresh_wta_rankings_current.py` : dernier rang/points par joueuse dans `wta_matches*` + cache TE si plus récent → `ingest_rankings_current.py` |
+| **Crons** | `sync_tours_daily` (03:30) et `morning_live_pipeline` (02:00) avant build snapshot |
+| **stats_engine** | `_overlay_wta_current_rankings` : overlay seulement si `ranking_date ≥ stats_reference_date` du match |
+| **book_gap_pp** | `dashboard.py` : passer `feature_snapshot` à `_match_snapshot_quality_flags` (évite faux `book_gap_high` ~32 pp) |
+| **Prod** | `MAX(ranking_date)` → **2026-07-10** ; Vandromme rank **161** (ref 9 juil.) ; rebuild snapshot recommandé après déploiement |
+
+---
+
 # Ops PROD — doublon cron matin supprimé (10 juillet 2026)
 
 | Élément | Détail |

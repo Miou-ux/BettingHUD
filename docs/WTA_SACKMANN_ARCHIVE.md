@@ -13,7 +13,7 @@ L’archive sous `data/raw/tennis_wta/` est la **dernière copie connue** du dé
 | Élément | Détail |
 |---------|--------|
 | **Chemin live** | `/opt/bettinghud/data/raw/tennis_wta/` (~78 Mo) |
-| **Alimentation** | Pipeline **delta WTA** (`sync_wta_delta` + enrich Flashscore) via cron **03:30** — plus de fetch HTTP Sackmann |
+| **Alimentation** | Pipeline **delta WTA** (`sync_wta_delta` + enrich) + **`refresh_wta_rankings_current.py`** (rangs depuis matchs récents / cache TE) — cron **03:30** |
 | **Schéma** | 49 colonnes Sackmann (`wta_matches_*.csv`) |
 | **Fichiers** | 35 CSV : main 2010–2026, qual/ITF 2010–2026, `wta_players.csv`, `wta_rankings_current.csv` |
 
@@ -33,6 +33,15 @@ L’archive sous `data/raw/tennis_wta/` est la **dernière copie connue** du dé
 | `xgb_model_tml_v47_pre_wta_delta.pkl` (rollback) | 0.1816 | 0.1664 |
 
 Retrain prod : **18/06/2026** · gate J6 **PASS**.
+
+### Classements WTA courants (juillet 2026)
+
+Le fichier `wta_rankings_current.csv` **Sackmann d’origine** s’arrête au **2026-06-08**. Depuis juillet 2026, il est **régénéré** par `scripts/refresh_wta_rankings_current.py` :
+
+1. Dernier rang/points par joueuse dans les CSV `wta_matches*` (delta tennis-data).
+2. Complément cache profil **Tennis Explorer** si plus récent.
+
+Appelé dans `sync_tours_daily` (03:30) et `morning_live_pipeline` (02:00) avant `ingest_rankings_current.py`.
 
 ---
 

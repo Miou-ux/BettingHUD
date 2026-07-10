@@ -2947,9 +2947,13 @@ def _prematch_csv_signature():
 
 
 def _ml_model_mtime() -> float:
-    """mtime du bundle XGBoost. Sert de clé d'invalidation pour les caches Streamlit
-    qui dépendent des prédictions du modèle (sinon `get_latest_scraped_data` peut
-    rendre des prédictions obsolètes après un retraining)."""
+    """mtime du bundle XGBoost actif (voir ml_bundle_registry)."""
+    try:
+        from scripts.bets_db import get_ml_bundle_abspath
+
+        return float(os.path.getmtime(get_ml_bundle_abspath()))
+    except OSError:
+        pass
     for name in ("xgb_model_tml_v47.pkl", "xgb_model_tml_v45.pkl", "xgb_model_tml_v4.pkl", "xgb_model_tml_v1.pkl"):
         path = os.path.join("models", name)
         try:
@@ -5041,6 +5045,7 @@ def _build_live_matches_core(
                 "true_odd_p2": true_odd_p2,
                 "p1_stats": p1_stats,
                 "p2_stats": p2_stats,
+                "feature_snapshot": feature_snapshot,
             }
         )
 

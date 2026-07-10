@@ -1,5 +1,9 @@
 """
-Importe le classement WTA courant Sackmann (`wta_rankings_current.csv`) dans SQLite.
+Importe le classement WTA courant dans SQLite.
+
+Source par défaut : ``data/raw/tennis_wta/wta_rankings_current.csv`` (régénéré par
+``refresh_wta_rankings_current.py`` depuis le delta tennis-data + cache TE — plus le
+snapshot Sackmann GitHub figé).
 
 Le pipeline ATP ne dépend plus des classements Sackmann : la source ATP officielle
 est désormais TennisMyLife (`scripts/sync_tml_recent.py`). Ce script ne traite donc

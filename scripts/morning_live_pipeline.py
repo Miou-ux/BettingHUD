@@ -123,9 +123,11 @@ def run_build_phase(*, _log) -> int:
     ensure_bettinghud_query_indexes()
 
     try:
+        from scripts.refresh_wta_rankings_current import refresh_rankings_csv
         from scripts.ingest_rankings_current import main as ingest_wta_rankings
 
-        _log("Ingest classements WTA courants (Sackmann)…")
+        _log("Refresh + ingest classements WTA (delta matchs / cache TE)…")
+        refresh_rankings_csv()
         ingest_wta_rankings(argv=[])
     except Exception as exc:
         _log(f"Ingest rankings WTA ignoré : {exc}")

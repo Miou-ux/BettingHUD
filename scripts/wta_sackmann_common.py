@@ -61,6 +61,9 @@ SACKMANN_COLUMNS: tuple[str, ...] = (
 
 DEFAULT_CUTOFF = 20260526
 
+MIN_PLAYER_AGE = 15.0
+MAX_PLAYER_AGE = 45.0
+
 SERVE_COLS = (
     "w_ace",
     "w_df",
@@ -223,6 +226,18 @@ def parse_yyyymmdd(val: object) -> int | None:
         return None
 
 
+def clamp_player_age(age: float) -> float:
+    return round(max(MIN_PLAYER_AGE, min(MAX_PLAYER_AGE, float(age))), 2)
+
+
+def _age_is_plausible(age: object) -> bool:
+    try:
+        a = float(age)
+    except (TypeError, ValueError):
+        return False
+    return MIN_PLAYER_AGE <= a <= MAX_PLAYER_AGE
+
+
 def build_age_lookup(matches_df: pd.DataFrame) -> dict[str, tuple[int, float]]:
     """name_key -> (last_tourney_date_int, age_at_that_date)."""
     out: dict[str, tuple[int, float]] = {}
@@ -242,6 +257,8 @@ def build_age_lookup(matches_df: pd.DataFrame) -> dict[str, tuple[int, float]]:
                 age_f = float(age)
             except (TypeError, ValueError):
                 continue
+            if not _age_is_plausible(age_f):
+                continue
             prev = out.get(nk)
             if prev is None or td >= prev[0]:
                 out[nk] = (td, age_f)
@@ -252,10 +269,10 @@ def estimate_age(name: str, tourney_date: int, lookup: dict[str, tuple[int, floa
     nk = norm_name_key(name)
     rec = lookup.get(nk)
     if not rec:
-        return default
+        return clamp_player_age(default)
     last_td, last_age = rec
     days = max(0, tourney_date - last_td)
-    return round(last_age + days / 365.25, 2)
+    return clamp_player_age(last_age + days / 365.25)
 
 
 def next_synthetic_player_id(existing: set[int]) -> int:
@@ -264,3 +281,218 @@ def next_synthetic_player_id(existing: set[int]) -> int:
         base += 1
     existing.add(base)
     return base
+
+
+def build_player_profile_lookup(
+    matches_df: pd.DataFrame,
+) -> tuple[dict[str, int], dict[int, dict[str, Any]]]:
+    """name_key -> Sackmann player_id ; player_id -> dernier profil connu (hand/ht/ioc/age)."""
+    name_to_id = build_name_to_player_id(matches_df)
+    profiles: dict[int, dict[str, Any]] = {}
+    if matches_df.empty:
+        return name_to_id, profiles
+
+    for _, row in matches_df.iterrows():
+        td = parse_yyyymmdd(row.get("tourney_date"))
+        if td is None:
+            continue
+        for name_col, id_col, hand_col, ht_col, ioc_col, age_col in (
+            ("winner_name", "winner_id", "winner_hand", "winner_ht", "winner_ioc", "winner_age"),
+            ("loser_name", "loser_id", "loser_hand", "loser_ht", "loser_ioc", "loser_age"),
+        ):
+            try:
+                pid = int(float(row.get(id_col)))
+            except (TypeError, ValueError):
+                continue
+            if pid >= 900000:
+                continue
+            prev = profiles.get(pid)
+            if prev is not None and int(prev.get("last_tourney_date") or 0) > td:
+                continue
+            prof: dict[str, Any] = {
+                "player_id": pid,
+                "name": str(row.get(name_col) or "").strip(),
+                "last_tourney_date": td,
+            }
+            for src, dst in (
+                (hand_col, "hand"),
+                (ht_col, "ht"),
+                (ioc_col, "ioc"),
+                (age_col, "age"),
+            ):
+                val = row.get(src)
+                if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                    s = str(val).strip()
+                    if s:
+                        if dst == "age" and not _age_is_plausible(val):
+                            continue
+                        prof[dst] = val if dst == "age" else s
+            if prev:
+                for k in ("hand", "ht", "ioc", "age", "name"):
+                    if k not in prof and k in prev:
+                        prof[k] = prev[k]
+            profiles[pid] = prof
+    return name_to_id, profiles
+
+
+def apply_player_enrichment(
+    row: dict[str, Any],
+    *,
+    tourney_date: int,
+    name_to_id: dict[str, int],
+    profiles: dict[int, dict[str, Any]],
+    age_lookup: dict[str, tuple[int, float]],
+    player_ids: set[int],
+) -> None:
+    """Remplit winner/loser id, âges, hand, ht, ioc sur une ligne Sackmann (in-place)."""
+    winner = str(row.get("winner_name") or "").strip()
+    loser = str(row.get("loser_name") or "").strip()
+    wid = resolve_player_id(winner, name_to_id, player_ids)
+    lid = resolve_player_id(loser, name_to_id, player_ids)
+    row["winner_id"] = wid
+    row["loser_id"] = lid
+
+    for side, name, pid in (("winner", winner, wid), ("loser", loser, lid)):
+        prof = profiles.get(pid) if pid < 900000 else None
+        age = estimate_age(name, tourney_date, age_lookup)
+        if prof and prof.get("age") is not None and prof.get("last_tourney_date"):
+            last_td = int(prof["last_tourney_date"])
+            days = max(0, tourney_date - last_td)
+            age = clamp_player_age(float(prof["age"]) + days / 365.25)
+        row[f"{side}_age"] = age
+        if prof:
+            if prof.get("hand"):
+                row[f"{side}_hand"] = prof["hand"]
+            if prof.get("ht") is not None and not pd.isna(prof.get("ht")):
+                try:
+                    row[f"{side}_ht"] = int(float(prof["ht"]))
+                except (TypeError, ValueError):
+                    row[f"{side}_ht"] = prof["ht"]
+            if prof.get("ioc"):
+                row[f"{side}_ioc"] = prof["ioc"]
+
+
+def _rank_val_ok(val: object) -> bool:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return False
+    s = str(val).strip()
+    return bool(s) and s.lower() not in {"nan", "none"}
+
+
+def build_rank_history(matches_df: pd.DataFrame) -> dict[int, list[tuple[int, float, float]]]:
+    """Historique (tourney_date, rank, rank_points) par player_id, trié par date."""
+    out: dict[int, list[tuple[int, float, float]]] = {}
+    if matches_df.empty:
+        return out
+    for _, row in matches_df.iterrows():
+        td = parse_yyyymmdd(row.get("tourney_date"))
+        if td is None:
+            continue
+        for pid_col, rank_col, pts_col in (
+            ("winner_id", "winner_rank", "winner_rank_points"),
+            ("loser_id", "loser_rank", "loser_rank_points"),
+        ):
+            try:
+                pid = int(float(row.get(pid_col)))
+            except (TypeError, ValueError):
+                continue
+            if pid >= 900000:
+                continue
+            rank = row.get(rank_col)
+            pts = row.get(pts_col)
+            if not _rank_val_ok(rank):
+                continue
+            try:
+                rank_f = float(rank)
+                pts_f = float(pts) if _rank_val_ok(pts) else float("nan")
+            except (TypeError, ValueError):
+                continue
+            out.setdefault(pid, []).append((td, rank_f, pts_f))
+    for pid in out:
+        out[pid].sort(key=lambda x: x[0])
+    return out
+
+
+def lookup_rank_at(
+    history: dict[int, list[tuple[int, float, float]]],
+    pid: int,
+    tourney_date: int,
+) -> tuple[float | None, float | None]:
+    recs = history.get(pid)
+    if not recs:
+        return None, None
+    rank, pts = None, None
+    for td, r, p in recs:
+        if td > tourney_date:
+            break
+        rank, pts = r, p if not (isinstance(p, float) and pd.isna(p)) else None
+    return rank, pts
+
+
+def fill_ranks_if_missing(
+    row: dict[str, Any],
+    *,
+    tourney_date: int,
+    rank_history: dict[int, list[tuple[int, float, float]]],
+    current_rankings: dict[int, tuple[float, float]] | None = None,
+) -> int:
+    """Complète winner/loser rank (+ points) depuis l'historique ou rankings courants. Retourne nb champs remplis."""
+    filled = 0
+    cur = current_rankings or {}
+    for side, pid_col, rank_col, pts_col in (
+        ("winner", "winner_id", "winner_rank", "winner_rank_points"),
+        ("loser", "loser_id", "loser_rank", "loser_rank_points"),
+    ):
+        if _rank_val_ok(row.get(rank_col)):
+            continue
+        try:
+            pid = int(float(row.get(pid_col)))
+        except (TypeError, ValueError):
+            continue
+        rank, pts = lookup_rank_at(rank_history, pid, tourney_date)
+        if rank is None and pid in cur:
+            rank, pts = cur[pid]
+        if rank is not None:
+            row[rank_col] = rank
+            filled += 1
+            if pts is not None and not _rank_val_ok(row.get(pts_col)):
+                row[pts_col] = pts
+                filled += 1
+    return filled
+
+
+def row_completeness_score(row: dict | pd.Series) -> int:
+    """Plus haut = ligne préférée en cas de doublon dédup."""
+    score = 0
+    for col in SERVE_COLS:
+        v = row.get(col)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+            score += 2
+    for col in ("winner_rank", "loser_rank", "winner_hand", "winner_ht", "score"):
+        v = row.get(col)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+            score += 1
+    try:
+        if int(float(row.get("winner_id") or 0)) < 900000:
+            score += 3
+    except (TypeError, ValueError):
+        pass
+    return score
+
+
+def build_wta_players_table(profiles: dict[int, dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for pid in sorted(profiles):
+        p = profiles[pid]
+        rows.append(
+            {
+                "player_id": pid,
+                "name": p.get("name"),
+                "hand": p.get("hand"),
+                "ht": p.get("ht"),
+                "ioc": p.get("ioc"),
+                "last_age": p.get("age"),
+                "last_match_date": p.get("last_tourney_date"),
+            }
+        )
+    return pd.DataFrame(rows)

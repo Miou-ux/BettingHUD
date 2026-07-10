@@ -89,6 +89,16 @@ def _run_wta_delta_on_raw() -> int:
         _append_log("sync_wta_delta.py a echoue.")
         return rc
     _append_log("sync_wta_delta.py OK.")
+    _append_log("WTA delta: lancement enrich_wta_delta_metadata.py")
+    rc = _run_py_with_args("enrich_wta_delta_metadata.py", extra + ["--dedup"])
+    if rc != 0:
+        _append_log("enrich_wta_delta_metadata.py a echoue.")
+        return rc
+    _append_log("enrich_wta_delta_metadata.py OK.")
+    _append_log("WTA delta: refresh wta_rankings_current (matchs récents + cache TE)")
+    rc = _run_py_with_args("refresh_wta_rankings_current.py", extra + ["--ingest"])
+    if rc != 0:
+        _append_log("refresh_wta_rankings_current.py a echoue (non bloquant).")
     _append_log("WTA delta: lancement enrich_wta_delta_te_stats.py")
     rc = _run_py_with_args("enrich_wta_delta_te_stats.py", extra)
     if rc != 0:

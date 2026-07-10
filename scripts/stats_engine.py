@@ -839,7 +839,7 @@ class TennisStatsEngine:
                 out = self._wta_rankings_stats_dict(
                     pid_int,
                     "Aucun match WTA récent dans `wta_matches` pour cette joueuse — "
-                    "rang/points issus de `rankings_wta_current` (Sackmann).",
+                    "rang/points issus de `rankings_wta_current` (delta/TE).",
                 )
                 if out is not None:
                     self._cache_stats_result(cache_key, out)
@@ -864,7 +864,7 @@ class TennisStatsEngine:
                     return _strip_stats_cache_meta(out)
                 out = self._wta_rankings_stats_dict(
                     pid_int,
-                    "Aucun match WTA récent — rang/points depuis `rankings_wta_current` (Sackmann).",
+                    "Aucun match WTA récent — rang/points depuis `rankings_wta_current` (delta/TE).",
                 )
                 if out is not None:
                     self._cache_stats_result(cache_key, out)
@@ -965,6 +965,10 @@ class TennisStatsEngine:
         rnk, pts, rdate = meta
         if self._is_wta_rankings_placeholder(rnk, pts):
             return out
+        match_ref = str(out.get("stats_reference_date") or "")[:10]
+        rank_ref = str(rdate or "")[:10]
+        if match_ref and rank_ref and rank_ref < match_ref:
+            return out
         merged = dict(out)
         merged["rank"] = rnk
         merged["pts"] = pts
@@ -974,7 +978,7 @@ class TennisStatsEngine:
         if prev in ("wta_matches", "no_ranking_source"):
             merged["stats_source"] = "rankings_wta_current"
             merged["stats_source_detail"] = (
-                "Rang/points depuis rankings_wta_current (prioritaire en live)."
+                "Rang/points depuis rankings_wta_current (delta/TE, prioritaire si ≥ date match)."
             )
         return merged
 
