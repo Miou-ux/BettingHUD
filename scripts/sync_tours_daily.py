@@ -123,7 +123,14 @@ def _run_wta_delta_on_raw() -> int:
         return rc
     _append_log("enrich_wta_delta_metadata.py OK.")
     _append_log("WTA delta: refresh wta_rankings_current (matchs récents + cache TE)")
-    rc = _run_py_with_args("refresh_wta_rankings_current.py", extra + ["--ingest"])
+    try:
+        from scripts.wta_sackmann_common import DEFAULT_CUTOFF as _cutoff
+    except Exception:
+        _cutoff = 20260526  # type: ignore[misc, assignment]
+    rc = _run_py_with_args(
+        "refresh_wta_rankings_current.py",
+        ["--work-dir", wta_dir, "--min-date", str(_cutoff), "--ingest"],
+    )
     if rc != 0:
         _append_log("refresh_wta_rankings_current.py a echoue (non bloquant).")
     _append_log("WTA delta: lancement enrich_wta_delta_te_stats.py")
