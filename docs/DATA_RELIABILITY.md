@@ -2,7 +2,7 @@
 
 Garde-fous et score de confiance pour les lignes du snapshot (`live_matches_snapshot.full.joblib`), le Live Tracker, le Top probas jour et les sélections automatiques (Top 5, 1D1P).
 
-**Code** : `app/dashboard.py` (build snapshot, enrichissement), `scripts/stats_engine.py` (identité WTA, rangs), `scripts/match_rank_quality.py` (`match_data_reliability_score`).
+**Code** : `app/dashboard.py` (build snapshot, enrichissement), `scripts/stats_engine.py` (identité WTA, rangs), `scripts/match_rank_quality.py` (`match_data_reliability_score` / `compute_match_reliability`), `scripts/reliability_context.py` (contexte TE/stale).
 
 ---
 
@@ -42,6 +42,7 @@ Champ snapshot : `data_reliability_score` + `data_reliability_flags` (liste de c
 | `p1_no_rank_source` / `p2_no_rank_source` | −12 | Pas de source rang officielle |
 | `p1_stale_rank_ref` / `p2_stale_rank_ref` | −10 | `stats_reference_date` > 12 mois |
 | `book_gap_high` | jusqu’à −20 | `book_gap_pp` > 25 pp |
+| **`model_odds_inconsistent`** | **−25** (défaut) | `true_odd_p*` diverge de `capped_p1_prob` (> 3 pp) |
 | `p1_ref_date_stale` / `p2_ref_date_stale` | −8 | Badge fraîcheur référence |
 | `p1_data_stale` / `p2_data_stale` | −6 | Données joueur anciennes |
 | **`duplicate_model_prob`** | **−20** (défaut, `BETTINGHUD_DUP_PROB_PENALTY`) | Même `capped_p1_prob` sur ≥ 2 matchs distincts du snapshot |
@@ -60,7 +61,7 @@ Le booléen **`unreliable`** continue de **bloquer le bouton Parier** dans l’U
 
 **Helpers** : `has_duplicate_model_prob_flag()`, `excluded_duplicate_model_prob_from_top5()`, `match_in_duplicate_model_prob_cluster()`.
 
-### Score v2 (juillet 2026) — plus de matchs éligibles sans assouplir Top 5
+### Score v3 (juillet 2026) — plus de matchs éligibles sans assouplir Top 5
 
 | Changement | Effet |
 |------------|--------|
@@ -74,6 +75,29 @@ Le booléen **`unreliable`** continue de **bloquer le bouton Parier** dans l’U
 Après déploiement : **`py -3 scripts/rebuild_live_projection.py`** pour recalculer le snapshot.
 
 **Backtest** : `scripts/backtest_p0_vs_prod_2026.py` — comparatif prod vs exclusion dup / cap EV sur 2026.
+
+### Score v4 + gates publics unifiés (14 juillet 2026)
+
+| Changement | Effet |
+|------------|--------|
+| **`RELIABILITY_SCORE_VERSION = 4`** | Rescore auto hors snapshot rebuild |
+| **`model_odds_inconsistent`** | Flag + pénalité **−25** si `true_odd_p*` diverge de `capped_p1_prob` (> 3 pp par défaut) |
+| **`passes_public_pick_gates()`** | Filtre unifié : caps présents, odds cohérents, fiabilité ≥80, pas de `duplicate_model_prob` |
+| **Lignes matérialisées Top5** | `_is_materialized_pick_row()` : picks sans `feature_snapshot` (post-`collect_top5_proba_picks`) — fiabilité + duplicate seulement |
+| **Source proba affichage** | `capped_p1_prob` / `model_prob_for_side` — **plus** `1 / true_odd` pour Live Tracker public |
+
+**Helpers** : `capped_p1_prob_from_match`, `model_prob_for_side`, `model_true_odd_for_side`, `reconcile_match_true_odds_from_caps`, `normalize_matches_model_probs`.
+
+Canaux alignés : dashboard Top 5 Action, `daily_top_proba_picks`, hybride Top 5 / 1D1P, `filter_telegram_display_picks`, `live_tracker_picks` (`/jour`).
+
+### Comparaison v3 vs scores stockés (historique)
+
+| Action | Script |
+|--------|--------|
+| A/B live jour courant (snapshot) | `scripts/diagnose_reliability_funnel.py` + `--rescore` |
+| A/B historique 2025/2026 (pool, picks, ROI) | `scripts/compare_reliability_v3_backtest.py --year 2025 2026` |
+
+Limite importante : l'A/B historique CSV sous-estime l'impact live de v3 (pas de `feature_snapshot` TE complet sur les lignes replay).
 
 ---
 
@@ -98,12 +122,14 @@ book_gap_pp = |p_model_fav − p_implicit_fav| × 100
 
 Exemple Muchova @ 1.47, modèle 93.3 % → book ~68.0 % → **~25 pp** (pas l’ancienne métrique vig ~2 pp).
 
-### Filtre actif (juin 2026)
+### Filtre actif (juin 2026 — renforcé juillet 2026)
 
-Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live Tracker, value bets persistés) passent par `passes_data_reliability_filter` :
+Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live Tracker, value bets persistés) passent par **`passes_public_pick_gates`** (match snapshot) ou équivalent sur lignes matérialisées Top5 :
 
 - seuil par défaut **`BETTINGHUD_MIN_DATA_RELIABILITY=80`**
 - exclusion si `unreliable=True` ou score absent
+- exclusion si `duplicate_model_prob` (cluster même tournoi)
+- exclusion match brut si `model_odds_inconsistent` (`true_odd_*` stale vs `capped_p1_prob`)
 
 ### Persistance
 
@@ -144,6 +170,9 @@ venv/bin/python scripts/rebuild_live_projection.py
 
 # Script ad hoc (prod) — picks « fiables » du jour
 venv/bin/python scripts/_today_reliable_picks.py --date YYYY-MM-DD
+
+# A/B fiabilité v3 sur backtest 2025/2026 (interprétation prudente)
+py -3 scripts/compare_reliability_v3_backtest.py --year 2025 2026
 ```
 
 Voir aussi `docs/OPS_PROD_DEPANNAGE.md`, `docs/CHART_TOP_PROBAS_JOUR.md`.

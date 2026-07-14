@@ -1,14 +1,49 @@
 # Ops production & dépannage (PROD)
 
-Dernière mise à jour : **10 juillet 2026**.
+Dernière mise à jour : **14 juillet 2026**.
 
 Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d’environnement, incidents rencontrés en mise en production et procédures de correction.
 
-**Voir aussi** : [[ENVIRONNEMENTS]], [[DEPLOY_SERVEUR]], [[CHANGELOG_RECENT]] § 0.17.
+**Voir aussi** : [[ENVIRONNEMENTS]], [[DEPLOY_SERVEUR]], [[CHANGELOG_RECENT]] § alignement affichage 14/07/2026.
 
 ---
 
-## 0. Incident CourtAlpha replay (8 juillet 2026)
+## 0. Incident Waltert / TG Top 5 vide (14 juillet 2026)
+
+**Symptômes** :
+
+- Waltert S. @ **95,9 %** visible dashboard / notif TG matin, puis **TG Top 5 vide** (« No matches above thresholds ») après déploiement alignement
+- Diagnostic local PREPROD montrait **70,9 %** — **ne pas** conclure sans vérifier le serveur
+
+### Causes
+
+1. **PREPROD ≠ PROD** : snapshot et DB locaux ≠ `/opt/bettinghud` (rebuild prod → 95,9 % réel modèle v47).
+2. **Régression `808d491`** : `passes_public_pick_gates` sur lignes Top5 sans `feature_snapshot` → 0 pick hybride TG.
+3. **Hotfix** : `_is_materialized_pick_row` dans `match_rank_quality.py`.
+
+### Vérification prod
+
+```bash
+ssh bettinghud "cd /opt/bettinghud && BETTINGHUD_ENV=prod BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/_diag_tg_waltert.py"
+ssh bettinghud "cd /opt/bettinghud && BETTINGHUD_ENV=prod ./venv/bin/python scripts/telegram_top5_notify.py --dry-run"
+```
+
+### Correctif déploiement
+
+```bash
+cd /opt/bettinghud && git pull origin main
+sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+```
+
+Rebuild snapshot **seulement** si changement formule fiabilité ou caps (v4) :
+
+```bash
+cd /opt/bettinghud && ./venv/bin/python scripts/rebuild_live_projection.py
+```
+
+---
+
+## 0bis. Incident CourtAlpha replay (8 juillet 2026)
 
 **Symptôme** : CourtAlpha premium affiche une **500** sur :
 

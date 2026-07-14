@@ -6,6 +6,65 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Alignement affichage public + incident Waltert (14 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Waltert S. vs Kawa K. affiché **95,9 %** sur app / TG / Discord (notif ~07:27) alors qu’un diagnostic local PREPROD montrait **70,9 %** et exclusion Top 5 |
+| **Cause #1 (diagnostic)** | Vérification initiale sur **PREPROD locale** (`data/bettinghud.db` + snapshot cache PC) au lieu du serveur `/opt/bettinghud` — faux écart perçu |
+| **Cause #2 (code)** | `live_tracker_picks.py` utilisait `p_model = 1 / true_odd` au lieu de `capped_p1_prob` → désync possible **Live Tracker `/jour`** vs Top 5 quand `true_odd_*` stale |
+| **Cause #3 (prod réelle)** | Après rebuild snapshot prod, **95,9 %** est la sortie modèle v47 cohérente (`capped_p1_prob` ≈ implied `true_odd` ~1,04) — pas un artefact d’affichage sur Top 5 |
+| **Régression TG (midi)** | `passes_public_pick_gates()` appelé sur lignes Top5 **sans** `feature_snapshot` → **0 pick hybride** TG jusqu’au hotfix `_is_materialized_pick_row` |
+
+### Correctifs code (commits `808d491` + hotfix 14/07)
+
+| Fichier | Changement |
+|---------|------------|
+| `scripts/match_rank_quality.py` | `passes_public_pick_gates`, `capped_p1_prob_from_match`, `model_prob_for_side`, `match_model_odds_inconsistent`, `reconcile_match_true_odds_from_caps` ; fiabilité **v4** ; hotfix lignes matérialisées Top5 |
+| `scripts/live_tracker_picks.py` | Proba / Kelly via `model_prob_for_side` (plus `1/true_odd`) |
+| `scripts/daily_top_proba_store.py` | Filtres publication via `passes_public_pick_gates` sur match brut |
+| `scripts/hybrid_pick_selection.py` | `hybrid_base_ok` via gates publics |
+| `scripts/telegram_top5_notify.py` | `filter_telegram_display_picks` via gates publics |
+| `app/dashboard.py` | Top 5 Action aligné ; reconcile caps après predict |
+| `scripts/live_snapshot.py` | Normalisation caps au chargement |
+| `scripts/morning_orchestrator.py` | Invalidation cache TG avant publish |
+| `scripts/qc_live_snapshot.py` | QC cohérence caps / `true_odd_*` |
+
+### Déploiement prod (14/07/2026 matin)
+
+1. `scp` des 10 fichiers ci-dessus → `/opt/bettinghud/`
+2. `scripts/rebuild_live_projection.py` (~13 min, 75 matchs)
+3. `systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot`
+4. Hotfix `match_rank_quality.py` (lignes matérialisées) + `git pull` + restart bot
+
+### Règle opérationnelle
+
+| Canal | Source données PROD |
+|-------|---------------------|
+| Dashboard, TG, Discord | `/opt/bettinghud/data/bettinghud.db` + `data/cache/live_matches_snapshot*.joblib` |
+| PREPROD locale | **Ne jamais** utiliser pour valider un pick prod sans `ssh bettinghud` ou `scp` DB/snapshot |
+
+### Scripts diagnostic
+
+```bash
+# Snapshot vs DB vs picks runtime (PROD)
+ssh bettinghud "cd /opt/bettinghud && BETTINGHUD_ENV=prod BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/_diag_waltert_display.py"
+
+# Funnel hybride / filtres TG (PROD)
+ssh bettinghud "cd /opt/bettinghud && BETTINGHUD_ENV=prod BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/_diag_tg_waltert.py"
+
+# Dry-run Top 5 TG
+ssh bettinghud "cd /opt/bettinghud && BETTINGHUD_ENV=prod ./venv/bin/python scripts/telegram_top5_notify.py --dry-run"
+```
+
+### Waltert 14/07 — verdict prod
+
+- Proba modèle : **95,9 %** · EV **+38 %** · fiabilité **100** (flag `book_gap_high` seul)
+- **Seul pick hybride** du jour (P≥80 %, EV tier2 30–50 %) — les autres favoris ont EV >50 % ou P<80 %
+- **Pas** publié en 1D1P si EV hors bandes hybrides au moment du publish matin (selon snapshot de 05:00)
+
+---
+
 # WTA — classements post-Sackmann + fix `book_gap_pp` (10 juillet 2026)
 
 | Élément | Détail |

@@ -116,7 +116,7 @@ Même pool de matchs que le Live Tracker (**Aujourd’hui**), filtrés **proba m
 |-------|--------|
 | Joueur parié vs adversaire | Côté retenu |
 | Circuit · tournoi · heure | Match snapshot |
-| Proba modèle | `1 / true_odd` |
+| Proba modèle | `capped_p1_prob` via `model_prob_for_side` (aligné Top 5 — plus `1 / true_odd` stale) |
 | EV | `ValueDetector` |
 | Cote | Cote book du côté parié |
 | Kelly reco | `_algo_kelly_stake_frac` (Kelly 0,65 × Brier adaptatif) |

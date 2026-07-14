@@ -293,6 +293,13 @@ def normalize_matches_model_probs(matches: list[dict]) -> list[dict]:
     return out
 
 
+def _is_materialized_pick_row(row: dict) -> bool:
+    """Ligne Top5/hybride (``collect_top5_proba_picks``) sans ``feature_snapshot``."""
+    if capped_p1_prob_from_match(row) is not None:
+        return False
+    return row.get("p_model_fav") is not None and row.get("data_reliability_score") is not None
+
+
 def passes_public_pick_gates(
     match_or_pick: dict | None,
     *,
@@ -302,6 +309,15 @@ def passes_public_pick_gates(
     """Filtre unifié prod : fiabilité ≥ seuil, pas de duplicate proba, caps cohérents."""
     if not isinstance(match_or_pick, dict):
         return False
+    # Pick déjà matérialisé depuis un match snapshot (pas de feature_snapshot embarqué).
+    if _is_materialized_pick_row(match_or_pick):
+        if not passes_data_reliability_filter(match_or_pick, min_score=min_score):
+            return False
+        if excluded_duplicate_model_prob_from_top5(
+            match_or_pick, duplicate_keys=duplicate_keys
+        ):
+            return False
+        return True
     if capped_p1_prob_from_match(match_or_pick) is None:
         return False
     if match_model_odds_inconsistent(match_or_pick):
