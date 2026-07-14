@@ -274,6 +274,14 @@ def run_publish_step(*, _log) -> bool:
     from scripts.morning_chain_state import record_step
     from scripts.morning_live_pipeline import run_telegram_phase
 
+    try:
+        from scripts.telegram_runtime_cache import invalidate_snapshot_cache
+
+        invalidate_snapshot_cache()
+        _log("Cache Telegram picks invalidé avant publications.")
+    except Exception as exc:
+        _log(f"Invalidation cache Telegram ignorée : {exc}")
+
     _log("Lancement publications (1D1P, Top 5, canal)…")
     t0 = time.time()
     rc = run_telegram_phase(_log=_log, source="morning-sync")

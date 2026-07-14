@@ -27,8 +27,16 @@ DUPLICATE_MODEL_PROB_PENALTY = max(
     0, min(50, int(os.getenv("BETTINGHUD_DUP_PROB_PENALTY", "20")))
 )
 
+MODEL_ODDS_INCONSISTENT_TOLERANCE_PP = max(
+    0.5,
+    float(os.getenv("BETTINGHUD_MODEL_ODDS_INCONSISTENT_PP", "3.0")),
+)
+MODEL_ODDS_INCONSISTENT_PENALTY = max(
+    0, min(50, int(os.getenv("BETTINGHUD_MODEL_ODDS_INCONSISTENT_PENALTY", "25")))
+)
+
 # Incrémenter si la formule de score change (force rescore hors snapshot rebuild).
-RELIABILITY_SCORE_VERSION = 3
+RELIABILITY_SCORE_VERSION = 4
 
 # Repli ``stats_engine.get_player_stats`` / preview live quand aucune source rang/points.
 _DEFAULT_STATS_RANK = 100
@@ -195,6 +203,118 @@ def match_duplicate_prob_identity_key(match: dict) -> tuple:
     )
 
 
+def capped_p1_prob_from_match(match: dict) -> float | None:
+    """Proba modèle P1 (après caps) — source de vérité pour l'affichage public."""
+    if not isinstance(match, dict):
+        return None
+    fs = match.get("feature_snapshot") or {}
+    try:
+        raw = fs.get("capped_p1_prob")
+        if raw is None:
+            return None
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def model_prob_for_side(match: dict, side: int) -> float | None:
+    """Proba modèle pour le joueur 1 ou 2 (alignée ``capped_p1_prob``)."""
+    p1 = capped_p1_prob_from_match(match)
+    if p1 is None:
+        return None
+    side_i = int(side)
+    if side_i == 1:
+        return p1
+    if side_i == 2:
+        return 1.0 - p1
+    return None
+
+
+def model_true_odd_for_side(match: dict, side: int) -> float | None:
+    """Cote juste modèle pour un côté, dérivée des caps (pas du champ snapshot stale)."""
+    p = model_prob_for_side(match, side)
+    if p is None or p <= 0.0:
+        return None
+    return 1.0 / min(1.0, max(0.01, float(p)))
+
+
+def match_model_odds_inconsistent(
+    match: dict,
+    *,
+    tol_pp: float | None = None,
+) -> bool:
+    """True si ``true_odd_p*`` diverge de ``capped_p1_prob`` (cause classique des 95 % fantômes)."""
+    p1 = capped_p1_prob_from_match(match)
+    if p1 is None:
+        return True
+    tol = (
+        float(MODEL_ODDS_INCONSISTENT_TOLERANCE_PP)
+        if tol_pp is None
+        else float(tol_pp)
+    )
+    for side, key in ((1, "true_odd_p1"), (2, "true_odd_p2")):
+        try:
+            to = float(match.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return True
+        if to <= 1.0:
+            return True
+        expected = p1 if side == 1 else (1.0 - p1)
+        if abs((1.0 / to) - expected) * 100.0 > tol:
+            return True
+    return False
+
+
+def reconcile_match_true_odds_from_caps(match: dict) -> dict:
+    """Réaligne ``true_odd_p1/p2`` sur ``capped_p1_prob`` (mutate in place)."""
+    if not isinstance(match, dict):
+        return match
+    p1 = capped_p1_prob_from_match(match)
+    if p1 is None:
+        return match
+    p1c = min(0.99, max(0.01, float(p1)))
+    p2c = 1.0 - p1c
+    match["true_odd_p1"] = 1.0 / p1c
+    match["true_odd_p2"] = 1.0 / p2c
+    return match
+
+
+def normalize_match_model_probs(match: dict) -> dict:
+    """Réaligne les cotes justes modèle avant scoring / picks publics."""
+    reconcile_match_true_odds_from_caps(match)
+    return match
+
+
+def normalize_matches_model_probs(matches: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for m in matches:
+        if isinstance(m, dict):
+            out.append(normalize_match_model_probs(dict(m)))
+    return out
+
+
+def passes_public_pick_gates(
+    match_or_pick: dict | None,
+    *,
+    duplicate_keys: set[tuple] | None = None,
+    min_score: int | None = None,
+) -> bool:
+    """Filtre unifié prod : fiabilité ≥ seuil, pas de duplicate proba, caps cohérents."""
+    if not isinstance(match_or_pick, dict):
+        return False
+    if capped_p1_prob_from_match(match_or_pick) is None:
+        return False
+    if match_model_odds_inconsistent(match_or_pick):
+        return False
+    if not passes_data_reliability_filter(match_or_pick, min_score=min_score):
+        return False
+    if excluded_duplicate_model_prob_from_top5(
+        match_or_pick, duplicate_keys=duplicate_keys
+    ):
+        return False
+    return True
+
+
 def duplicate_model_prob_keys(
     matches: list[dict],
     *,
@@ -280,6 +400,7 @@ def match_data_reliability_score(
     data_stale_sides: tuple[bool, bool] = (False, False),
     duplicate_model_prob: bool = False,
     hist_te_soft_penalty: bool = False,
+    model_odds_inconsistent: bool = False,
 ) -> tuple[int, list[str]]:
     """Score 0–100 de confiance dans les données d'une ligne snapshot (hors qualité tennis pure).
 
@@ -302,6 +423,10 @@ def match_data_reliability_score(
     if duplicate_model_prob:
         score -= DUPLICATE_MODEL_PROB_PENALTY
         flags.append("duplicate_model_prob")
+
+    if model_odds_inconsistent:
+        score -= MODEL_ODDS_INCONSISTENT_PENALTY
+        flags.append("model_odds_inconsistent")
 
     if hist_te_conflict:
         score -= 8 if hist_te_soft_penalty else 20
@@ -393,6 +518,7 @@ def compute_match_reliability(
             player_data_stale(match, 2),
         ),
         duplicate_model_prob=dup,
+        model_odds_inconsistent=match_model_odds_inconsistent(match),
     )
     return score, flags
 
@@ -406,6 +532,7 @@ def ensure_match_reliability_scored(
     """Calcule et attache le score si absent ou version obsolète."""
     if not isinstance(match, dict):
         return match
+    normalize_match_model_probs(match)
     attach_book_gap_pp(match)
 
     ver = match.get("data_reliability_version")

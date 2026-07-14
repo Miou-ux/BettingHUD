@@ -192,11 +192,19 @@ def collect_live_tracker_all_side_picks(
 
     detector = ValueDetector(min_value_threshold=-1.0)
     rows: list[dict] = []
-    from scripts.match_rank_quality import passes_data_reliability_filter, reliability_fields_from_match, ensure_match_reliability_scored
+    from scripts.match_rank_quality import (
+        duplicate_model_prob_keys,
+        ensure_match_reliability_scored,
+        model_prob_for_side,
+        model_true_odd_for_side,
+        passes_public_pick_gates,
+        reliability_fields_from_match,
+    )
 
+    dup_keys = duplicate_model_prob_keys(matches)
     for idx, match in enumerate(matches):
-        ensure_match_reliability_scored(match)
-        if not passes_data_reliability_filter(match):
+        ensure_match_reliability_scored(match, duplicate_keys=dup_keys)
+        if not passes_public_pick_gates(match, duplicate_keys=dup_keys):
             continue
         seg_brier = _match_segment_brier(match, ml)
         p1 = str(match.get("player1") or "").strip()
@@ -208,20 +216,20 @@ def collect_live_tracker_all_side_picks(
         ):
             try:
                 odd_book = float(match.get(odd_key) or 0)
-                true_odd = float(match.get(true_key) or 0)
             except (TypeError, ValueError):
                 continue
-            if odd_book <= 1.0 or true_odd <= 1.0:
+            true_odd = model_true_odd_for_side(match, side)
+            if odd_book <= 1.0 or true_odd is None or float(true_odd) <= 1.0:
                 continue
             val = enrich_value_metrics(
                 detector.detect_value(
                     odd_book,
-                    true_odd,
+                    float(true_odd),
                     confidence=match.get("confidence"),
                 ),
                 segment_brier=seg_brier,
             )
-            sides.append((side, bet_on, opp, odd_book, true_odd, val))
+            sides.append((side, bet_on, opp, odd_book, float(true_odd), val))
 
         if not sides:
             continue
@@ -239,8 +247,10 @@ def collect_live_tracker_all_side_picks(
             else:
                 chosen = [max(sides, key=lambda s: float((s[5] or {}).get("value_pct") or -999.0))]
         for side, bet_on, opp, odd_book, true_odd, val in chosen:
-            p_model = 1.0 / true_odd
-            kelly_frac = _algo_kelly_stake_frac(p_model, odd_book, seg_brier)
+            p_model = model_prob_for_side(match, side)
+            if p_model is None:
+                continue
+            kelly_frac = _algo_kelly_stake_frac(float(p_model), odd_book, seg_brier)
             rows.append(
                 {
                     "rank": 0,
@@ -256,8 +266,8 @@ def collect_live_tracker_all_side_picks(
                     "odd_fav": odd_book,
                     "odd_book": odd_book,
                     "true_odd": true_odd,
-                    "p_model_fav": p_model,
-                    "p_model_pct": p_model * 100.0,
+                    "p_model_fav": float(p_model),
+                    "p_model_pct": float(p_model) * 100.0,
                     "ev_fav_pct": float(val.get("value_pct") or 0.0),
                     "ev_pct": float(val.get("value_pct") or 0.0),
                     "theoretical_stake_frac": kelly_frac,
@@ -292,33 +302,39 @@ def collect_live_tracker_value_picks(
                 ml._load_bundle_if_needed()
 
     value_bets: list[dict] = []
-    from scripts.match_rank_quality import passes_data_reliability_filter, reliability_fields_from_match, ensure_match_reliability_scored
+    from scripts.match_rank_quality import (
+        duplicate_model_prob_keys,
+        ensure_match_reliability_scored,
+        model_prob_for_side,
+        model_true_odd_for_side,
+        passes_public_pick_gates,
+        reliability_fields_from_match,
+    )
 
+    dup_keys = duplicate_model_prob_keys(matches)
     for idx, match in enumerate(matches):
-        ensure_match_reliability_scored(match)
-        if not passes_data_reliability_filter(match):
+        ensure_match_reliability_scored(match, duplicate_keys=dup_keys)
+        if not passes_public_pick_gates(match, duplicate_keys=dup_keys):
             continue
         seg_brier = _match_segment_brier(match, ml)
-        p1_val = enrich_value_metrics(
-            detector.detect_value(
-                match.get("odd_p1"),
-                match.get("true_odd_p1"),
-                confidence=match.get("confidence"),
-            ),
-            segment_brier=seg_brier,
-        )
-        p2_val = enrich_value_metrics(
-            detector.detect_value(
-                match.get("odd_p2"),
-                match.get("true_odd_p2"),
-                confidence=match.get("confidence"),
-            ),
-            segment_brier=seg_brier,
-        )
-        if p1_val.get("is_value"):
-            value_bets.append({"match": match, "player": 1, "val": p1_val, "idx": idx})
-        if p2_val.get("is_value"):
-            value_bets.append({"match": match, "player": 2, "val": p2_val, "idx": idx})
+        for side, odd_key in ((1, "odd_p1"), (2, "odd_p2")):
+            true_odd = model_true_odd_for_side(match, side)
+            try:
+                odd_book = float(match.get(odd_key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if odd_book <= 1.0 or true_odd is None or float(true_odd) <= 1.0:
+                continue
+            val = enrich_value_metrics(
+                detector.detect_value(
+                    odd_book,
+                    float(true_odd),
+                    confidence=match.get("confidence"),
+                ),
+                segment_brier=seg_brier,
+            )
+            if val.get("is_value"):
+                value_bets.append({"match": match, "player": side, "val": val, "idx": idx})
 
     picks: list[dict] = []
     for vb in value_bets:
@@ -330,11 +346,14 @@ def collect_live_tracker_value_picks(
         bet_on = p1 if side == 1 else p2
         opponent = p2 if side == 1 else p1
         odd_book = float(match.get("odd_p1") if side == 1 else match.get("odd_p2") or 0)
-        true_odd = float(match.get("true_odd_p1") if side == 1 else match.get("true_odd_p2") or 0)
-        p_model = (1.0 / true_odd) if true_odd > 1.0 else 0.0
+        true_odd_f = model_true_odd_for_side(match, side)
+        p_model = model_prob_for_side(match, side)
+        if true_odd_f is None or p_model is None:
+            continue
+        true_odd = float(true_odd_f)
         p_implicit = (1.0 / odd_book) if odd_book > 1.0 else 0.0
         seg_brier = float(val.get("segment_brier") or 0.1741)
-        kelly_frac = _algo_kelly_stake_frac(p_model, odd_book, seg_brier)
+        kelly_frac = _algo_kelly_stake_frac(float(p_model), odd_book, seg_brier)
         picks.append(
             {
                 "bet_on": bet_on,
@@ -349,8 +368,8 @@ def collect_live_tracker_value_picks(
                 "odd_fav": odd_book,
                 "odd_book": odd_book,
                 "true_odd": true_odd,
-                "p_model_fav": p_model,
-                "p_model_pct": p_model * 100.0,
+                "p_model_fav": float(p_model),
+                "p_model_pct": float(p_model) * 100.0,
                 "p_implicit_pct": p_implicit * 100.0,
                 "ev_fav_pct": float(val.get("value_pct") or 0.0),
                 "ev_pct": float(val.get("value_pct") or 0.0),

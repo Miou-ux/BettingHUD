@@ -4008,6 +4008,14 @@ def _force_refresh_live_match(match: dict) -> dict:
     p2_days_eff, p2_te_inact = _blend_inactivity_days_with_te(
         adv_signals.get("p2_days"), p2_prof_pred, _ref_iso
     )
+    from scripts.stats_engine import reconcile_days_with_recent_wins
+
+    _p1_days_rec = reconcile_days_with_recent_wins(p1_days_eff, p1_mq.get("wins_last7d", 0))
+    if _p1_days_rec is not None:
+        p1_days_eff = float(_p1_days_rec)
+    _p2_days_rec = reconcile_days_with_recent_wins(p2_days_eff, p2_mq.get("wins_last7d", 0))
+    if _p2_days_rec is not None:
+        p2_days_eff = float(_p2_days_rec)
 
     r1_def, r2_def = 0.0, 0.0
     if _mdate:
@@ -4136,6 +4144,9 @@ def _force_refresh_live_match(match: dict) -> dict:
         out["confidence"] = preds.get("confidence")
         out["calibration_used"] = preds.get("calibration_used", "Globale")
         out["feature_snapshot"] = preds.get("feature_snapshot", {}) or {}
+        from scripts.match_rank_quality import reconcile_match_true_odds_from_caps
+
+        reconcile_match_true_odds_from_caps(out)
         out["top_features"] = preds.get("top_features", []) or []
         out["segment_calibration_key"] = str(preds.get("segment_calibration_key", "") or "")
     except Exception:
@@ -4929,6 +4940,20 @@ def _build_live_matches_core(
             p2_days_eff, p2_te_inact = _blend_inactivity_days_with_te(
                 adv_signals.get("p2_days"), p2_prof_pred, _ref_iso
             )
+            from scripts.stats_engine import reconcile_days_with_recent_wins
+
+            _p1_mq = match_quality_by_name.get(p1_name, {})
+            _p2_mq = match_quality_by_name.get(p2_name, {})
+            _p1_days_rec = reconcile_days_with_recent_wins(
+                p1_days_eff, _p1_mq.get("wins_last7d", 0)
+            )
+            if _p1_days_rec is not None:
+                p1_days_eff = float(_p1_days_rec)
+            _p2_days_rec = reconcile_days_with_recent_wins(
+                p2_days_eff, _p2_mq.get("wins_last7d", 0)
+            )
+            if _p2_days_rec is not None:
+                p2_days_eff = float(_p2_days_rec)
             preds = ml_model.predict_match(
                 surface=surface,
                 p1_name=p1_name,
@@ -5006,6 +5031,16 @@ def _build_live_matches_core(
             feature_snapshot = preds.get("feature_snapshot", {}) or {}
             top_features = preds.get("top_features", []) or []
             segment_calibration_key = str(preds.get("segment_calibration_key", "") or "")
+            from scripts.match_rank_quality import reconcile_match_true_odds_from_caps
+
+            _reconcile_stub = {
+                "true_odd_p1": true_odd_p1,
+                "true_odd_p2": true_odd_p2,
+                "feature_snapshot": feature_snapshot,
+            }
+            reconcile_match_true_odds_from_caps(_reconcile_stub)
+            true_odd_p1 = _reconcile_stub["true_odd_p1"]
+            true_odd_p2 = _reconcile_stub["true_odd_p2"]
         except Exception as _exc:
             true_odd_p1 = 2.0
             true_odd_p2 = 2.0
@@ -6440,11 +6475,15 @@ def _persist_live_value_opportunities(value_bets: list[dict]) -> int:
         p1_name, p2_name = _match_display_players(match)
         bet_on = p1_name if side == 1 else p2_name
         odd_book = match.get("odd_p1") if side == 1 else match.get("odd_p2")
-        true_odd = match.get("true_odd_p1") if side == 1 else match.get("true_odd_p2")
+        from scripts.match_rank_quality import model_prob_for_side, model_true_odd_for_side
+
+        true_odd = model_true_odd_for_side(match, side)
         try:
-            p_model = 1.0 / float(true_odd) if float(true_odd) > 0 else None
+            p_model = model_prob_for_side(match, side)
         except Exception:
             p_model = None
+        if p_model is None and true_odd is not None and float(true_odd) > 0:
+            p_model = 1.0 / float(true_odd)
         try:
             p_implicit = 1.0 / float(odd_book) if float(odd_book) > 0 else None
         except Exception:
@@ -6746,12 +6785,13 @@ def _collect_top_model_prob_rows(
 ) -> list[dict]:
     """Lignes numériques top N (favori = max(capped_p1_prob, 1-p1)), tri proba décroissante."""
     rows: list[dict] = []
-    from scripts.match_rank_quality import passes_data_reliability_filter
+    from scripts.match_rank_quality import duplicate_model_prob_keys, passes_public_pick_gates
 
+    dup_keys = duplicate_model_prob_keys(matches)
     for m in matches:
         if today_only and not _is_today_calendar_match(m):
             continue
-        if not passes_data_reliability_filter(m):
+        if not passes_public_pick_gates(m, duplicate_keys=dup_keys):
             continue
         met = _match_favorite_model_metrics(m)
         if not _passes_favorite_ev_band(met, ev_min_frac=ev_min_frac, ev_max_frac=ev_max_frac):
@@ -7142,11 +7182,16 @@ def _collect_top_favorite_action_cards(
     limit: int = 5,
 ) -> list[dict]:
     """Top favoris modèle du jour (EV favori 15–100 %) triés par proba décroissante."""
+    from scripts.match_rank_quality import duplicate_model_prob_keys, passes_public_pick_gates
+
     ev_min_frac = FAVORITE_EV_BAND_MIN_FRAC
     ev_max_frac = FAVORITE_EV_BAND_MAX_FRAC
+    dup_keys = duplicate_model_prob_keys(matches)
     cards: list[dict] = []
     for m in matches:
         if not _is_today_calendar_match(m):
+            continue
+        if not passes_public_pick_gates(m, duplicate_keys=dup_keys):
             continue
         met = _match_favorite_model_metrics(m)
         if not met:

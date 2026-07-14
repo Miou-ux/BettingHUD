@@ -361,6 +361,9 @@ def load_latest_live_snapshot(
             matches = payload.get("matches")
             if not isinstance(matches, list):
                 continue
+            from scripts.match_rank_quality import normalize_matches_model_probs
+
+            matches = normalize_matches_model_probs(matches)
             built_at = float(payload.get("built_at") or file_mtime)
             meta = {
                 "built_at": built_at,

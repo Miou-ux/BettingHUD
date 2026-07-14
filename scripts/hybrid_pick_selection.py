@@ -9,8 +9,7 @@ from __future__ import annotations
 from scripts.daily_top_proba_store import dedupe_top_proba_rows_by_match
 from scripts.match_rank_quality import (
     duplicate_model_prob_keys,
-    excluded_duplicate_model_prob_from_top5,
-    passes_data_reliability_filter,
+    passes_public_pick_gates,
 )
 
 HYBRID_MIN_PROBA_FRAC = 0.80
@@ -31,9 +30,7 @@ def ev_fav_pct(row: dict) -> float:
 
 
 def hybrid_base_ok(row: dict, *, duplicate_keys: set | None = None) -> bool:
-    if not passes_data_reliability_filter(row):
-        return False
-    if excluded_duplicate_model_prob_from_top5(row, duplicate_keys=duplicate_keys):
+    if not passes_public_pick_gates(row, duplicate_keys=duplicate_keys):
         return False
     if float(row.get("p_model_fav") or 0.0) < HYBRID_MIN_PROBA_FRAC:
         return False

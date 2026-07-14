@@ -16,14 +16,13 @@ from scripts.bets_db import (
     sync_daily_top_proba_from_results,
     upsert_daily_top_proba_picks,
 )
-from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key
+from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key, resolve_segment_brier_score
 from scripts.match_rank_quality import (
     book_gap_pp_from_favorite,
     duplicate_model_prob_keys,
     ensure_match_reliability_scored,
-    excluded_duplicate_model_prob_from_top5,
     match_has_rank_points_source,
-    passes_data_reliability_filter,
+    passes_public_pick_gates,
     reliability_fields_from_match,
 )
 from scripts.tournament_tier import is_major_tournament_match
@@ -63,7 +62,7 @@ def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
         if not match_has_rank_points_source(m):
             continue
         ensure_match_reliability_scored(m, duplicate_keys=dup_keys)
-        if not passes_data_reliability_filter(m):
+        if not passes_public_pick_gates(m, duplicate_keys=dup_keys):
             continue
         out.append(m)
     return out
@@ -313,6 +312,7 @@ def collect_daily_top_proba_rows(
             ml._load_bundle_if_needed()
 
     pool: list[dict] = []
+    dup_keys = duplicate_model_prob_keys([dict(m) for m in matches if isinstance(m, dict)])
     for m in matches:
         if today_only and not is_today_paris_match(m, today=cal_date_obj):
             continue
@@ -324,8 +324,8 @@ def collect_daily_top_proba_rows(
         met = _match_favorite_metrics(m)
         if met is None:
             continue
-        ensure_match_reliability_scored(m)
-        if not passes_data_reliability_filter(m):
+        ensure_match_reliability_scored(m, duplicate_keys=dup_keys)
+        if not passes_public_pick_gates(m, duplicate_keys=dup_keys):
             continue
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
         match_name = f"{p1_name} vs {p2_name}"
@@ -336,7 +336,7 @@ def collect_daily_top_proba_rows(
             tournament=m.get("tournament"),
             tourney_level=m.get("tourney_level") or m.get("category"),
         )
-        seg_brier = float(getattr(ml, "segment_brier_scores", {}).get(seg_key, getattr(ml, "global_test_brier", 0.1741)))
+        seg_brier = float(resolve_segment_brier_score(ml, seg_key))
         pool.append(
             {
                 **met,
@@ -419,10 +419,8 @@ def collect_top5_proba_picks(
         ev_f = float(met["ev_fav"])
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
             continue
-        ensure_match_reliability_scored(m)
-        if not passes_data_reliability_filter(m):
-            continue
-        if excluded_duplicate_model_prob_from_top5(m, duplicate_keys=dup_prob_keys):
+        ensure_match_reliability_scored(m, duplicate_keys=dup_prob_keys)
+        if not passes_public_pick_gates(m, duplicate_keys=dup_prob_keys):
             continue
         tour = _match_tour(m)
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
@@ -433,11 +431,7 @@ def collect_top5_proba_picks(
             tournament=m.get("tournament"),
             tourney_level=m.get("tourney_level") or m.get("category"),
         )
-        seg_brier = float(
-            getattr(ml, "segment_brier_scores", {}).get(
-                seg_key, getattr(ml, "global_test_brier", 0.1741)
-            )
-        )
+        seg_brier = float(resolve_segment_brier_score(ml, seg_key))
         pool.append(
             {
                 **met,

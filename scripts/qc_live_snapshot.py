@@ -53,6 +53,8 @@ def _check_match_surface(m: dict, report: QcReport) -> None:
 
 
 def _check_match_inactivity(m: dict, report: QcReport) -> None:
+    from scripts.stats_engine import reconcile_days_with_recent_wins
+
     threshold = _inactivity_threshold_days()
     fs = m.get("feature_snapshot") or {}
     for side, name_key, mq_key in (
@@ -60,15 +62,12 @@ def _check_match_inactivity(m: dict, report: QcReport) -> None:
         (2, "player2", "p2_match_quality"),
     ):
         days_raw = fs.get(f"p{side}_days_since_last_match")
-        try:
-            days = int(float(days_raw)) if days_raw is not None else None
-        except (TypeError, ValueError):
-            days = None
         mq = m.get(mq_key) or {}
         try:
             w7 = int(mq.get("wins_last7d") or 0)
         except (TypeError, ValueError):
             w7 = 0
+        days = reconcile_days_with_recent_wins(days_raw, w7)
         if days is None or w7 < 1:
             continue
         if days > threshold:
@@ -100,6 +99,23 @@ def _check_book_gap_warnings(m: dict, report: QcReport) -> None:
             f"écart modèle/book {gap_f:.1f} pp sur {m.get('player1')} vs {m.get('player2')}",
             book_gap_pp=round(gap_f, 1),
             tournament=m.get("tournament"),
+        )
+
+
+def _check_model_odds_consistency(m: dict, report: QcReport) -> None:
+    from scripts.match_rank_quality import (
+        capped_p1_prob_from_match,
+        match_model_odds_inconsistent,
+    )
+
+    if capped_p1_prob_from_match(m) is None:
+        return
+    if match_model_odds_inconsistent(m):
+        report.add_warning(
+            "model_odds_inconsistent",
+            f"true_odd désynchronisé de capped_p1_prob sur {m.get('player1')} vs {m.get('player2')}",
+            tournament=m.get("tournament"),
+            match=f"{m.get('player1')} vs {m.get('player2')}",
         )
 
 
@@ -148,6 +164,7 @@ def run_qc_live_snapshot(matches: list[dict] | None = None) -> QcReport:
         _check_match_surface(m, report)
         _check_match_inactivity(m, report)
         _check_book_gap_warnings(m, report)
+        _check_model_odds_consistency(m, report)
 
     if checked == 0:
         report.add_warning("no_today_matches", "aucun match du jour dans le snapshot")

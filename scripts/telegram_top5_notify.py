@@ -125,19 +125,14 @@ def filter_telegram_display_picks(
     min_ev_pct: float | None = None,
     apply_proba_filter: bool = True,
 ) -> list[dict]:
-    """Filtre affichage Telegram : EV >= seuil (aligné web/Discord) ; proba optionnelle."""
-    from scripts.match_rank_quality import (
-        excluded_duplicate_model_prob_from_top5,
-        passes_data_reliability_filter,
-    )
+    """Filtre affichage Telegram : gates publics + EV / proba optionnels."""
+    from scripts.match_rank_quality import passes_public_pick_gates
 
     mp = _telegram_min_proba_pct() if min_proba_pct is None else float(min_proba_pct)
     me = _telegram_min_ev_pct() if min_ev_pct is None else float(min_ev_pct)
     kept: list[dict] = []
     for p in picks:
-        if not passes_data_reliability_filter(p):
-            continue
-        if excluded_duplicate_model_prob_from_top5(p):
+        if not passes_public_pick_gates(p):
             continue
         if apply_proba_filter and _pick_proba_pct(p) <= mp:
             continue
