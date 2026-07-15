@@ -50,15 +50,33 @@ def test_hybrid_tier1_sorted_by_ev():
 def test_hybrid_tier2_fills_when_tier1_sparse():
     rows = [
         _row("Only", "T1", 0.82, 18.0),
-        _row("TwoA", "X", 0.90, 35.0),
-        _row("TwoB", "Y", 0.81, 45.0),
+        _row("TwoA", "X", 0.90, 35.0),  # tier1 (15–35)
+        _row("TwoB", "Y", 0.81, 45.0),  # tier2
     ]
     picks = select_hybrid_picks(rows, limit=3, apply_telegram_proba_filter=False)
     assert len(picks) == 3
-    assert picks[0]["player1"] == "Only"
-    assert picks[1]["player1"] == "TwoB"
-    assert picks[2]["player1"] == "TwoA"
+    assert picks[0]["player1"] == "TwoA"
+    assert picks[0]["hybrid_tier"] == "tier1"
+    assert picks[1]["player1"] == "Only"
+    assert picks[2]["player1"] == "TwoB"
     assert picks[2]["hybrid_tier"] == "tier2"
+
+
+def test_hybrid_accepts_combo_volume_ev_bands():
+    """COMBO_VOLUME prod : tier1 jusqu'à 35 %, tier2 jusqu'à 55 %."""
+    rows = [
+        _row("T1Edge", "A", 0.80, 32.0),
+        _row("T2Edge", "B", 0.81, 52.0),
+        _row("T2Mid", "C", 0.82, 36.0),  # tier2 only (>35)
+        _row("OverPool", "D", 0.83, 56.0),  # hors pool (>55)
+    ]
+    picks = select_hybrid_picks(rows, limit=5, apply_telegram_proba_filter=False)
+    names = {p["player1"] for p in picks}
+    assert "T1Edge" in names
+    assert "T2Edge" in names
+    assert "T2Mid" in names
+    assert picks[[p["player1"] for p in picks].index("T2Mid")]["hybrid_tier"] == "tier2"
+    assert "OverPool" not in names
 
 
 def test_hybrid_rejects_below_77_proba():

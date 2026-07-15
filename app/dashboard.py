@@ -7233,7 +7233,7 @@ def _render_top5_proba_action_tab() -> None:
     st.header("🎯 Top 5 hybride · Action rapide")
     st.caption(
         "Top 5 prod (même sélection que Telegram matin / 1D1P) · **P≥77 %** · "
-        "EV tier1 **15–30 %** + tier2 **30–50 %** · fiabilité **≥75** · gap **≤30 pp** · "
+        "EV tier1 **15–35 %** + tier2 **30–55 %** · fiabilité **≥75** · gap **≤30 pp** · "
         "tri **EV** ↓ · cote modifiable, mise reco Kelly/Brier."
     )
     _today_paris = datetime.now(_PARIS_TZ).date().isoformat()

@@ -1,7 +1,7 @@
 """Sélection hybride prod — Top 5 et 1 Day 1 Pick.
 
-Tier 1 : proba modèle ≥ 77 %, fiabilité data ≥ 75, EV favori 15–30 % (inclus).
-Tier 2 : complément si < ``limit`` picks, EV 30–50 % (exclus 30, inclus 50).
+Tier 1 : proba modèle ≥ 77 %, fiabilité data ≥ 75, EV favori 15–35 % (inclus).
+Tier 2 : complément si < ``limit`` picks, EV 30–55 % (exclus 30, inclus 55).
 Tri EV favori ↓ (puis proba), cap book_gap ≤ 30 pp, dédup match, exclusion duplicate_model_prob.
 """
 from __future__ import annotations
@@ -17,9 +17,9 @@ HYBRID_MIN_RELIABILITY_SCORE = 75
 HYBRID_BOOK_GAP_MAX_PP = 30.0
 HYBRID_SORT = "ev"
 HYBRID_TIER1_EV_MIN_PCT = 15.0
-HYBRID_TIER1_EV_MAX_PCT = 30.0
+HYBRID_TIER1_EV_MAX_PCT = 35.0
 HYBRID_TIER2_EV_MIN_PCT = 30.0
-HYBRID_TIER2_EV_MAX_PCT = 50.0
+HYBRID_TIER2_EV_MAX_PCT = 55.0
 HYBRID_POOL_EV_MIN_PCT = HYBRID_TIER1_EV_MIN_PCT
 HYBRID_POOL_EV_MAX_PCT = HYBRID_TIER2_EV_MAX_PCT
 HYBRID_DEFAULT_LIMIT = 5
@@ -172,3 +172,31 @@ def hybrid_criteria_line(*, english: bool | None = None) -> str:
         f"(complément max {HYBRID_DEFAULT_LIMIT}/jour) · fiabilité ≥{rel} · "
         f"écart cote ≤{HYBRID_BOOK_GAP_MAX_PP:.0f} pp · tri {sort_label} ↓"
     )
+
+
+def hybrid_criteria_plain(*, english: bool | None = None, rank1: bool = False) -> str:
+    """Texte critères hybride sans balises Telegram (web / API CourtAlpha)."""
+    from scripts.comms_locale import comms_is_english
+
+    en = comms_is_english() if english is None else bool(english)
+    rel = HYBRID_MIN_RELIABILITY_SCORE
+    sort_label = "EV" if str(HYBRID_SORT).lower() == "ev" else str(HYBRID_SORT)
+    p_pct = f"{HYBRID_MIN_PROBA_FRAC * 100:.0f}"
+    if en:
+        core = (
+            f"model proba >= {p_pct}%, data reliability >= {rel}, "
+            f"book gap <= {HYBRID_BOOK_GAP_MAX_PP:.0f}pp, "
+            f"EV tier 1: {HYBRID_TIER1_EV_MIN_PCT:.0f}-{HYBRID_TIER1_EV_MAX_PCT:.0f}% "
+            f"then tier 2: {HYBRID_TIER2_EV_MIN_PCT:.0f}-{HYBRID_TIER2_EV_MAX_PCT:.0f}% "
+            f"(fill to {HYBRID_DEFAULT_LIMIT}/day), sorted by {sort_label} down, majors 250+."
+        )
+        prefix = "Rank 1 of hybrid Top 5 selection: " if rank1 else "Hybrid Top 5: "
+        return prefix + core
+    core = (
+        f"proba modèle ≥ {p_pct} %, fiabilité ≥ {rel}, écart cote ≤ {HYBRID_BOOK_GAP_MAX_PP:.0f} pp, "
+        f"EV tier 1 : {HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f} % "
+        f"puis tier 2 : {HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f} % "
+        f"(complément max {HYBRID_DEFAULT_LIMIT}/jour), tri {sort_label} ↓, majeurs 250+."
+    )
+    prefix = "Rang 1 de la sélection hybride Top 5 : " if rank1 else "Top 5 hybride : "
+    return prefix + core

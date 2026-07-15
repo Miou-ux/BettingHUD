@@ -6,6 +6,36 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Hybride COMBO_VOLUME — tiers EV élargis (15 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Objectif** | Promouvoir le candidat **COMBO_VOLUME** (grille `backtest_top5_scenario_grid --grid combo`, juil. 2026) en prod |
+| **Changement** | EV tier1 **15–30 % → 15–35 %** · tier2 **30–50 % → 30–55 %** (P77, rel≥75, gap≤30, tri EV, max 5/j **inchangés**) |
+| **Backtest** | 2025+2026 Kelly : **même DD** que P77, **+206 k€ / +11 k€** Kelly, flat **+35 / +21 u** vs ancien tiers |
+| **Sizing** | Kelly **0,65** inchangé — seule la **sélection** change |
+
+### Fichiers
+
+| Fichier | Changement |
+|---------|------------|
+| `scripts/hybrid_pick_selection.py` | `HYBRID_TIER1_EV_MAX_PCT=35`, `HYBRID_TIER2_EV_MAX_PCT=55` |
+| `scripts/backtest_top5_scenario_grid.py` | Defaults scénario PROD alignés 35/55 |
+| UI / comms | `dashboard.py`, `telegram_top5_notify.py`, `discord_*` (textes critères via constantes ou doc) |
+| `docs/HYBRID_PICK_SELECTION.md`, `TELEGRAM_TOP5.md`, `ONE_DAY_ONE_PICK.md`, `BACKTEST_OPTIMIZATION_JUIL2026.md` | Doc prod |
+
+### Déploiement prod
+
+```bash
+scp scripts/hybrid_pick_selection.py scripts/backtest_top5_scenario_grid.py \
+    scripts/telegram_top5_notify.py scripts/discord_general_format.py \
+    scripts/discord_1d1p_core.py app/dashboard.py \
+    bettinghud:/opt/bettinghud/
+# Puis restart API / bot / dashboard (cf. HYBRID_PICK_SELECTION.md)
+```
+
+---
+
 # Challenger hybride Top 5 / 1D1P — P77 (15 juillet 2026)
 
 | Élément | Détail |

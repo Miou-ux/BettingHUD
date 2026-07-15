@@ -1,6 +1,6 @@
 # Sélection hybride Top 5 / 1 Day 1 Pick
 
-Référence unique pour la logique **hybride** déployée en prod (juillet 2026).
+Référence unique pour la logique **hybride** déployée en prod (juillet 2026, **COMBO_VOLUME** tiers 35/55 depuis le 15/07).
 
 ## Périmètre
 
@@ -19,8 +19,8 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 | Fiabilité | `data_reliability_score ≥ 75` |
 | Gap book | **≤ 30 pp** (écart proba modèle vs cote book) |
 | Exclusion | Pas de publication si flag **`duplicate_model_prob`** |
-| **Tier 1** | EV favori **15–30 %** (inclus) — remplissage prioritaire |
-| **Tier 2** | EV favori **30–50 %** (30 exclus, 50 inclus) — complément si &lt; 5 picks tier 1 |
+| **Tier 1** | EV favori **15–35 %** (inclus) — remplissage prioritaire |
+| **Tier 2** | EV favori **30–55 %** (30 exclus, 55 inclus) — complément si &lt; 5 picks tier 1 |
 | Tri | **EV favori** ↓ (tie-break proba, puis nom match) |
 | Dédup | `dedupe_top_proba_rows_by_match` (doublons snapshot TE) |
 | Cap | **5** picks/jour (Top 5) ; 1D1P = **pick #1** |

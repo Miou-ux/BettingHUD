@@ -26,7 +26,7 @@ def select_1d1p_pick(
     """
     1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri EV ↓).
 
-    Même pool que Top 5 (tier1 EV 15–30 %, complément tier2 EV 30–50 %, max 5/jour).
+    Même pool que Top 5 (tier1 EV 15–35 %, complément tier2 EV 30–55 %, max 5/jour).
     """
     _ = ev_min_pct, ev_max_pct, proba_floor_frac
     from scripts.hybrid_pick_selection import best_hybrid_pick, select_hybrid_picks

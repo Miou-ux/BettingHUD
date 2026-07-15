@@ -487,8 +487,8 @@ def format_bot_strategy_message() -> str:
             "<b>2. Pick selection</b>",
             "• <b>Today</b> matches (Europe/Paris), valid odds",
             "• <b>Model favorite</b> = highest model probability",
-            "• <b>/top5</b> & <b>/1pick1day</b>: hybrid selection — proba ≥77%, EV tier1 15–30%, "
-            "tier2 30–50% (fill to 5/day), book gap ≤30pp, majors, sorted by EV",
+            "• <b>/top5</b> & <b>/1pick1day</b>: hybrid selection — proba ≥77%, EV tier1 15–35%, "
+            "tier2 30–55% (fill to 5/day), book gap ≤30pp, majors, sorted by EV",
             "• <b>/1pick1day</b>: rank 1 of that hybrid Top 5",
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
             "",
@@ -519,7 +519,7 @@ def format_bot_help_message() -> str:
             "  One pick per day · best from hybrid Top 5 (rank 1) · majors.",
             "",
             "<b>/top5</b> · /top",
-            "  Hybrid Top 5 · <b>proba ≥77%</b> · EV tier1 15–30% + tier2 30–50% · gap ≤30pp · tri EV · ATP/WTA 250+.",
+            "  Hybrid Top 5 · <b>proba ≥77%</b> · EV tier1 15–35% + tier2 30–55% · gap ≤30pp · tri EV · ATP/WTA 250+.",
             "  <b>Bet</b> button under each match.",
             "",
             "<b>/today</b>",
