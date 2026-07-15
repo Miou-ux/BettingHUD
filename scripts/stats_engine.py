@@ -178,6 +178,23 @@ def get_days_since_last_match(
         return default
 
 
+def reconcile_days_with_recent_wins(days_since: object, wins_last7d: object) -> int | None:
+    """Aligne inactivité et victoires récentes (wins_last7d≥1 ⇒ au plus 7 jours d'inactivité)."""
+    if days_since is None:
+        return None
+    try:
+        days = int(max(0, float(days_since)))
+    except (TypeError, ValueError):
+        return None
+    try:
+        w7 = int(wins_last7d or 0)
+    except (TypeError, ValueError):
+        w7 = 0
+    if w7 >= 1:
+        return min(days, 7)
+    return days
+
+
 def _stats_reference_date_from_row(row: Any) -> Optional[str]:
     """Date du dernier match (colonne tourney_date) pour contextualiser rang/points."""
     if row is None:
