@@ -7242,12 +7242,19 @@ def _render_top5_proba_action_tab() -> None:
         f"EV = p_fav × cote_fav − 1."
     )
 
+    from scripts.hybrid_pick_selection import (
+        HYBRID_POOL_EV_MAX_PCT,
+        HYBRID_POOL_EV_MIN_PCT,
+    )
+
+    _hybrid_ev_min = HYBRID_POOL_EV_MIN_PCT / 100.0
+    _hybrid_ev_max = HYBRID_POOL_EV_MAX_PCT / 100.0
     matches = _load_today_tracked_matches_for_inplay()
     _funnel = _compute_favorite_ev_funnel_stats(
         matches,
         today_only=True,
-        ev_min_frac=FAVORITE_EV_BAND_MIN_FRAC,
-        ev_max_frac=FAVORITE_EV_BAND_MAX_FRAC,
+        ev_min_frac=_hybrid_ev_min,
+        ev_max_frac=_hybrid_ev_max,
     )
     if not matches:
         st.info(
@@ -7265,19 +7272,15 @@ def _render_top5_proba_action_tab() -> None:
     if not cards:
         st.caption(_format_favorite_ev_funnel_caption(
             _funnel,
-            ev_min_frac=FAVORITE_EV_BAND_MIN_FRAC,
-            ev_max_frac=FAVORITE_EV_BAND_MAX_FRAC,
+            ev_min_frac=_hybrid_ev_min,
+            ev_max_frac=_hybrid_ev_max,
             top_n=5,
         ))
         if int(_funnel.get("with_metrics") or 0) > 0:
-            _ev_band = (
-                f"+{int(FAVORITE_EV_BAND_MIN_FRAC * 100)} % à "
-                f"+{int(FAVORITE_EV_BAND_MAX_FRAC * 100)} %"
-            )
             st.warning(
-                f"Aucun pick Top 5 — bande EV {_ev_band} : "
-                f"**0** / **{_funnel['with_metrics']}** match(s) éligible(s). "
-                "Consultez **Top probas jour** (toggle EV off) ou attendez de meilleures cotes."
+                "Aucun pick Top 5 hybride — critères **P≥77 %**, **rel≥75**, **gap≤30 pp**, "
+                f"EV pool **15–50 %** : **0** / **{_funnel['with_metrics']}** match(s) avec métriques. "
+                "Consultez **Top probas jour** ou attendez de meilleures cotes."
             )
         else:
             st.info("Pool du jour OK mais cotes ou probas modèle manquantes sur tous les matchs.")

@@ -211,7 +211,7 @@ Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à to
 | `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
-| `/top5` | `/top` | Top 5 hybride main draw (P≥80 %, EV tiers 15–30 / 30–50 %) |
+| `/top5` | `/top` | Top 5 hybride main draw (P≥77 %, rel≥75, gap≤30 pp, EV tiers 15–30 / 30–50 %, tri EV ↓) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 | `/br` | — | Bankroll utilisateur (synthèse) |
 | `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |
@@ -242,7 +242,7 @@ Fichier : `scripts/telegram_access.py`.
 Message statique (`format_bot_strategy_message` dans `telegram_top5_notify.py`) :
 
 1. **Principe** — modèle ML ATP/WTA, edge vs book (EV &gt; 0)
-2. **Sélection** — jour courant, favori modèle, EV +15 % → +100 %, Top 5 proba ↓
+2. **Sélection** — `/top5` & `/1pick1day` : hybride P≥77 %, rel≥75, gap≤30 pp, EV tier1 15–30 % + tier2 30–50 %, tri EV ↓ (max 5/j) ; `/today` : value bets EV≥15 %
 3. **Mise** — Kelly 0,65, facteur Brier segment, plafond 15 % BR
 4. **Pratique** — vérifier cote réelle, miser ≤ reco Kelly
 
@@ -466,10 +466,10 @@ python scripts/telegram_bot_daemon.py --once
 ### Exemple `/top5` (extrait)
 
 ```text
-🎾 BettingHUD · Top 5 Proba
+🎾 BettingHUD · Top 5 Hybride
 
 📅 ven. 29 mai 2026 · Europe/Paris
-⚡ EV +15% → +100% · tri proba modèle
+📊 P≥77% · EV tier1 15–30% + tier2 30–50% · gap≤30pp · tri EV ↓
 🌅 Envoi matinal automatique
 ...
 ```

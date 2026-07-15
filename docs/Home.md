@@ -20,7 +20,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | Note | Contenu |
 |------|---------|
 | [[ARCHITECTURE_ACTUELLE_ET_MISES]] | Architecture courante, Live Tracker, modèle v47, mises |
-| [[CHANGELOG_RECENT]] | Évolutions récentes (mai 2026) |
+| [[CHANGELOG_RECENT]] | Évolutions récentes (mai–juillet 2026) |
 | [[ENVIRONNEMENTS]] | **PREPROD** (PC local) vs **PROD** (serveur) — règles et workflow |
 | [[SCHEDULE_MISES_A_JOUR]] | **Planning** scrape, snapshot, ML train, daemon, Telegram (PREPROD/PROD) |
 | [[CRONS_SEMAINE]] | **Crons PROD** — vue hebdomadaire synthétique (matin, sync, dimanche) |
@@ -35,6 +35,9 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[BACKTEST_PARAM_OPTIMIZATION]] | Recherche auto EV min/max, top N (walk-forward, score composite) |
 | [[BACKTEST_RG_2026]] | **Backtest Roland-Garros 2026** — Top 5 proba vs EV vs p≥65 % |
 | [[BACKTEST_PROD_TOP5_2025_2026]] | **Top 5 prod réel** — replay 2025/2026, fiabilité, audit hit rate, scripts |
+| [[BACKTEST_OPTIMIZATION_JUIL2026]] | **Grilles optimisation Top5** (juil. 2026) — combos, CLV, slates, manques data |
+| [[AUTONOMIE_PROD_AUDIT]] | **Autonomie PROD** — crons, retrain, gaps, roadmap sans intervention manuelle |
+| [[notes/LIVRES_BETTING_ALGOS]] | Bibliographie experte betting quant/algos + notes actionnables BettingHUD |
 | [[HYBRID_PICK_SELECTION]] | Sélection hybride **Top 5 / 1D1P** (règles verrouillées P/EV/rel) |
 | [[SHADOW_TEST_TOP5]] | **Shadow test** stratégie candidate Top 5 (capture, sync, go/no-go) |
 | [[COMMS_LOCALE]] | **Langue TG & Discord** — communications publiques en **anglais** |
@@ -64,8 +67,9 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[DAILY_TOP_PROBA_REPLAY]] | Stockage top 15 ATP/WTA/jour pour replay réel |
 | [[CHART_TOP_PROBAS_JOUR]] | Top 15 probas jour + toggle EV favori (partagé Live Tracker) |
 | [[DATA_RELIABILITY]] | Score fiabilité données live + correctifs tier 3 (homonymes, rangs, snapshot) |
+| [[ML_BUNDLE_ROLLBACK]] | **Rollback / promote** bundle ML v47 ↔ candidats v48 (freeze, tour routing PREPROD) |
 
-**Onglet Paris du jour** (dashboard) : top 5 probas · cote réelle · Kelly · pari direct · lien Live Tracker — détail dans [[CHANGELOG_RECENT]] § 0.14.
+**Onglet Paris du jour** (dashboard) : **Top 5 hybride** (aligné TG matin / `/top5`) · P≥77 % · EV tier1/tier2 · tri EV ↓ · cote réelle · Kelly · pari direct · lien Live Tracker — voir [[HYBRID_PICK_SELECTION]] et [[CHANGELOG_RECENT]] § Challenger hybride P77.
 
 ---
 
@@ -100,6 +104,15 @@ py -3 scripts/morning_live_pipeline.py
 # Shadow test Top5 candidat (capture/sync/report)
 py -3 scripts/shadow_top5.py --capture --sync-results --report
 py -3 scripts/shadow_weekly_telegram_notify.py --dry-run
+
+# Exploration split ATP/WTA — PREPROD uniquement (voir docs/ML_BUNDLE_ROLLBACK.md)
+$env:BETTINGHUD_ENV = "preprod"
+$env:BETTINGHUD_ML_TOUR_ROUTING = "1"
+py -3 scripts/ml_bundle_cli.py tour-routing on
+py -3 scripts/preprod_tour_routing_smoke.py
+py -3 scripts/shadow_wta_candidate_replay.py
+py -3 scripts/preprod_tour_routing_replay.py
+py -3 scripts/ml_bundle_cli.py tour-routing off
 
 # Backtest Top 5 prod (2025 / 2026) — voir docs/BACKTEST_PROD_TOP5_2025_2026.md
 py -3 scripts/backtest_prod_top5_2026.py --year 2026

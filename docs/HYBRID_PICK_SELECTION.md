@@ -47,10 +47,10 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 
 ## Backtest 2026 (référence juillet 2026)
 
-| Période | Paris | Hit | Flat 5 € | vs Top5 prod (ancien) |
-|---------|------:|----:|---------:|----------------------|
-| Année 2026 | 192 | 87,5 % | +296 € | prod +265 €, hit 65,8 % |
-| Live ≥ 18/05 | 53 | 94,3 % | +100 € | prod +36 €, hit 62,0 % |
+| Période | Paris | Hit | Kelly 2026 (réf.) | vs ancien P80 |
+|---------|------:|----:|------------------:|--------------|
+| Année 2026 (P77 challenger) | ~240 | ~88 % | ~+22 k€ | P80 ~+15 k€ |
+| Ancien P80 (réf. juin) | 192 | 87,5 % | flat +296 € | — |
 
 Sans plafond journalier : +9 picks / +3 € sur 2026 — le cap 5/jour est conservé.
 
@@ -60,8 +60,9 @@ Sans plafond journalier : +9 picks / +3 € sur 2026 — le cap 5/jour est conse
 # Depuis le poste (rsync / deploy habituel)
 scp scripts/hybrid_pick_selection.py scripts/daily_top_proba_store.py \
     scripts/discord_1d1p_core.py scripts/pick_modes.py \
-    scripts/telegram_top5_notify.py scripts/backtest_prod_top5_2026.py \
+    scripts/telegram_top5_notify.py scripts/discord_general_format.py \
     bettinghud:/opt/bettinghud/scripts/
+scp app/dashboard.py bettinghud:/opt/bettinghud/app/
 
 ssh bettinghud "sudo systemctl restart courtalpha-api bettinghud-telegram-bot bettinghud-dashboard"
 ```

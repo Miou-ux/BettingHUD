@@ -717,9 +717,11 @@ Dashboard : bandeau + titre onglet navigateur `[PREPROD]` / `[PROD]` dans l’on
 
 **Fichiers** : `app/dashboard.py`
 
+> **Mise à jour juillet 2026** : sélection **hybride challenger** (P77) — mêmes 5 picks que TG `/top5`. Voir § « Challenger hybride Top 5 / 1D1P — P77 ».
+
 | Élément | Détail |
 |---------|--------|
-| **Paris du jour** | 1er onglet : top **5** probas favori (EV 15–100 %), cote réelle éditable, mise Kelly/Brier, enregistrement portefeuille, surbrillance verte si pari posé |
+| **Paris du jour** | 1er onglet : top **5** hybride (P≥77 %, EV tier1/tier2, tri EV ↓), cote réelle éditable, mise Kelly/Brier, enregistrement portefeuille, surbrillance verte si pari posé |
 | **Lien Live Tracker** | Bouton « Ouvrir ce match dans Live Tracker » : pré-filtre joueur + circuit, bascule auto vers l’onglet Live Tracker |
 | **Mon Portefeuille** | 2e onglet (après Paris du jour) |
 | **Paramètres** | Ancienne sidebar : fraîcheur ATP/WTA, scrape/sync, entraînement ML |

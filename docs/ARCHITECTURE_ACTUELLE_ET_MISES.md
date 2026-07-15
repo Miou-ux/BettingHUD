@@ -22,7 +22,7 @@ Le principe important : le Live Tracker ne recalcule pas tout à chaque rerun St
 
 `app/dashboard.py`
 
-- UI Streamlit (ordre onglets) : **Paris du jour** (top 5 action), **Mon Portefeuille**, **Live Tracker**, **Top probas jour** (top 15 + chart — `docs/CHART_TOP_PROBAS_JOUR.md`), Backtest Kelly, Diagnostics, Tracking modèle, **Paramètres** (ex-sidebar). Masqués : Pari Live, Human Factors.
+- UI Streamlit (ordre onglets) : **Paris du jour** (Top 5 hybride prod — mêmes 5 picks que TG `/top5`), **Mon Portefeuille**, **Live Tracker**, **Top probas jour** (top 15 + chart — `docs/CHART_TOP_PROBAS_JOUR.md`), Backtest Kelly, Diagnostics, Tracking modèle, **Paramètres** (ex-sidebar). Masqués : Pari Live, Human Factors.
 - Orchestration du build live, des filtres, des value bets, des mises et du Report Opportunités.
 - Calcul du bankroll disponible, saisie de la cote réelle, enregistrement des paris.
 - Affichage des infos joueur : rang/points, ELO, forme, fatigue, style, signaux avancés.
@@ -108,7 +108,7 @@ Un changement de modèle ou de version moteur invalide donc le snapshot.
 - **Build live** : conserve ATP, WTA et **`Challenger`** (exclut ITF/UTR par nom) ;
 - **Live Tracker (défaut)** : main draw uniquement (nom + points ≥ 250 si connus) ;
 - **Toggle « Inclure les Challengers »** : challenger tier (ATP Challenger, WTA 125, `category=Challenger`) ;
-- **Paris du jour / Top 5 / `/top5`** : main draw uniquement.
+- **Paris du jour / Top 5 / `/top5`** : main draw uniquement — sélection **hybride** (P≥77 %, rel≥75, gap≤30 pp, EV tier1/tier2, tri EV ↓) : voir [[HYBRID_PICK_SELECTION]].
 
 **Qualité données** — le Live masque les matchs sans source rang/points exploitable pour les deux joueurs, ou dont la référence TML/WTA est **périmée** (> 12 mois par défaut).
 
