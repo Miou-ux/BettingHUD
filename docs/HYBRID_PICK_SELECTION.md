@@ -15,12 +15,13 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 | Étape | Règle |
 |-------|--------|
 | Pool | Matchs du jour (Europe/Paris), tournois **majors 250+** main draw |
-| Proba | Favori modèle **≥ 80 %** |
-| Fiabilité | `data_reliability_score ≥ 80` |
+| Proba | Favori modèle **≥ 77 %** |
+| Fiabilité | `data_reliability_score ≥ 75` |
+| Gap book | **≤ 30 pp** (écart proba modèle vs cote book) |
 | Exclusion | Pas de publication si flag **`duplicate_model_prob`** |
 | **Tier 1** | EV favori **15–30 %** (inclus) — remplissage prioritaire |
 | **Tier 2** | EV favori **30–50 %** (30 exclus, 50 inclus) — complément si &lt; 5 picks tier 1 |
-| Tri | Proba modèle ↓ (tie-break nom match) |
+| Tri | **EV favori** ↓ (tie-break proba, puis nom match) |
 | Dédup | `dedupe_top_proba_rows_by_match` (doublons snapshot TE) |
 | Cap | **5** picks/jour (Top 5) ; 1D1P = **pick #1** |
 

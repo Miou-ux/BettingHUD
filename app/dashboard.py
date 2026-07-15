@@ -7181,41 +7181,65 @@ def _collect_top_favorite_action_cards(
     *,
     limit: int = 5,
 ) -> list[dict]:
-    """Top favoris modèle du jour (EV favori 15–100 %) triés par proba décroissante."""
-    from scripts.match_rank_quality import duplicate_model_prob_keys, passes_public_pick_gates
+    """Top 5 prod (sélection hybride) — aligné Telegram / 1D1P."""
+    from scripts.daily_top_proba_store import collect_hybrid_proba_picks
 
-    ev_min_frac = FAVORITE_EV_BAND_MIN_FRAC
-    ev_max_frac = FAVORITE_EV_BAND_MAX_FRAC
-    dup_keys = duplicate_model_prob_keys(matches)
-    cards: list[dict] = []
+    picks = collect_hybrid_proba_picks(matches, limit=limit)
+    by_name: dict[str, dict] = {}
     for m in matches:
-        if not _is_today_calendar_match(m):
-            continue
-        if not passes_public_pick_gates(m, duplicate_keys=dup_keys):
-            continue
-        met = _match_favorite_model_metrics(m)
-        if not met:
-            continue
-        if not _passes_favorite_ev_band(met, ev_min_frac=ev_min_frac, ev_max_frac=ev_max_frac):
-            continue
-        cards.append({"match": m, "metrics": met})
-    cards.sort(key=lambda x: -float((x.get("metrics") or {}).get("fav_p") or 0.0))
-    return cards[: max(0, int(limit))]
+        p1 = str(m.get("player1") or "").strip()
+        p2 = str(m.get("player2") or "").strip()
+        by_name[f"{p1} vs {p2}".lower()] = m
+
+    cards: list[dict] = []
+    for pick in picks:
+        key = str(pick.get("match_name") or "").lower()
+        match = by_name.get(key)
+        if match is None:
+            match = {
+                "player1": pick.get("player1"),
+                "player2": pick.get("player2"),
+                "tournament": pick.get("tournament"),
+                "tour": pick.get("tour"),
+                "surface": pick.get("surface"),
+                "time": pick.get("match_time"),
+                "category": pick.get("tourney_level"),
+            }
+        met = dict(_match_favorite_model_metrics(match) or {})
+        if pick.get("p_model_fav") is not None:
+            met["fav_p"] = float(pick["p_model_fav"])
+        if pick.get("fav_side") is not None:
+            met["fav_side"] = int(pick["fav_side"])
+        if pick.get("odd_fav") is not None:
+            met["odd_fav"] = float(pick["odd_fav"])
+        if pick.get("ev_fav_pct") is not None:
+            met["ev_fav_pct"] = float(pick["ev_fav_pct"])
+            met["ev_fav_frac"] = float(pick["ev_fav_pct"]) / 100.0
+        gap = pick.get("book_gap_pp")
+        if gap is not None:
+            try:
+                met["gap_pp"] = float(gap)
+                met["gap_s"] = f"{float(gap):.1f}"
+            except (TypeError, ValueError):
+                pass
+        cards.append({"match": match, "metrics": met})
+    return cards
 
 
 def _render_top5_proba_action_tab() -> None:
     """Onglet épuré : top 5 probas favori avec saisie cote réelle + mise Kelly/Brier."""
     if st.session_state.pop("_live_link_success_toast", False):
         st.toast("Filtre appliqué — onglet Live Tracker ouvert.", icon="↪")
-    st.header("🎯 Top 5 proba · Action rapide")
+    st.header("🎯 Top 5 hybride · Action rapide")
     st.caption(
-        "Top 5 favoris modèle du jour · **EV favori +15 % à +100 %** · "
-        "cote modifiable, mise reco Kelly/Brier, enregistrement direct portefeuille."
+        "Top 5 prod (même sélection que Telegram matin / 1D1P) · **P≥77 %** · "
+        "EV tier1 **15–30 %** + tier2 **30–50 %** · fiabilité **≥75** · gap **≤30 pp** · "
+        "tri **EV** ↓ · cote modifiable, mise reco Kelly/Brier."
     )
     _today_paris = datetime.now(_PARIS_TZ).date().isoformat()
     st.caption(
-        f"Périmètre : matchs du **{_today_paris}** (Europe/Paris) · "
-        f"tri **proba favori modèle** ↓ · EV = p_fav × cote_fav − 1."
+        f"Périmètre : matchs du **{_today_paris}** (Europe/Paris) · majors **250+** · "
+        f"EV = p_fav × cote_fav − 1."
     )
 
     matches = _load_today_tracked_matches_for_inplay()

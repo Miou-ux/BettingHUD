@@ -12,9 +12,11 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 | Étape | Règle |
 |-------|--------|
 | Pool | Même sélection que **Top 5 hybride** (voir [[HYBRID_PICK_SELECTION]]) |
-| Proba | Favori modèle **≥ 80 %** |
+| Proba | Favori modèle **≥ 77 %** |
 | EV | Tier 1 **15–30 %** puis complément tier 2 **30–50 %** (max 5 candidats/jour) |
-| Pick retenu | **Rang 1** au tri proba modèle ↓ (`selection_mode`: `hybrid_best`) |
+| Fiabilité | **≥ 75** |
+| Écart cote | **book_gap ≤ 30 pp** |
+| Pick retenu | **Rang 1** au tri **EV** ↓ (`selection_mode`: `hybrid_best`) |
 | Mise théorique | Kelly **0,65** × Brier, plafond 15 % BR |
 
 > **Juillet 2026** : remplace l’ancienne règle « 1er EV par circuit ATP/WTA + repli EV+ si p &lt; 70 % ».

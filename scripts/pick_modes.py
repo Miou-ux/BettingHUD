@@ -2,7 +2,7 @@
 
 Modes :
   - ``1pick1day`` : meilleur pick de la sélection hybride du jour (même logique que Top 5, rank 1)
-  - ``top5``      : sélection hybride P≥80 %, EV tier1 15–30 % + tier2 30–50 %, max 5, majeurs
+  - ``top5``      : sélection hybride P≥77 %, EV tier1/tier2, gap≤30 pp, tri EV, max 5, majeurs
   - ``today``     : Live Tracker / Today's Pick — value bets EV ≥15 %, majeurs + mineurs
 """
 from __future__ import annotations

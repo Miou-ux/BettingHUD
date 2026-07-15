@@ -6,6 +6,38 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Challenger hybride Top 5 / 1D1P — P77 (15 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Objectif** | Remplacer l’ancien Top 5 (P80, rel≥80, tri proba) par la variante **challenger** validée en backtest Kelly 2026 |
+| **Règles** | P≥**77 %** · fiabilité **≥75** · gap book **≤30 pp** · EV tier1 **15–30 %** + tier2 **30–50 %** · tri **EV** ↓ · max **5/j** |
+| **1D1P** | **Rang 1** de la même sélection hybride (plus de logique circuit séparée) |
+| **Live `/jour`** | **Inchangé** (`PickMode.TODAY` — value bets EV≥15 %, tous tournois) |
+| **Backtest 2026** | Kelly ~**+22 k€** vs prod P80 ~+15 k€ (même DD ~16 %, +40–50 picks) |
+
+### Fichiers
+
+| Fichier | Changement |
+|---------|------------|
+| `scripts/hybrid_pick_selection.py` | P77, rel 75, gap 30 pp, tri EV |
+| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks` + `min_reliability_score` |
+| `scripts/discord_1d1p_core.py` | Pool hybride + rang 1 |
+| `scripts/telegram_top5_notify.py` | Texte critères dynamique (`hybrid_criteria_line`) |
+| `app/dashboard.py` | Onglet Paris du jour → `collect_hybrid_proba_picks` |
+| `docs/HYBRID_PICK_SELECTION.md`, `TELEGRAM_TOP5.md`, `ONE_DAY_ONE_PICK.md` | Alignement doc |
+
+### Déploiement prod
+
+```bash
+scp scripts/hybrid_pick_selection.py scripts/daily_top_proba_store.py \
+    scripts/pick_modes.py scripts/discord_1d1p_core.py scripts/discord_1d1p_format.py \
+    scripts/telegram_top5_notify.py bettinghud:/opt/bettinghud/scripts/
+ssh bettinghud "sudo systemctl restart bettinghud-telegram-bot"
+```
+
+---
+
 # Alignement affichage public + incident Waltert (14 juillet 2026)
 
 | Élément | Détail |

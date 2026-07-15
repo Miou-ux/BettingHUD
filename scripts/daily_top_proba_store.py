@@ -389,6 +389,7 @@ def collect_top5_proba_picks(
     today_only: bool = True,
     major_only: bool = True,
     min_proba_frac: float = 0.60,
+    min_reliability_score: int | None = None,
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
@@ -420,7 +421,11 @@ def collect_top5_proba_picks(
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
             continue
         ensure_match_reliability_scored(m, duplicate_keys=dup_prob_keys)
-        if not passes_public_pick_gates(m, duplicate_keys=dup_prob_keys):
+        if not passes_public_pick_gates(
+            m,
+            duplicate_keys=dup_prob_keys,
+            min_score=min_reliability_score,
+        ):
             continue
         tour = _match_tour(m)
         p1_name, p2_name = str(m.get("player1") or "").strip(), str(m.get("player2") or "").strip()
@@ -475,9 +480,10 @@ def collect_hybrid_proba_picks(
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Top 5 / 1D1P prod : sélection hybride P80 + EV tier1/tier2 (max 5/jour)."""
+    """Top 5 / 1D1P prod : sélection hybride P77 + EV tier1/tier2 (max 5/jour)."""
     from scripts.hybrid_pick_selection import (
         HYBRID_MIN_PROBA_FRAC,
+        HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
         HYBRID_POOL_EV_MIN_PCT,
         select_hybrid_picks,
@@ -491,6 +497,7 @@ def collect_hybrid_proba_picks(
         today_only=today_only,
         major_only=major_only,
         min_proba_frac=HYBRID_MIN_PROBA_FRAC,
+        min_reliability_score=HYBRID_MIN_RELIABILITY_SCORE,
         calendar_date=calendar_date,
         ml=ml,
     )

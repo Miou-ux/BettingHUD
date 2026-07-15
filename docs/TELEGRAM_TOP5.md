@@ -14,7 +14,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **1 Day 1 Pick matinal** | **05:00** `od1p_publish` (`TELEGRAM_1D1P_ENABLED=1`) | Pick unique/jour · broadcast · bouton **Bet** · résultats via daemon |
-| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 **hybride** · P≥80 % · EV tier1 15–30 % + tier2 30–50 % · tri proba ↓ |
+| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 **hybride** · P≥77 % · rel≥75 · gap≤30 pp · EV tier1/tier2 · tri EV ↓ |
 | **`/1pick1day`** · **`/1d1p`** | Commande ou menu **🎯 1 Day 1 Pick** | Même pick que web · interactif + Bet |
 | **`/jour`** · **`/today`** | Menu **📅 Today** ou commande | Matchs **Aujourd’hui** · **proba > 60 %** · **EV ≥ 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
@@ -158,12 +158,13 @@ Aligné backtest juillet 2026 — voir **`docs/HYBRID_PICK_SELECTION.md`**.
 | Critère | Valeur |
 |---------|--------|
 | Tournois | **Majors ATP/WTA** uniquement (`is_major_atp_wta_match`) |
-| Proba | Favori modèle **≥ 80 %** |
+| Proba | Favori modèle **≥ 77 %** |
 | EV tier 1 | **+15 % → +30 %** (inclus) — remplissage prioritaire |
 | EV tier 2 | **+30 % → +50 %** (30 exclus, 50 inclus) — complément si &lt; 5 picks |
-| Fiabilité | `data_reliability_score ≥ 80` |
+| Fiabilité | `data_reliability_score ≥ 75` |
+| Gap book | **≤ 30 pp** |
 | **Exclusion dup** | Pas de publication si **`duplicate_model_prob`** |
-| Tri | Proba favori modèle ↓ |
+| Tri | EV favori ↓ |
 | Limite | **5** matchs (`TELEGRAM_TOP5_LIMIT`) |
 
 Fonctions : `collect_hybrid_proba_picks` · `select_hybrid_picks` (+ `filter_telegram_display_picks` pour Telegram).

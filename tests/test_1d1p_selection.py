@@ -22,6 +22,7 @@ def _row(p1: str, p2: str, p: float, ev: float, *, tour: str = "ATP") -> dict:
         "p_model_fav": p,
         "ev_fav_pct": ev,
         "data_reliability_score": 90,
+        "book_gap_pp": 10.0,
     }
 
 
@@ -38,5 +39,5 @@ def test_1d1p_is_best_hybrid_pick():
 
 
 def test_1d1p_none_when_no_hybrid_candidate():
-    rows = [_row("Low", "A", 0.75, 20.0)]
+    rows = [_row("Low", "A", 0.76, 20.0)]
     assert select_1d1p_pick(rows) is None

@@ -1,8 +1,8 @@
 """Sélection hybride prod — Top 5 et 1 Day 1 Pick.
 
-Tier 1 : proba modèle ≥ 80 %, fiabilité data ≥ 80, EV favori 15–30 % (inclus).
+Tier 1 : proba modèle ≥ 77 %, fiabilité data ≥ 75, EV favori 15–30 % (inclus).
 Tier 2 : complément si < ``limit`` picks, EV 30–50 % (exclus 30, inclus 50).
-Tri proba modèle ↓, dédup match, exclusion ``duplicate_model_prob``.
+Tri EV favori ↓ (puis proba), cap book_gap ≤ 30 pp, dédup match, exclusion duplicate_model_prob.
 """
 from __future__ import annotations
 
@@ -12,7 +12,10 @@ from scripts.match_rank_quality import (
     passes_public_pick_gates,
 )
 
-HYBRID_MIN_PROBA_FRAC = 0.80
+HYBRID_MIN_PROBA_FRAC = 0.77
+HYBRID_MIN_RELIABILITY_SCORE = 75
+HYBRID_BOOK_GAP_MAX_PP = 30.0
+HYBRID_SORT = "ev"
 HYBRID_TIER1_EV_MIN_PCT = 15.0
 HYBRID_TIER1_EV_MAX_PCT = 30.0
 HYBRID_TIER2_EV_MIN_PCT = 30.0
@@ -29,10 +32,26 @@ def ev_fav_pct(row: dict) -> float:
     return float(row.get("ev_fav") or row.get("ev") or 0.0) * 100.0
 
 
+def _book_gap_ok(row: dict) -> bool:
+    gap = row.get("book_gap_pp")
+    if gap is None:
+        return True
+    try:
+        return float(gap) <= float(HYBRID_BOOK_GAP_MAX_PP)
+    except (TypeError, ValueError):
+        return True
+
+
 def hybrid_base_ok(row: dict, *, duplicate_keys: set | None = None) -> bool:
-    if not passes_public_pick_gates(row, duplicate_keys=duplicate_keys):
+    if not passes_public_pick_gates(
+        row,
+        duplicate_keys=duplicate_keys,
+        min_score=HYBRID_MIN_RELIABILITY_SCORE,
+    ):
         return False
     if float(row.get("p_model_fav") or 0.0) < HYBRID_MIN_PROBA_FRAC:
+        return False
+    if not _book_gap_ok(row):
         return False
     return True
 
@@ -55,6 +74,18 @@ def _in_tier2(row: dict) -> bool:
     return HYBRID_TIER2_EV_MIN_PCT < ev <= HYBRID_TIER2_EV_MAX_PCT
 
 
+def _sort_key(row: dict) -> tuple:
+    p = float(row.get("p_model_fav") or 0.0)
+    ev = ev_fav_pct(row) / 100.0
+    name = str(row.get("match_name") or "").lower()
+    sort = str(HYBRID_SORT or "proba").lower()
+    if sort == "ev":
+        return (-ev, -p, name)
+    if sort == "edge":
+        return (-(ev * p), -p, name)
+    return (-p, -ev, name)
+
+
 def select_hybrid_picks(
     candidates: list[dict],
     *,
@@ -70,10 +101,7 @@ def select_hybrid_picks(
     cap = int(limit) if limit is not None and int(limit) > 0 else 0
 
     def rank(rows: list[dict]) -> list[dict]:
-        ranked = sorted(
-            rows,
-            key=lambda r: (-float(r.get("p_model_fav") or 0.0), str(r.get("match_name") or "").lower()),
-        )
+        ranked = sorted(rows, key=_sort_key)
         ranked = dedupe_top_proba_rows_by_match(ranked)
         if apply_telegram_proba_filter:
             from scripts.telegram_top5_notify import filter_telegram_display_picks
@@ -125,20 +153,22 @@ def count_hybrid_pool_candidates(candidates: list[dict], *, duplicate_keys: set 
 
 def hybrid_criteria_line(*, english: bool | None = None) -> str:
     from scripts.comms_locale import comms_is_english
-    from scripts.match_rank_quality import MIN_DATA_RELIABILITY_SCORE
 
     en = comms_is_english() if english is None else bool(english)
-    rel = MIN_DATA_RELIABILITY_SCORE
+    rel = HYBRID_MIN_RELIABILITY_SCORE
+    sort_label = "EV" if str(HYBRID_SORT).lower() == "ev" else str(HYBRID_SORT)
     if en:
         return (
             f"📊 Model proba <code>≥{HYBRID_MIN_PROBA_FRAC * 100:.0f}%</code> · "
             f"EV tier1 <code>{HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f}%</code> · "
             f"tier2 <code>{HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f}%</code> "
-            f"(fill to {HYBRID_DEFAULT_LIMIT}/day) · reliability ≥{rel} · sorted by proba ↓"
+            f"(fill to {HYBRID_DEFAULT_LIMIT}/day) · reliability ≥{rel} · "
+            f"book gap ≤{HYBRID_BOOK_GAP_MAX_PP:.0f}pp · sorted by {sort_label} ↓"
         )
     return (
         f"📊 Proba <code>≥{HYBRID_MIN_PROBA_FRAC * 100:.0f}%</code> · "
         f"EV tier1 <code>{HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f}%</code> · "
         f"tier2 <code>{HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f}%</code> "
-        f"(complément max {HYBRID_DEFAULT_LIMIT}/jour) · fiabilité ≥{rel} · tri proba ↓"
+        f"(complément max {HYBRID_DEFAULT_LIMIT}/jour) · fiabilité ≥{rel} · "
+        f"écart cote ≤{HYBRID_BOOK_GAP_MAX_PP:.0f} pp · tri {sort_label} ↓"
     )

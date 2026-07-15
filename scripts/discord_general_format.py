@@ -60,8 +60,9 @@ def build_general_welcome_embed() -> dict[str, Any]:
                 "name": "📊 Top 5",
                 "value": (
                     "• Up to **5 picks/day** · ATP/WTA majors **250+**\n"
-                    "• Model favourite · proba **>60%** · EV **15–100%**\n"
-                    "• Sorted by confidence · posted **~05:00 Paris** on Telegram " + tg
+                    "• Hybrid · proba **≥77%** · EV tier1 **15–30%** + tier2 **30–50%**\n"
+                    "• Reliability **≥75** · book gap **≤30pp** · sorted by **EV** ↓ · "
+                    "posted **~05:00 Paris** on Telegram " + tg
                 ),
                 "inline": False,
             },
@@ -77,7 +78,7 @@ def build_general_welcome_embed() -> dict[str, Any]:
             {
                 "name": "🎯 1 Day 1 Pick",
                 "value": (
-                    "• **One pick per day** — best EV pick per circuit, then best proba ATP vs WTA\n"
+                    "• **One pick per day** — rank **#1** of the same hybrid Top 5 selection\n"
                     "• Daily posts in **#1pick1day**\n"
                     f"• Public replay → **[1-day-1-pick]({site}/1-day-1-pick)** (no account needed)"
                 ),

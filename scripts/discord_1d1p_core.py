@@ -11,7 +11,7 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 EV_MIN_PCT = 15.0
 EV_MAX_PCT = 100.0
 PROBA_STANDARD_MIN_FRAC = 0.70
-"""Legacy — la sélection prod utilise désormais la logique hybride (P80 + EV tiers)."""
+"""Legacy — la sélection prod utilise la logique hybride challenger (P77 + gap + tri EV)."""
 
 
 def select_1d1p_pick(
@@ -24,7 +24,7 @@ def select_1d1p_pick(
     hybrid_limit: int = 5,
 ) -> dict[str, Any] | None:
     """
-    1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri proba ↓).
+    1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri EV ↓).
 
     Même pool que Top 5 (tier1 EV 15–30 %, complément tier2 EV 30–50 %, max 5/jour).
     """
@@ -54,6 +54,7 @@ def load_1d1p_today_pick(
     )
     from scripts.hybrid_pick_selection import (
         HYBRID_MIN_PROBA_FRAC,
+        HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
         HYBRID_POOL_EV_MIN_PCT,
         count_hybrid_pool_candidates,
@@ -79,6 +80,7 @@ def load_1d1p_today_pick(
         today_only=True,
         major_only=True,
         min_proba_frac=HYBRID_MIN_PROBA_FRAC,
+        min_reliability_score=HYBRID_MIN_RELIABILITY_SCORE,
         calendar_date=cal_day,
     )
     dup = duplicate_model_prob_keys(matches)

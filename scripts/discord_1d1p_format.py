@@ -100,7 +100,7 @@ def build_no_pick_embed(*, calendar_date: str, pool_size: int) -> dict[str, Any]
         "title": f"🎾 1 Day 1 Pick — {format_calendar_date_label(calendar_date)}",
         "description": (
             "No value pick today.\n\n"
-            "Rules: best EV-eligible pick per circuit (proba ↓) · max model proba · EV 15–100% · main draw 250+."
+            "Rules: rank 1 of hybrid Top 5 (EV tier1/tier2 · proba ≥77% · gap ≤30pp) · main draw 250+."
         ),
         "color": _COLOR_NOPICK,
         "fields": [
