@@ -57,9 +57,12 @@ gantt
     section Nuit
     Build snapshot TE     :02:00, 30m
     Sync ATP+WTA+ingest   :03:30, 45m
+    Backup DB             :04:15, 10m
+    Preflight morning     :04:40, 10m
     section Matin
     Image OG stats        :04:55, 5m
     Publications TG/Discord :05:00, 15m
+    Digest admin          :06:30, 5m
     section Continu
     Billing ETH (*/2 min)   :00:00, 24h
 ```
@@ -72,13 +75,17 @@ gantt
 
 | Heure | Script | Rôle | Log |
 |-------|--------|------|-----|
-| **02:00** | `morning_live_pipeline.py --build-only` | Scrape TE, snapshot ML, cache Telegram | `data/logs/morning_build_cron.log` |
-| **03:30** | `sync_tours_daily.py` | ATP (`sync_tml_recent`) + **WTA delta** (`sync_wta_delta` → enrich Flashscore → `pipeline_quality` / ingest) | `data/logs/tours_cron.log` · `data/logs/tours_auto_sync.log` |
+| **02:00** | `morning_live_pipeline.py --build-only` | Scrape TE, snapshot ML, cache Telegram + **validate_build** | `data/logs/morning_build_cron.log` |
+| **03:30** | `sync_tours_daily.py` | ATP (`sync_tml_recent`) + **WTA delta** + QC post-sync (alerte dedupée) | `data/logs/tours_cron.log` · `data/logs/tours_auto_sync.log` |
+| **04:15** | `backup_prod_db_server.py` | Backup SQLite serveur (rétention 30j) | `data/logs/backup_db_server.log` |
+| **04:40** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
 | **04:55** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
-| **05:00** | `morning_live_pipeline.py --morning-publish` | Chaîne **sync tours** (si besoin) → **build** → **1D1P** + Top 5 + canal (garde-fous, pas d’envoi si erreur) | `data/logs/morning_publish_cron.log` |
+| **05:00** | `morning_live_pipeline.py --morning-publish` | Chaîne **sync tours** (si besoin) → **build** → **1D1P** + Top 5 + canal ; **alerte soft-fail** si tours KO | `data/logs/morning_publish_cron.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
-**Ordre matin** : 02:00 (préparation) → 03:30 (sync tours, enregistre l’étape OK) → 04:55 (OG) → 05:00 (vérifie sync + garde-fous → build → envois ; **relance sync** si 03:30 a échoué).
+**Ordre matin** : 02:00 (préparation) → 03:30 (sync tours) → 04:15 backup → 04:40 preflight → 04:55 (OG) → 05:00 (publish).
+
+**Alertes** : wrapper `cron_run_with_alert.py` + anti-doublon 20 min (`data/cache/ops_alert_dedup.json`). Kill-switch `BETTINGHUD_OPS_ALERT=0`.
 
 État chaîne : `data/cache/morning_chain_state.json`
 

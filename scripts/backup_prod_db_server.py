@@ -71,12 +71,14 @@ def main() -> int:
         return 0
     except Exception as exc:
         _log(f"ERREUR: {exc}")
-        try:
-            from scripts.ops_telegram_alert import send_ops_alert
+        # Sous cron_run_with_alert le wrapper envoie déjà l'échec.
+        if os.getenv("BETTINGHUD_IN_CRON_ALERT", "").strip() not in ("1", "true", "yes"):
+            try:
+                from scripts.ops_telegram_alert import send_ops_alert
 
-            send_ops_alert("Backup DB serveur — ÉCHEC", str(exc)[:500])
-        except Exception:
-            pass
+                send_ops_alert("Backup DB serveur — ÉCHEC", str(exc)[:500], dedup_key="backup_db_server")
+            except Exception:
+                pass
         return 1
 
 

@@ -6,5 +6,7 @@
 CRON_TZ=Europe/Paris
 # 02:00 — scrape TE + snapshot (alerte TG si échec)
 0 2 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning build 02:00" --log data/logs/morning_build_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only
+# 04:40 — preflight chaîne (imports / snapshot / dry-run picks) avant publish 05:00
+40 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Preflight morning 04:40" --log data/logs/preflight_morning_cron.log --dedup-key preflight_morning -- /opt/bettinghud/venv/bin/python scripts/preflight_morning_chain.py
 # 05:00 — sync tours → build → publications (alerte TG si échec)
 0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning publish 05:00" --log data/logs/morning_publish_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --morning-publish

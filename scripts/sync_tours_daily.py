@@ -316,7 +316,24 @@ def run_sync_bundle() -> int:
                 _append_log("qc_post_sync: échec bloquant.")
                 rc = 1
         except Exception as e:
-            _append_log(f"qc_post_sync: {e}")
+            _append_log(f"qc_post_sync: exception {e}")
+            try:
+                from scripts.morning_chain_state import record_step as _rec
+
+                _rec("qc_post_sync", ok=False, rc=1, detail={"error": str(e)[:300]})
+            except Exception:
+                pass
+            try:
+                from scripts.ops_telegram_alert import send_ops_alert
+
+                send_ops_alert(
+                    "QC post-sync EXCEPTION",
+                    str(e)[:500],
+                    dedup_key="qc_post_sync_fail",
+                )
+            except Exception:
+                pass
+            rc = 1
 
     return rc
 

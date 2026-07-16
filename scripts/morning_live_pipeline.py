@@ -322,6 +322,26 @@ def main(argv: list[str] | None = None) -> int:
         _log, log_path = _open_log("build")
         _log("Démarrage phase build (scrape + snapshot).")
         rc = run_build_phase(_log=_log)
+        if rc == 0:
+            try:
+                from scripts.morning_orchestrator import validate_build
+
+                if not validate_build(_log=_log):
+                    _log("Post-check validate_build ÉCHEC après build 02:00.")
+                    try:
+                        from scripts.ops_telegram_alert import send_ops_alert
+
+                        send_ops_alert(
+                            "Morning build 02:00 — validate_build FAIL",
+                            "Snapshot construit mais garde-fou build KO (âge / TE profiles). "
+                            "Le cron 05:00 risque d'échouer.",
+                            dedup_key="morning_build_validate_fail",
+                        )
+                    except Exception:
+                        pass
+                    rc = 1
+            except Exception as exc:
+                _log(f"Post-check validate_build ignoré : {exc}")
         _log(f"Fin (code {rc}). Journal : {log_path}")
         return rc
 

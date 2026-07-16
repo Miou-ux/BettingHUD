@@ -6,6 +6,33 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ops — renfort jobs de nuit + alertes (16 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Anti-doublon TG** | `ops_telegram_alert` : cooldown 20 min (`BETTINGHUD_OPS_ALERT_COOLDOWN_SEC`), clé partagée QC FAIL ↔ Sync tours |
+| **Cron wrapper** | `BETTINGHUD_IN_CRON_ALERT=1` ; corps d’échec enrichi (BLOCK/QC + `morning_chain_state`) |
+| **QC sous cron** | Skip alerte FAIL inline (le wrapper cron porte le message) ; WARN QC toujours envoyé |
+| **Sync tours** | Exception `qc_post_sync` → `rc=1` + alerte (plus de silence) |
+| **05:00** | Soft-fail tours → alerte ops dédiée même si publish continue |
+| **02:00** | `validate_build` post-build ; FAIL → exit 1 + alerte |
+| **04:40** | Nouveau cron `preflight_morning_chain.py` (alerte si KO) |
+| **04:15** | Backup wrappé `cron_run_with_alert` |
+| **06:30 digest** | Résumé chaîne `tours_sync` / `qc_post_sync` du jour |
+
+### Fichiers
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/ops_telegram_alert.py` | Dedup + clés |
+| `scripts/cron_run_with_alert.py` | Env cron + corps enrichi |
+| `scripts/qc_post_sync.py` / `sync_tours_daily.py` | Alertes QC / exceptions |
+| `scripts/morning_orchestrator.py` / `morning_live_pipeline.py` | Soft-fail + validate 02:00 |
+| `deploy/cron/morning-pipeline` | + preflight 04:40 |
+| `deploy/cron/ops-p0` / `data-sync` | Backup wrap + dedup-key sync |
+
+---
+
 # Ops — C1 WTA doublons + timezone cron Paris (16 juillet 2026)
 
 | Élément | Détail |

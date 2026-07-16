@@ -318,11 +318,23 @@ def run_publish_chain(*, _log, force_tours_sync: bool = False) -> int:
     """Chaîne complète pour le cron 05:00. Retourne 0 seulement si tout a réussi."""
     _log("=== Chaîne matinale : sync tours → build → publications ===")
 
-    if not ensure_tours_sync(_log=_log, force=force_tours_sync):
+    tours_ok = ensure_tours_sync(_log=_log, force=force_tours_sync)
+    if not tours_ok:
         _log(
             "Sync tours en échec — poursuite build/publications "
             "(scrape TE + snapshot ne dépendent pas du sync tours)."
         )
+        try:
+            from scripts.ops_telegram_alert import send_ops_alert
+
+            send_ops_alert(
+                "Morning publish 05:00 — sync tours soft-fail",
+                "ensure_tours_sync=False : build/publications poursuivis malgré sync tours KO. "
+                "Vérifier tours_cron.log / qc_post_sync.",
+                dedup_key="morning_tours_soft_fail",
+            )
+        except Exception as exc:
+            _log(f"Alerte soft-fail tours ignorée : {exc}")
 
     build_ok = run_build_step(_log=_log)
     if not build_ok:
