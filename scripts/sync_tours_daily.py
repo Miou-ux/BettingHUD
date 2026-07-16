@@ -205,6 +205,15 @@ def run_sync_bundle() -> int:
     _run_wta_rank_backfill()
     _append_log("WTA delta: re-apply name aliases post-Flashscore")
     _run_py_with_args("wta_name_aliases.py", _wta_delta_extra_args())
+    _append_log("WTA delta: dedup post-Flashscore (C1 doublons)")
+    rc_dedup = _run_py_with_args(
+        "enrich_wta_delta_metadata.py",
+        _wta_delta_extra_args() + ["--dedup", "--no-players-csv"],
+    )
+    if rc_dedup != 0:
+        _append_log("enrich_wta_delta_metadata.py --dedup a echoue (non bloquant).")
+    else:
+        _append_log("enrich_wta_delta_metadata.py --dedup OK.")
     _append_log("WTA delta: retry serve enrich main tour (lignes w_svpt NULL)")
     rc_serve2 = _run_py_with_args(
         "enrich_wta_delta_te_stats.py",

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Alias noms WTA delta (tennis-data / Flashscore). Clés = norm_name_key du nom erroné.",
+  "comment": "Alias noms WTA delta (tennis-data / Flashscore). Clés = norm_name_key du nom erroné. apply_aliases remappe aussi winner_id/loser_id vers l'ID canonique de la cible (évite C1 Quevedo→Lys).",
   "name_aliases": {
     "quevedo k.": "lys e.",
     "quevedo": "lys e.",

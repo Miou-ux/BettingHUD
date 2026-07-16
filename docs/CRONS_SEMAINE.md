@@ -1,8 +1,10 @@
 # Crons PROD — vue hebdomadaire
 
-Dernière mise à jour : **22 juin 2026** · fuseau **`Europe/Paris`** (`CRON_TZ` sur tous les fichiers).
+Dernière mise à jour : **16 juillet 2026** · fuseau **`Europe/Paris`**.
 
 Serveur : **`bettinghud`** (`/opt/bettinghud`). Fichiers source : `deploy/cron/*` → `/etc/cron.d/bettinghud-*`.
+
+> **Timezone (important)** : le cron Ubuntu (vixie) **ignore `CRON_TZ` pour le scheduling** — les heures sont interprétées dans le **fuseau système**. Depuis le **16/07/2026**, le serveur est en **`Europe/Paris`** (`timedatectl set-timezone Europe/Paris`, aussi dans `deploy/install_ubuntu.sh`). `CRON_TZ=Europe/Paris` reste dans les fichiers cron (doc / env des jobs), mais **ne suffit pas** si le système est en UTC.
 
 > **Hors cron** : services systemd **24/7** (`bettinghud-telegram-bot`, `bettinghud-daemon`, `bettinghud-dashboard` avec `BETTINGHUD_LIVE_DATA_DAEMON=1`).  
 > **PREPROD (PC Windows)** : pipeline matin et backup DB via tâches planifiées — voir [[ENVIRONNEMENTS]].

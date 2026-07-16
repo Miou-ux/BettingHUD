@@ -68,10 +68,17 @@ def reorganize_work_dir_by_year(work_dir: Path) -> dict:
         n0 = len(df)
         df["_dedup_key"] = df.apply(dedup_key, axis=1)
         df["_score"] = df.apply(row_completeness_score, axis=1)
+        # Tie-break: prefer lower real player ids (évite de garder un mauvais remap).
+        for col in ("winner_id", "loser_id"):
+            if col in df.columns:
+                df[f"_{col}_sort"] = pd.to_numeric(df[col], errors="coerce").fillna(10**9)
+            else:
+                df[f"_{col}_sort"] = 10**9
+        sort_cols = ["_score", "_winner_id_sort", "_loser_id_sort"]
         df = (
-            df.sort_values("_score", ascending=False)
+            df.sort_values(sort_cols, ascending=[False, True, True])
             .drop_duplicates(subset="_dedup_key", keep="first")
-            .drop(columns=["_dedup_key", "_score"])
+            .drop(columns=["_dedup_key", "_score", "_winner_id_sort", "_loser_id_sort"])
         )
         dupes_removed = n0 - len(df)
         years = pd.to_datetime(df["tourney_date"].astype(str), format="%Y%m%d", errors="coerce").dt.year

@@ -6,6 +6,29 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ops — C1 WTA doublons + timezone cron Paris (16 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | `sync_tours_daily` en `exit 1` chaque nuit alors que sync ATP/WTA OK |
+| **Cause C1** | Alias `Quevedo` → `lys e.` **sans remap `loser_id`** → 2 lignes Waltert/Bastad (IDs 220332 vs 259733) → gate `wta_c1_duplicates` bloquante dans `qc_post_sync` |
+| **Cause TZ** | Serveur en `Etc/UTC` ; cron Ubuntu **ignore `CRON_TZ`** pour le scheduling → jobs « 05:00 Paris » tournaient à **05:00 UTC** (07:00 Paris) |
+| **Fix code** | `wta_name_aliases.py` remappe les IDs ; `enrich_wta_delta_metadata` tie-break dédup ; `fix_wta_c1_duplicates.py` ; `install_ubuntu.sh` pose `Europe/Paris` |
+| **Fix prod** | Dedup CSV + `timedatectl set-timezone Europe/Paris` + réinstall `/etc/cron.d/bettinghud-*` + suppression legacy `bettinghud-billing` (typos `scipts/…`) |
+
+### Fichiers
+
+| Fichier | Changement |
+|---------|------------|
+| `scripts/wta_name_aliases.py` | Remap `winner_id`/`loser_id` vers ID canonique de la cible d’alias |
+| `scripts/enrich_wta_delta_metadata.py` | Tie-break dédup : score puis IDs croissants |
+| `scripts/fix_wta_c1_duplicates.py` | Outil one-shot alias+dedup+QC |
+| `scripts/sync_tours_daily.py` | Dedup post-Flashscore (déjà local — déployer si absent prod) |
+| `deploy/install_ubuntu.sh` | `timedatectl set-timezone Europe/Paris` |
+| `docs/CRONS_SEMAINE.md` | Doc limite `CRON_TZ` Ubuntu |
+
+---
+
 # Hybride COMBO_VOLUME — tiers EV élargis (15 juillet 2026)
 
 | Élément | Détail |

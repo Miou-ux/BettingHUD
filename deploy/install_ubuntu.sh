@@ -63,7 +63,13 @@ if [[ -f "${APP_DIR}/deploy/nginx/bettinghud.conf" ]]; then
   sudo systemctl restart nginx
 fi
 
-echo "[7/7] Crons PROD (deploy/cron/*)…"
+echo "[7/8] Timezone Europe/Paris (cron Ubuntu ignore CRON_TZ pour le scheduling)…"
+if command -v timedatectl >/dev/null 2>&1; then
+  sudo timedatectl set-timezone Europe/Paris || true
+  timedatectl | grep -i "Time zone" || true
+fi
+
+echo "[8/8] Crons PROD (deploy/cron/*)…"
 if [[ -d "${APP_DIR}/deploy/cron" ]]; then
   for f in "${APP_DIR}"/deploy/cron/*; do
     [[ -f "${f}" ]] || continue
@@ -72,8 +78,13 @@ if [[ -d "${APP_DIR}/deploy/cron" ]]; then
   sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-${base}"
   sudo chmod 644 "/etc/cron.d/bettinghud-${base}"
   done
-  # Ancien nom (sans alertes TG) — doublon avec bettinghud-morning-pipeline
-  sudo rm -f /etc/cron.d/bettinghud-morning
+  # Anciens noms / doublons (évite jobs cassés ou double exécution)
+  sudo rm -f \
+    /etc/cron.d/bettinghud-morning \
+    /etc/cron.d/bettinghud-billing \
+    /etc/cron.d/bettinghud-acquisition \
+    /etc/cron.d/bettinghud-ml-weekly \
+    /etc/cron.d/bettinghud-wta-backup
 fi
 
 echo "=== Installation terminée ==="
