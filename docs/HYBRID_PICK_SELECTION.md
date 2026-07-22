@@ -80,7 +80,7 @@ ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/repost_1d1p_toda
 
 ## CourtAlpha (replay historique)
 
-Le replay web (`CourtAlpha/api/services/one_day_one_pick.py`) utilise `select_1d1p_pick` (hybride). Mettre à jour i18n CourtAlpha si les textes critères y sont figés.
+Le replay web (`CourtAlpha/api/services/one_day_one_pick.py`, `top5_replay.py`) rejoue l'hybride sur l'archive DB pour les **jours passés** ; **aujourd'hui** = sélection live uniquement (évite un pick stale type Vacherot 04:30 vs Top 5 vide 05:00).
 
 ## Liens
 

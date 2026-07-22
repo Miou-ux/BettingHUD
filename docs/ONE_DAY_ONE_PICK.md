@@ -35,7 +35,7 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 | Top 5 pool | `scripts/daily_top_proba_store.py` → `collect_hybrid_proba_picks()` |
 | 1D1P live | `scripts/discord_1d1p_core.py` → `load_1d1p_today_pick()` (rang 1) |
 | Unifié | `scripts/pick_modes.py` (`PickMode.ONE_PICK_ONE_DAY`, `TOP5`) |
-| Replay / stats | `CourtAlpha/api/services/one_day_one_pick.py` → à aligner hybride |
+| Replay / stats | `CourtAlpha/api/services/one_day_one_pick.py` — historique DB ; **aujourd'hui = live hybride** (comme Top 5) |
 | Dédup snapshot TE | `scripts/daily_top_proba_store.py` → `dedupe_top_proba_rows_by_match()` |
 
 ---
