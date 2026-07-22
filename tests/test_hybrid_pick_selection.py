@@ -86,6 +86,30 @@ def test_hybrid_rejects_below_77_proba():
     assert picks[0]["player1"] == "Ok"
 
 
+def test_hybrid_rel_fallback_when_primary_empty():
+    """Si rel≥85 ne retourne rien, repli rel≥80."""
+    rows = [
+        _row("A", "X", 0.85, 20.0, rel=80),
+        _row("B", "Y", 0.78, 22.0, rel=70),
+    ]
+    picks = select_hybrid_picks(rows, limit=6, apply_telegram_proba_filter=False)
+    assert len(picks) == 1
+    assert picks[0]["player1"] == "A"
+    assert picks[0].get("hybrid_rel_fallback") is True
+    assert picks[0].get("hybrid_rel_min") == 80
+
+
+def test_hybrid_no_fallback_when_primary_has_picks():
+    rows = [
+        _row("Strong", "X", 0.88, 18.0, rel=90),
+        _row("Weak", "Y", 0.85, 20.0, rel=80),
+    ]
+    picks = select_hybrid_picks(rows, limit=6, apply_telegram_proba_filter=False)
+    assert len(picks) == 1
+    assert picks[0]["player1"] == "Strong"
+    assert "hybrid_rel_fallback" not in picks[0]
+
+
 def test_hybrid_rejects_high_book_gap():
     rows = [
         _row("GapOk", "A", 0.80, 20.0, gap=25.0),

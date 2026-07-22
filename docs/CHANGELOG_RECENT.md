@@ -6,7 +6,15 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
-# Hybride prod — rel≥85 · tri proba · 6/j (22 juillet 2026)
+# Fallback rel≥80 si 0 pick (22 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Règle** | rel≥**85** par défaut ; si **0 pick** ce jour → repli rel≥**80** |
+| **Backtest 2026** | +370 € flat vs +367 (85 seul) · fallback déclenché 1j historique (+Molcan W) |
+| **Live aujourd'hui** | Publie Droguet + Hanfmann (rel=80, en cours) au lieu de 0 pick |
+
+---
 
 | Élément | Détail |
 |---------|--------|

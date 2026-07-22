@@ -16,7 +16,7 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 |-------|--------|
 | Pool | Matchs du jour (Europe/Paris), tournois **majors 250+** main draw |
 | Proba | Favori modèle **≥ 77 %** |
-| Fiabilité | `data_reliability_score ≥ 85` |
+| Fiabilité | `data_reliability_score ≥ 85` (repli **≥ 80** si 0 pick ce jour) |
 | Gap book | **≤ 30 pp** (écart proba modèle vs cote book) |
 | Exclusion | Pas de publication si flag **`duplicate_model_prob`** |
 | **Tier 1** | EV favori **15–35 %** (inclus) — remplissage prioritaire |
@@ -30,7 +30,8 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 | Date | Changement |
 |------|------------|
 | 15 juil. 2026 | COMBO_VOLUME : EV tier1 **15–35 %**, tier2 **30–55 %** |
-| 22 juil. 2026 | **rel 75→85**, **tri EV→proba**, **cap 5→6/j** (backtest 2025+2026 : flat +23 €, Kelly Σ +105 €) |
+| 22 juil. 2026 | **rel 75→85**, **tri EV→proba**, **cap 5→6/j** |
+| 22 juil. 2026 (b) | **Fallback rel≥80** si 0 pick à rel≥85 (+836 € flat 2025+26 vs +834) |
 
 ## Mise (Kelly)
 
