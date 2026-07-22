@@ -11,7 +11,7 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 EV_MIN_PCT = 15.0
 EV_MAX_PCT = 100.0
 PROBA_STANDARD_MIN_FRAC = 0.70
-"""Legacy — la sélection prod utilise la logique hybride challenger (P77 + gap + tri EV)."""
+"""Legacy — sélection hybride prod P77 · rel≥85 · tri proba."""
 
 
 def select_1d1p_pick(
@@ -21,21 +21,22 @@ def select_1d1p_pick(
     ev_max_pct: float = EV_MAX_PCT,
     row_ok=None,
     proba_floor_frac: float = PROBA_STANDARD_MIN_FRAC,
-    hybrid_limit: int = 5,
+    hybrid_limit: int | None = None,
 ) -> dict[str, Any] | None:
     """
-    1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri EV ↓).
+    1D1P prod : meilleur pick de la sélection hybride du jour (rank 1, tri proba ↓).
 
-    Même pool que Top 5 (tier1 EV 15–35 %, complément tier2 EV 30–55 %, max 5/jour).
+    Même pool que Top 5 (tier1 EV 15–35 %, complément tier2 EV 30–55 %, max 6/jour).
     """
     _ = ev_min_pct, ev_max_pct, proba_floor_frac
-    from scripts.hybrid_pick_selection import best_hybrid_pick, select_hybrid_picks
+    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT, best_hybrid_pick, select_hybrid_picks
 
+    cap = HYBRID_DEFAULT_LIMIT if hybrid_limit is None else int(hybrid_limit)
     eligible = [r for r in rows if row_ok(r)] if row_ok is not None else list(rows)
-    picks = select_hybrid_picks(eligible, limit=hybrid_limit)
+    picks = select_hybrid_picks(eligible, limit=cap)
     if not picks:
         return None
-    return best_hybrid_pick(picks, limit=hybrid_limit, apply_telegram_proba_filter=False)
+    return best_hybrid_pick(picks, limit=cap, apply_telegram_proba_filter=False)
 
 
 def load_1d1p_today_pick(
@@ -53,6 +54,7 @@ def load_1d1p_today_pick(
         snapshot_age_min_from_meta,
     )
     from scripts.hybrid_pick_selection import (
+        HYBRID_DEFAULT_LIMIT,
         HYBRID_MIN_PROBA_FRAC,
         HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
@@ -91,7 +93,7 @@ def load_1d1p_today_pick(
 
     hybrid = collect_hybrid_proba_picks(
         matches,
-        limit=5,
+        limit=HYBRID_DEFAULT_LIMIT,
         today_only=True,
         major_only=True,
         calendar_date=cal_day,

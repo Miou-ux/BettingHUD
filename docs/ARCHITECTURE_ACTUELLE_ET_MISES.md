@@ -108,7 +108,7 @@ Un changement de modèle ou de version moteur invalide donc le snapshot.
 - **Build live** : conserve ATP, WTA et **`Challenger`** (exclut ITF/UTR par nom) ;
 - **Live Tracker (défaut)** : main draw uniquement (nom + points ≥ 250 si connus) ;
 - **Toggle « Inclure les Challengers »** : challenger tier (ATP Challenger, WTA 125, `category=Challenger`) ;
-- **Paris du jour / Top 5 / `/top5`** : main draw uniquement — sélection **hybride** (P≥77 %, rel≥75, gap≤30 pp, EV tier1/tier2, tri EV ↓) : voir [[HYBRID_PICK_SELECTION]].
+- **Paris du jour / Top 5 / `/top5`** : main draw uniquement — sélection **hybride** (P≥77 %, rel≥85, gap≤30 pp, EV tier1/tier2, tri proba ↓, max 6/j) : voir [[HYBRID_PICK_SELECTION]].
 
 **Qualité données** — le Live masque les matchs sans source rang/points exploitable pour les deux joueurs, ou dont la référence TML/WTA est **périmée** (> 12 mois par défaut).
 

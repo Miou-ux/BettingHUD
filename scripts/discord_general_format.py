@@ -59,9 +59,9 @@ def build_general_welcome_embed() -> dict[str, Any]:
             {
                 "name": "📊 Top 5",
                 "value": (
-                    "• Up to **5 picks/day** · ATP/WTA majors **250+**\n"
+                    "• Up to **6 picks/day** · ATP/WTA majors **250+**\n"
                     "• Hybrid · proba **≥77%** · EV tier1 **15–35%** + tier2 **30–55%**\n"
-                    "• Reliability **≥75** · book gap **≤30pp** · sorted by **EV** ↓ · "
+                    "• Reliability **≥85** · book gap **≤30pp** · sorted by **proba** ↓ · "
                     "posted **~05:00 Paris** on Telegram " + tg
                 ),
                 "inline": False,

@@ -383,7 +383,7 @@ def collect_daily_top_proba_rows(
 def collect_top5_proba_picks(
     matches: list[dict],
     *,
-    limit: int | None = 5,
+    limit: int | None = None,
     ev_min_frac: float = 0.15,
     ev_max_frac: float = 1.0,
     today_only: bool = True,
@@ -395,7 +395,7 @@ def collect_top5_proba_picks(
 ) -> list[dict]:
     """Favori modèle du jour : EV favori dans la bande, proba > min, tri proba ↓.
 
-    Top 5 : ``major_only=True``, ``limit=5``.
+    Top 5 : ``major_only=True``, ``limit`` défaut = ``HYBRID_DEFAULT_LIMIT`` (6).
     Paris du jour : ``major_only=False``, ``limit=None`` (tournois mineurs inclus).
     """
     cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
@@ -474,14 +474,15 @@ def collect_top5_proba_picks(
 def collect_hybrid_proba_picks(
     matches: list[dict],
     *,
-    limit: int | None = 5,
+    limit: int | None = None,
     today_only: bool = True,
     major_only: bool = True,
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Top 5 / 1D1P prod : sélection hybride P77 + EV tier1/tier2 (max 5/jour)."""
+    """Top 5 / 1D1P prod : sélection hybride P77 + EV tier1/tier2 (max 6/jour)."""
     from scripts.hybrid_pick_selection import (
+        HYBRID_DEFAULT_LIMIT,
         HYBRID_MIN_PROBA_FRAC,
         HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
@@ -502,7 +503,7 @@ def collect_hybrid_proba_picks(
         ml=ml,
     )
     dup = duplicate_model_prob_keys(matches)
-    return select_hybrid_picks(pool, limit=limit, duplicate_keys=dup)
+    return select_hybrid_picks(pool, limit=limit if limit is not None else HYBRID_DEFAULT_LIMIT, duplicate_keys=dup)
 
 
 def collect_daily_ev_band_picks(
@@ -519,7 +520,9 @@ def collect_daily_ev_band_picks(
 ) -> list[dict]:
     """Picks Top 5 prod (sélection hybride). Paramètres EV legacy ignorés."""
     _ = ev_min_frac, ev_max_frac, min_proba_frac
-    cap = 5 if limit is None else limit
+    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
+
+    cap = HYBRID_DEFAULT_LIMIT if limit is None else limit
     return collect_hybrid_proba_picks(
         matches,
         limit=cap,

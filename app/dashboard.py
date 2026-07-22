@@ -7179,12 +7179,14 @@ def _apply_pending_live_tracker_link_from_paris_du_jour() -> None:
 def _collect_top_favorite_action_cards(
     matches: list[dict],
     *,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict]:
     """Top 5 prod (sélection hybride) — aligné Telegram / 1D1P."""
     from scripts.daily_top_proba_store import collect_hybrid_proba_picks
+    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
 
-    picks = collect_hybrid_proba_picks(matches, limit=limit)
+    cap = HYBRID_DEFAULT_LIMIT if limit is None else limit
+    picks = collect_hybrid_proba_picks(matches, limit=cap)
     by_name: dict[str, dict] = {}
     for m in matches:
         p1 = str(m.get("player1") or "").strip()
@@ -7233,8 +7235,8 @@ def _render_top5_proba_action_tab() -> None:
     st.header("🎯 Top 5 hybride · Action rapide")
     st.caption(
         "Top 5 prod (même sélection que Telegram matin / 1D1P) · **P≥77 %** · "
-        "EV tier1 **15–35 %** + tier2 **30–55 %** · fiabilité **≥75** · gap **≤30 pp** · "
-        "tri **EV** ↓ · cote modifiable, mise reco Kelly/Brier."
+        "EV tier1 **15–35 %** + tier2 **30–55 %** · fiabilité **≥85** · gap **≤30 pp** · "
+        "tri **proba** ↓ · cote modifiable, mise reco Kelly/Brier."
     )
     _today_paris = datetime.now(_PARIS_TZ).date().isoformat()
     st.caption(
@@ -7246,6 +7248,8 @@ def _render_top5_proba_action_tab() -> None:
         HYBRID_POOL_EV_MAX_PCT,
         HYBRID_POOL_EV_MIN_PCT,
     )
+
+    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
 
     _hybrid_ev_min = HYBRID_POOL_EV_MIN_PCT / 100.0
     _hybrid_ev_max = HYBRID_POOL_EV_MAX_PCT / 100.0
@@ -7261,24 +7265,24 @@ def _render_top5_proba_action_tab() -> None:
             "Aucun match du jour dans le pool Paris du jour "
             "(snapshot + cotes + rang + ATP/WTA majeur)."
         )
-        st.caption(_format_favorite_ev_funnel_caption(_funnel, top_n=5))
+        st.caption(_format_favorite_ev_funnel_caption(_funnel, top_n=HYBRID_DEFAULT_LIMIT))
         st.caption(
             "Utilisez **Actualiser le Live Tracker** si le snapshot est vide, "
             "ou vérifiez qu'il reste des matchs ATP/WTA du jour."
         )
         return
 
-    cards = _collect_top_favorite_action_cards(matches, limit=5)
+    cards = _collect_top_favorite_action_cards(matches)
     if not cards:
         st.caption(_format_favorite_ev_funnel_caption(
             _funnel,
             ev_min_frac=_hybrid_ev_min,
             ev_max_frac=_hybrid_ev_max,
-            top_n=5,
+            top_n=HYBRID_DEFAULT_LIMIT,
         ))
         if int(_funnel.get("with_metrics") or 0) > 0:
             st.warning(
-                "Aucun pick Top 5 hybride — critères **P≥77 %**, **rel≥75**, **gap≤30 pp**, "
+                "Aucun pick Top 5 hybride — critères **P≥77 %**, **rel≥85**, **gap≤30 pp**, "
                 f"EV pool **15–50 %** : **0** / **{_funnel['with_metrics']}** match(s) avec métriques. "
                 "Consultez **Top probas jour** ou attendez de meilleures cotes."
             )

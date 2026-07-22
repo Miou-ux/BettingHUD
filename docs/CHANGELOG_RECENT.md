@@ -6,6 +6,30 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Hybride prod — rel≥85 · tri proba · 6/j (22 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Changement** | Fiabilité **75 → 85** · tri **EV → proba** · cap **5 → 6 picks/j** |
+| **Inchangé** | P≥77 % · gap≤30 pp · EV tier1 15–35 % · tier2 30–55 % |
+| **Backtest 2026** | flat **+367 €** (+19 vs ancien) · Kelly Σ/mois **+1 176 €** (+103) · hit **84,0 %** |
+| **Backtest 2025** | flat +467 € (+4) · quasi neutre |
+| **Live ≥ 18 mai** | flat +125 € (+16) · Kelly Σ +312 € (+49) · hit **92,8 %** |
+
+### Fichiers
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/hybrid_pick_selection.py` | Constantes prod (`HYBRID_*`) |
+| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks` |
+| `scripts/pick_modes.py` | Web / TG / Discord Top 5 |
+| `scripts/discord_1d1p_core.py` | 1D1P rang 1 |
+| `scripts/telegram_top5_notify.py` | Bot TG matin + critères |
+| `app/dashboard.py` | Onglet Top 5 hybride |
+| `docs/HYBRID_PICK_SELECTION.md` | Référence règles |
+
+---
+
 # Ops — renfort jobs de nuit + alertes (16 juillet 2026)
 
 | Élément | Détail |

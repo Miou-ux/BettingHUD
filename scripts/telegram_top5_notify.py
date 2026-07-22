@@ -8,7 +8,7 @@ Variables d'environnement :
   TELEGRAM_CHAT_ID     — id du chat / canal / groupe
 
 Optionnel :
-  TELEGRAM_TOP5_LIMIT          (defaut 5)
+  TELEGRAM_TOP5_LIMIT          (defaut 6 — aligné HYBRID_DEFAULT_LIMIT)
   TELEGRAM_TOP5_EV_MIN_PCT     (defaut 15)
   TELEGRAM_TOP5_EV_MAX_PCT     (defaut 100)
   TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les picks EV+ /jour)
@@ -41,6 +41,7 @@ os.environ.setdefault("BETTINGHUD_HEADLESS", "1")
 import requests
 
 from scripts.comms_locale import BRAND_NAME, PUBLIC_SITE_URL, comms_disclaimer, tg
+from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
 from scripts.daily_top_proba_store import (
     collect_daily_ev_band_picks,
     collect_paris_du_jour_picks,
@@ -488,7 +489,7 @@ def format_bot_strategy_message() -> str:
             "• <b>Today</b> matches (Europe/Paris), valid odds",
             "• <b>Model favorite</b> = highest model probability",
             "• <b>/top5</b> & <b>/1pick1day</b>: hybrid selection — proba ≥77%, EV tier1 15–35%, "
-            "tier2 30–55% (fill to 5/day), book gap ≤30pp, majors, sorted by EV",
+            "tier2 30–55% (fill to 6/day), book gap ≤30pp, majors, sorted by proba",
             "• <b>/1pick1day</b>: rank 1 of that hybrid Top 5",
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
             "",
@@ -519,7 +520,7 @@ def format_bot_help_message() -> str:
             "  One pick per day · best from hybrid Top 5 (rank 1) · majors.",
             "",
             "<b>/top5</b> · /top",
-            "  Hybrid Top 5 · <b>proba ≥77%</b> · EV tier1 15–35% + tier2 30–55% · gap ≤30pp · tri EV · ATP/WTA 250+.",
+            "  Hybrid Top 5 · <b>proba ≥77%</b> · rel≥85 · EV tier1 15–35% + tier2 30–55% · gap ≤30pp · tri proba · ATP/WTA 250+.",
             "  <b>Bet</b> button under each match.",
             "",
             "<b>/today</b>",
@@ -1126,7 +1127,7 @@ def run_notify(
     *,
     dry_run: bool = False,
     force: bool = False,
-    limit: int = 5,
+    limit: int | None = None,
     ev_min_pct: float = 15.0,
     ev_max_pct: float = 100.0,
     chat_id: str | None = None,
@@ -1144,7 +1145,7 @@ def run_notify(
             )
         send_interactive_load_ack(token=token, chat_id=target_chat)
     picks, _meta, cal_day, pool_n, age_min = _load_top5_context(
-        limit=int(limit),
+        limit=int(limit if limit is not None else HYBRID_DEFAULT_LIMIT),
         ev_min_pct=ev_min_pct,
         ev_max_pct=ev_max_pct,
     )
@@ -1707,7 +1708,7 @@ def main() -> int:
         action="store_true",
         help="Afficher le message /strategie (apercu, sans envoi).",
     )
-    ap.add_argument("--limit", type=int, default=int(os.getenv("TELEGRAM_TOP5_LIMIT", "5")))
+    ap.add_argument("--limit", type=int, default=int(os.getenv("TELEGRAM_TOP5_LIMIT", str(HYBRID_DEFAULT_LIMIT))))
     ap.add_argument(
         "--ev-min-pct",
         type=float,

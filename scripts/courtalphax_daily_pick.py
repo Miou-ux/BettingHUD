@@ -233,9 +233,11 @@ def run_daily_pick(*, dry_run: bool = False, force: bool = False, skip_preflight
                 "preflight": preflight,
             }
 
+    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
+
     picks, _meta, cal_day, pool_n, _age = _load_top5_context(
 
-        limit=5,
+        limit=HYBRID_DEFAULT_LIMIT,
 
         ev_min_pct=15.0,
 

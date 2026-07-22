@@ -14,7 +14,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **1 Day 1 Pick matinal** | **05:00** `od1p_publish` (`TELEGRAM_1D1P_ENABLED=1`) | Pick unique/jour · broadcast · bouton **Bet** · résultats via daemon |
-| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 **hybride** · P≥77 % · rel≥75 · gap≤30 pp · EV tier1/tier2 · tri EV ↓ |
+| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 **hybride** · P≥77 % · rel≥85 · gap≤30 pp · EV tier1/tier2 · tri proba ↓ |
 | **`/1pick1day`** · **`/1d1p`** | Commande ou menu **🎯 1 Day 1 Pick** | Même pick que web · interactif + Bet |
 | **`/jour`** · **`/today`** | Menu **📅 Today** ou commande | Matchs **Aujourd’hui** · **proba > 60 %** · **EV ≥ 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
@@ -211,7 +211,7 @@ Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à to
 | `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
-| `/top5` | `/top` | Top 5 hybride main draw (P≥77 %, rel≥75, gap≤30 pp, EV tiers 15–35 / 30–55 %, tri EV ↓) |
+| `/top5` | `/top` | Top 5 hybride main draw (P≥77 %, rel≥85, gap≤30 pp, EV tiers 15–35 / 30–55 %, tri proba ↓, max 6/j) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 | `/br` | — | Bankroll utilisateur (synthèse) |
 | `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |
@@ -242,7 +242,7 @@ Fichier : `scripts/telegram_access.py`.
 Message statique (`format_bot_strategy_message` dans `telegram_top5_notify.py`) :
 
 1. **Principe** — modèle ML ATP/WTA, edge vs book (EV &gt; 0)
-2. **Sélection** — `/top5` & `/1pick1day` : hybride P≥77 %, rel≥75, gap≤30 pp, EV tier1 15–35 % + tier2 30–55 %, tri EV ↓ (max 5/j) ; `/today` : value bets EV≥15 %
+2. **Sélection** — `/top5` & `/1pick1day` : hybride P≥77 %, rel≥85, gap≤30 pp, EV tier1 15–35 % + tier2 30–55 %, tri proba ↓ (max 6/j) ; `/today` : value bets EV≥15 %
 3. **Mise** — Kelly 0,65, facteur Brier segment, plafond 15 % BR
 4. **Pratique** — vérifier cote réelle, miser ≤ reco Kelly
 

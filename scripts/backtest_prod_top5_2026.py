@@ -3,8 +3,7 @@
 
 Mirrors live PROD hybrid selection (Telegram morning /top5), not Pack1/2 portfolio wrappers:
   - majors ATP/WTA 250+ only
-  - model favorite, proba >= 77 %, EV tier1 15-35 % + tier2 30-55 %, max 5/day
-  - data_reliability_score >= 80 (null excluded — prod strict)
+  - model favorite, proba >= 77 %, EV tier1 15-35 % + tier2 30-55 %, max 6/day, rel >= 85
   - sort proba favori ↓, exclusion duplicate_model_prob
   - no book_gap cap, no surface cap, no confidence filter
 
@@ -56,13 +55,14 @@ from scripts.match_rank_quality import passes_data_reliability_filter  # noqa: E
 from scripts.match_rank_quality import excluded_duplicate_model_prob_from_top5  # noqa: E402
 from scripts.match_rank_quality import duplicate_model_prob_keys  # noqa: E402
 from scripts.ml_model import TennisMLModel  # noqa: E402
+from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT  # noqa: E402
 from scripts.pick_modes import DEFAULT_EV_MAX_PCT, DEFAULT_EV_MIN_PCT  # noqa: E402
 from scripts.telegram_top5_notify import filter_telegram_display_picks  # noqa: E402
 
 PROD_EV_MIN_FRAC = DEFAULT_EV_MIN_PCT / 100.0
 PROD_EV_MAX_FRAC = DEFAULT_EV_MAX_PCT / 100.0
 PROD_MIN_PROBA_FRAC = 0.60
-PROD_LIMIT = 5
+PROD_LIMIT = HYBRID_DEFAULT_LIMIT
 
 BASE_TOP5 = Strategy("BASE top5", "top5", rel_min=80, book_gap_max=None, surface_cap=None, top_n=5)
 LIVE_REPLAY_CSV_2026 = os.path.join(ROOT, "data", "backtest_2026_live_replay.csv")

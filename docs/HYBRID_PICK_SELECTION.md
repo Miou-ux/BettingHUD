@@ -1,29 +1,36 @@
 # Sélection hybride Top 5 / 1 Day 1 Pick
 
-Référence unique pour la logique **hybride** déployée en prod (juillet 2026, **COMBO_VOLUME** tiers 35/55 depuis le 15/07).
+Référence unique pour la logique **hybride** déployée en prod (juillet 2026).
 
 ## Périmètre
 
 | Canal / mode | Fichier d’entrée | Sélection |
 |--------------|------------------|-----------|
-| **Top 5** Telegram matin, `/top5`, API `/api/picks/top5` | `pick_modes.TOP5` → `collect_hybrid_proba_picks` | Jusqu’à **5** picks/jour |
+| **Top 5** Telegram matin, `/top5`, API `/api/picks/top5`, dashboard | `pick_modes.TOP5` → `collect_hybrid_proba_picks` | Jusqu’à **6** picks/jour |
 | **1 Day 1 Pick** TG, Discord, web live | `pick_modes.ONE_PICK_ONE_DAY` → `load_1d1p_today_pick` | **Rang 1** de la même sélection hybride |
 | **Paris du jour** `/jour`, Live Tracker | `pick_modes.TODAY` | **Inchangé** (value bets EV ≥ 15 %, pas hybride) |
 
-## Règles
+## Règles (prod depuis 22 juil. 2026)
 
 | Étape | Règle |
 |-------|--------|
 | Pool | Matchs du jour (Europe/Paris), tournois **majors 250+** main draw |
 | Proba | Favori modèle **≥ 77 %** |
-| Fiabilité | `data_reliability_score ≥ 75` |
+| Fiabilité | `data_reliability_score ≥ 85` |
 | Gap book | **≤ 30 pp** (écart proba modèle vs cote book) |
 | Exclusion | Pas de publication si flag **`duplicate_model_prob`** |
 | **Tier 1** | EV favori **15–35 %** (inclus) — remplissage prioritaire |
-| **Tier 2** | EV favori **30–55 %** (30 exclus, 55 inclus) — complément si &lt; 5 picks tier 1 |
-| Tri | **EV favori** ↓ (tie-break proba, puis nom match) |
+| **Tier 2** | EV favori **30–55 %** (30 exclus, 55 inclus) — complément si &lt; 6 picks tier 1 |
+| Tri | **Proba modèle** ↓ (tie-break EV, puis nom match) |
 | Dédup | `dedupe_top_proba_rows_by_match` (doublons snapshot TE) |
-| Cap | **5** picks/jour (Top 5) ; 1D1P = **pick #1** |
+| Cap | **6** picks/jour (Top 5) ; 1D1P = **pick #1** |
+
+### Historique
+
+| Date | Changement |
+|------|------------|
+| 15 juil. 2026 | COMBO_VOLUME : EV tier1 **15–35 %**, tier2 **30–55 %** |
+| 22 juil. 2026 | **rel 75→85**, **tri EV→proba**, **cap 5→6/j** (backtest 2025+2026 : flat +23 €, Kelly Σ +105 €) |
 
 ## Mise (Kelly)
 
@@ -43,21 +50,17 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026,
 | `scripts/discord_1d1p_core.py` | `load_1d1p_today_pick()` — rang 1 hybride |
 | `scripts/pick_modes.py` | Point d’entrée unifié web / TG / Discord |
 | `scripts/backtest_prod_top5_2026.py` | Backtest aligné prod (`select_prod_top5_day` → hybride) |
-| `scripts/backtest_top5_hybrid_p80_2026.py` | Comparatifs exploratoires (cap 5 vs sans cap) |
 
-## Backtest 2026 (référence juillet 2026)
+## Backtest 2026 (réf. juil. 2026)
 
-| Période | Paris | Hit | Kelly 2026 (réf.) | vs ancien P80 |
-|---------|------:|----:|------------------:|--------------|
-| Année 2026 (P77 challenger) | ~240 | ~88 % | ~+22 k€ | P80 ~+15 k€ |
-| Ancien P80 (réf. juin) | 192 | 87,5 % | flat +296 € | — |
-
-Sans plafond journalier : +9 picks / +3 € sur 2026 — le cap 5/jour est conservé.
+| Config | 2026 flat | 2026 Kelly Σ/mois | Hit 2026 |
+|--------|----------:|------------------:|---------:|
+| Ancien (rel75, tri EV, 5/j) | +348 € | +1 073 € | 83,5 % |
+| **Nouveau prod** | **+367 €** | **+1 176 €** | **84,0 %** |
 
 ## Déploiement prod
 
 ```bash
-# Depuis le poste (rsync / deploy habituel)
 scp scripts/hybrid_pick_selection.py scripts/daily_top_proba_store.py \
     scripts/discord_1d1p_core.py scripts/pick_modes.py \
     scripts/telegram_top5_notify.py scripts/discord_general_format.py \
@@ -75,7 +78,7 @@ ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/repost_1d1p_toda
 
 ## CourtAlpha (replay historique)
 
-Le replay web (`CourtAlpha/api/services/one_day_one_pick.py`) utilise `select_1d1p_pick` (hybride). **UI** : i18n, SEO, méthodo et `selection.description` API alignés juillet 2026.
+Le replay web (`CourtAlpha/api/services/one_day_one_pick.py`) utilise `select_1d1p_pick` (hybride). Mettre à jour i18n CourtAlpha si les textes critères y sont figés.
 
 ## Liens
 

@@ -2,7 +2,7 @@
 
 Modes :
   - ``1pick1day`` : meilleur pick de la sélection hybride du jour (même logique que Top 5, rank 1)
-  - ``top5``      : sélection hybride P≥77 %, EV tier1/tier2, gap≤30 pp, tri EV, max 5, majeurs
+  - ``top5``      : sélection hybride P≥77 %, EV tier1/tier2, gap≤30 pp, tri proba, max 6, majeurs
   - ``today``     : Live Tracker / Today's Pick — value bets EV ≥15 %, majeurs + mineurs
 """
 from __future__ import annotations
@@ -148,6 +148,7 @@ def load_picks(
         )
 
     if mode_enum == PickMode.TOP5:
+        from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
         from scripts.daily_top_proba_store import collect_daily_ev_band_picks
         from scripts.telegram_top5_notify import filter_telegram_display_picks
 
@@ -163,7 +164,7 @@ def load_picks(
         )
         if channel_enum == Channel.TELEGRAM:
             picks = filter_telegram_display_picks(picks)
-        cap = int(limit) if limit is not None and limit > 0 else 5
+        cap = int(limit) if limit is not None and limit > 0 else HYBRID_DEFAULT_LIMIT
         picks = picks[:cap]
         return _store_telegram_cache(
             PickLoadResult(

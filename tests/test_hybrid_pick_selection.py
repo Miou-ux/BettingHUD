@@ -34,7 +34,7 @@ def _row(
     }
 
 
-def test_hybrid_tier1_sorted_by_ev():
+def test_hybrid_tier1_sorted_by_proba():
     rows = [
         _row("Low", "T2", 0.95, 40.0),
         _row("High", "T1", 0.88, 20.0),
@@ -42,9 +42,9 @@ def test_hybrid_tier1_sorted_by_ev():
     ]
     picks = select_hybrid_picks(rows, limit=2, apply_telegram_proba_filter=False)
     assert len(picks) == 2
-    assert picks[0]["player1"] == "Mid"
+    assert picks[0]["player1"] == "High"
     assert picks[0]["hybrid_tier"] == "tier1"
-    assert picks[1]["player1"] == "High"
+    assert picks[1]["player1"] == "Mid"
 
 
 def test_hybrid_tier2_fills_when_tier1_sparse():
