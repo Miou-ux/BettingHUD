@@ -96,11 +96,13 @@ def build_daily_pick_embed(pick: dict[str, Any], *, calendar_date: str) -> dict[
 
 
 def build_no_pick_embed(*, calendar_date: str, pool_size: int) -> dict[str, Any]:
+    from scripts.hybrid_pick_selection import hybrid_criteria_plain
+
     return {
         "title": f"🎾 1 Day 1 Pick — {format_calendar_date_label(calendar_date)}",
         "description": (
             "No value pick today.\n\n"
-            "Rules: rank 1 of hybrid Top 5 (proba ≥77% · rel≥85 · EV tier1/tier2 · gap ≤30pp · sorted by proba) · main draw 250+."
+            f"Rules: {hybrid_criteria_plain(english=True, rank1=True)}"
         ),
         "color": _COLOR_NOPICK,
         "fields": [

@@ -7233,10 +7233,11 @@ def _render_top5_proba_action_tab() -> None:
     if st.session_state.pop("_live_link_success_toast", False):
         st.toast("Filtre appliqué — onglet Live Tracker ouvert.", icon="↪")
     st.header("🎯 Top 5 hybride · Action rapide")
+    from scripts.hybrid_pick_selection import hybrid_criteria_plain
+
     st.caption(
-        "Top 5 prod (même sélection que Telegram matin / 1D1P) · **P≥77 %** · "
-        "EV tier1 **15–35 %** + tier2 **30–55 %** · fiabilité **≥85** · gap **≤30 pp** · "
-        "tri **proba** ↓ · cote modifiable, mise reco Kelly/Brier."
+        hybrid_criteria_plain(english=False)
+        + " · cote modifiable, mise reco Kelly/Brier."
     )
     _today_paris = datetime.now(_PARIS_TZ).date().isoformat()
     st.caption(
@@ -7282,8 +7283,8 @@ def _render_top5_proba_action_tab() -> None:
         ))
         if int(_funnel.get("with_metrics") or 0) > 0:
             st.warning(
-                "Aucun pick Top 5 hybride — critères **P≥77 %**, **rel≥85**, **gap≤30 pp**, "
-                f"EV pool **15–50 %** : **0** / **{_funnel['with_metrics']}** match(s) avec métriques. "
+                f"Aucun pick Top 5 hybride — {hybrid_criteria_plain(english=False)} · "
+                f"**0** / **{_funnel['with_metrics']}** match(s) avec métriques. "
                 "Consultez **Top probas jour** ou attendez de meilleures cotes."
             )
         else:

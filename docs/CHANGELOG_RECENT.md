@@ -13,6 +13,19 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **Règle** | rel≥**85** par défaut ; si **0 pick** ce jour → repli rel≥**80** |
 | **Backtest 2026** | +370 € flat vs +367 (85 seul) · fallback déclenché 1j historique (+Molcan W) |
 | **Live aujourd'hui** | Publie Droguet + Hanfmann (rel=80, en cours) au lieu de 0 pick |
+| **Pool** | `collect_top5_proba_picks` inclut rel≥80 ; `select_hybrid_picks` tente rel≥85 puis repli |
+
+### Fichiers (fallback)
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/hybrid_pick_selection.py` | `select_hybrid_picks`, `hybrid_criteria_*` |
+| `scripts/daily_top_proba_store.py` | Pool candidats rel≥80 avant sélection |
+| `scripts/discord_1d1p_core.py` | Comptage pool 1D1P aligné |
+| `app/dashboard.py` | Onglet Top 5 — texte via `hybrid_criteria_plain` |
+| `scripts/telegram_top5_notify.py` | `/help`, `/strategy` |
+| `scripts/discord_1d1p_format.py` | Embed no-pick 1D1P |
+| `scripts/discord_general_format.py` | Présentation canal Discord |
 
 ---
 

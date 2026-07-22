@@ -47,7 +47,7 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 | Module | Rôle |
 |--------|------|
 | `scripts/hybrid_pick_selection.py` | `select_hybrid_picks()`, constantes, ligne critères Telegram |
-| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks()` — construction pool + appel hybride |
+| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks()` — pool rel≥80, sélection rel≥85→80 |
 | `scripts/discord_1d1p_core.py` | `load_1d1p_today_pick()` — rang 1 hybride |
 | `scripts/pick_modes.py` | Point d’entrée unifié web / TG / Discord |
 | `scripts/backtest_prod_top5_2026.py` | Backtest aligné prod (`select_prod_top5_day` → hybride) |
@@ -58,6 +58,7 @@ Référence unique pour la logique **hybride** déployée en prod (juillet 2026)
 |--------|----------:|------------------:|---------:|
 | Ancien (rel75, tri EV, 5/j) | +348 € | +1 073 € | 83,5 % |
 | **Nouveau prod** | **+367 €** | **+1 176 €** | **84,0 %** |
+| **+ fallback rel≥80** | **+370 €** | **+1 179 €** | **84,0 %** |
 
 ## Déploiement prod
 

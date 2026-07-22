@@ -61,7 +61,7 @@ def build_general_welcome_embed() -> dict[str, Any]:
                 "value": (
                     "• Up to **6 picks/day** · ATP/WTA majors **250+**\n"
                     "• Hybrid · proba **≥77%** · EV tier1 **15–35%** + tier2 **30–55%**\n"
-                    "• Reliability **≥85** · book gap **≤30pp** · sorted by **proba** ↓ · "
+                    "• Reliability **≥85** (fallback **≥80** if empty) · book gap **≤30pp** · sorted by **proba** ↓ · "
                     "posted **~05:00 Paris** on Telegram " + tg
                 ),
                 "inline": False,

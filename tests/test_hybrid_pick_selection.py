@@ -118,3 +118,12 @@ def test_hybrid_rejects_high_book_gap():
     picks = select_hybrid_picks(rows, limit=5, apply_telegram_proba_filter=False)
     assert len(picks) == 1
     assert picks[0]["player1"] == "GapOk"
+
+
+def test_hybrid_criteria_plain_mentions_fallback():
+    from scripts.hybrid_pick_selection import hybrid_criteria_plain
+
+    fr = hybrid_criteria_plain(english=False)
+    en = hybrid_criteria_plain(english=True)
+    assert "repli ≥ 80" in fr
+    assert "fallback >= 80" in en
