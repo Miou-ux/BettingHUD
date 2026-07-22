@@ -483,8 +483,8 @@ def collect_hybrid_proba_picks(
     """Top 5 / 1D1P prod : sélection hybride P77 + EV tier1/tier2 (max 6/jour)."""
     from scripts.hybrid_pick_selection import (
         HYBRID_DEFAULT_LIMIT,
+        HYBRID_FALLBACK_RELIABILITY_SCORE,
         HYBRID_MIN_PROBA_FRAC,
-        HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
         HYBRID_POOL_EV_MIN_PCT,
         select_hybrid_picks,
@@ -498,7 +498,7 @@ def collect_hybrid_proba_picks(
         today_only=today_only,
         major_only=major_only,
         min_proba_frac=HYBRID_MIN_PROBA_FRAC,
-        min_reliability_score=HYBRID_MIN_RELIABILITY_SCORE,
+        min_reliability_score=HYBRID_FALLBACK_RELIABILITY_SCORE,
         calendar_date=calendar_date,
         ml=ml,
     )

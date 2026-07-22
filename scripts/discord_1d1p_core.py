@@ -55,8 +55,8 @@ def load_1d1p_today_pick(
     )
     from scripts.hybrid_pick_selection import (
         HYBRID_DEFAULT_LIMIT,
+        HYBRID_FALLBACK_RELIABILITY_SCORE,
         HYBRID_MIN_PROBA_FRAC,
-        HYBRID_MIN_RELIABILITY_SCORE,
         HYBRID_POOL_EV_MAX_PCT,
         HYBRID_POOL_EV_MIN_PCT,
         count_hybrid_pool_candidates,
@@ -82,7 +82,7 @@ def load_1d1p_today_pick(
         today_only=True,
         major_only=True,
         min_proba_frac=HYBRID_MIN_PROBA_FRAC,
-        min_reliability_score=HYBRID_MIN_RELIABILITY_SCORE,
+        min_reliability_score=HYBRID_FALLBACK_RELIABILITY_SCORE,
         calendar_date=cal_day,
     )
     dup = duplicate_model_prob_keys(matches)
