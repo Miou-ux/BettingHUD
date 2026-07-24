@@ -156,3 +156,28 @@ sudo systemctl restart courtalpha-api bettinghud-daemon
 ```
 
 Voir aussi : [[OPS_PROD_DEPANNAGE]] · [[PUBLISHED_PICKS_REPLAY]].
+
+---
+
+## 9. Réconciliation ledger vs replay Kelly
+
+Script : `scripts/reconcile_portfolio_tracking.py`
+
+Compare les lignes `portfolio_daily_bets` avec un **rejeu Kelly frais** (`kelly_replay_metrics`) sur les mêmes picks.
+
+```bash
+py -3 scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift
+py -3 scripts/reconcile_portfolio_tracking.py --json
+```
+
+| Flag | Rôle |
+|------|------|
+| `--refresh` | Sync settlement + recompute ledger avant compare |
+| `--tol-eur` | Tolérance P/L (défaut 0,02 €) |
+| `--fail-on-drift` | Exit code 1 si écart (cron / CI) |
+
+Cron suggéré (après daemon, ~06:30 Paris) :
+
+```cron
+30 6 * * * cd /opt/bettinghud && ./venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift >> data/logs/reconcile_portfolio.log 2>&1
+```

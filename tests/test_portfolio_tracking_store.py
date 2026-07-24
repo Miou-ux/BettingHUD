@@ -74,6 +74,11 @@ class PortfolioTrackingStoreTests(unittest.TestCase):
             global_test_brier = 0.18
 
         recompute_portfolio_ledger(self.conn, MODE_1D1P, ml=_FakeMl())
+
+        from scripts.portfolio_tracking_store import reconcile_portfolio_ledger
+
+        rep = reconcile_portfolio_ledger(self.conn, MODE_1D1P, ml=_FakeMl())
+        self.assertTrue(rep["ok"], rep)
         rows = load_portfolio_replay_picks(self.conn, MODE_1D1P)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "Gagné")

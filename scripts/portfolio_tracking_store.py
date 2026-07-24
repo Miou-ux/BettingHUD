@@ -577,6 +577,144 @@ def build_portfolio_curve_and_summary(
     return curve, summary
 
 
+def _pick_reconcile_key(row: dict[str, Any]) -> tuple[str, int, str]:
+    cal = str(row.get("calendar_date") or "")[:10]
+    rank = int(row.get("bet_rank") or row.get("rank") or 0)
+    name = str(row.get("match_name") or row.get("fav_player") or "").strip().lower()
+    return cal, rank, name
+
+
+def reconcile_portfolio_ledger(
+    conn: sqlite3.Connection,
+    mode: str,
+    *,
+    ml: Any | None = None,
+    tol_eur: float = 0.02,
+) -> dict[str, Any]:
+    """Compare ledger ``portfolio_daily_bets`` vs ``kelly_replay_metrics`` frais."""
+    cfg = get_tracking_config(conn, mode)
+    if not cfg:
+        return {"mode": mode, "ok": True, "skipped": True, "reason": "no_tracking_config"}
+
+    if ml is None:
+        from scripts.live_replay_engine import load_ml
+
+        ml = load_ml()
+
+    ledger_rows = conn.execute(
+        """
+        SELECT * FROM portfolio_daily_bets
+        WHERE mode = ? AND calendar_date >= ?
+        ORDER BY calendar_date ASC, bet_rank ASC
+        """,
+        (mode, cfg["start_date"]),
+    ).fetchall()
+    ledger_picks = [portfolio_bet_to_pick_row(dict(r)) for r in ledger_rows]
+
+    _, ledger_summary = build_portfolio_curve_and_summary(conn, mode)
+
+    sim_picks = []
+    for p in ledger_picks:
+        row = dict(p)
+        row.pop("stake_frac", None)
+        row.pop("stake_eur", None)
+        row.pop("profit_eur", None)
+        row.pop("bankroll_before_eur", None)
+        row.pop("bankroll_after_eur", None)
+        row.pop("replay_net_profit_eur", None)
+        row.pop("theoretical_stake_frac", None)
+        sim_picks.append(row)
+
+    from scripts.live_replay_engine import kelly_replay_metrics
+
+    enriched, _, sim_summary = kelly_replay_metrics(
+        sim_picks,
+        ml,
+        bankroll_start=float(cfg["bankroll_start_eur"]),
+    )
+
+    sim_by_key = {_pick_reconcile_key(p): p for p in enriched}
+    mismatches: list[dict[str, Any]] = []
+
+    for led in ledger_picks:
+        key = _pick_reconcile_key(led)
+        sim = sim_by_key.get(key)
+        if sim is None:
+            mismatches.append(
+                {
+                    "key": key,
+                    "field": "missing_in_sim",
+                    "ledger": led.get("profit_eur"),
+                    "sim": None,
+                }
+            )
+            continue
+
+        st = str(led.get("status") or "")
+        settled = _is_settled_status(st)
+        led_profit = led.get("profit_eur")
+        sim_profit = sim.get("replay_net_profit_eur")
+
+        if settled:
+            if led_profit is None and sim_profit is not None:
+                mismatches.append(
+                    {
+                        "key": key,
+                        "field": "profit_eur",
+                        "ledger": led_profit,
+                        "sim": sim_profit,
+                        "delta": None,
+                    }
+                )
+            elif led_profit is not None and sim_profit is None:
+                mismatches.append(
+                    {
+                        "key": key,
+                        "field": "profit_eur",
+                        "ledger": led_profit,
+                        "sim": sim_profit,
+                        "delta": None,
+                    }
+                )
+            elif led_profit is not None and sim_profit is not None:
+                delta = abs(float(led_profit) - float(sim_profit))
+                if delta > tol_eur:
+                    mismatches.append(
+                        {
+                            "key": key,
+                            "field": "profit_eur",
+                            "ledger": round(float(led_profit), 2),
+                            "sim": round(float(sim_profit), 2),
+                            "delta": round(delta, 2),
+                        }
+                    )
+
+    summary_diff: dict[str, Any] = {}
+    for field in ("bankroll_final_eur", "net_profit_eur", "total_staked_eur"):
+        lv = float(ledger_summary.get(field) or 0)
+        sv = float(sim_summary.get(field) or 0)
+        if abs(lv - sv) > tol_eur:
+            summary_diff[field] = {
+                "ledger": round(lv, 2),
+                "sim": round(sv, 2),
+                "delta": round(abs(lv - sv), 2),
+            }
+
+    ok = not mismatches and not summary_diff
+    return {
+        "mode": mode,
+        "ok": ok,
+        "n_picks": len(ledger_picks),
+        "n_mismatches": len(mismatches),
+        "mismatches": mismatches,
+        "summary_ledger": ledger_summary,
+        "summary_sim": sim_summary,
+        "summary_diff": summary_diff,
+        "tracking_start_date": cfg["start_date"],
+        "bankroll_start_eur": cfg["bankroll_start_eur"],
+    }
+
+
 def refresh_portfolio_tracking(conn: sqlite3.Connection, *, mode: str | None = None) -> None:
     """Sync settlement + recompute — appelé par daemon / publish."""
     sync_portfolio_settlement(conn, mode=mode)

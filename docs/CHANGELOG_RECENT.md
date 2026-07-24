@@ -20,7 +20,13 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 Doc : `docs/PORTFOLIO_TRACKING.md`.
 
-### Fichiers
+### Réconciliation
+
+| Script | Rôle |
+|--------|------|
+| `scripts/reconcile_portfolio_tracking.py` | Compare ledger vs `kelly_replay_metrics` ; `--fail-on-drift` pour cron |
+
+---
 
 | Fichier | Rôle |
 |---------|------|
