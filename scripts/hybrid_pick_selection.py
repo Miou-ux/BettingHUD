@@ -162,12 +162,8 @@ def select_hybrid_picks(
     """Sélection prod HYB P75+P80-all (sans plafond par défaut)."""
     from scripts.hyb_p75_p80_selection import select_hyb_p75_p80_all
 
-    out = select_hyb_p75_p80_all(candidates, duplicate_keys=duplicate_keys, limit=limit)
-    if apply_telegram_proba_filter:
-        from scripts.telegram_top5_notify import filter_telegram_display_picks
-
-        out = filter_telegram_display_picks(out, apply_proba_filter=True)
-    return out
+    _ = apply_telegram_proba_filter  # legacy kwarg — HYB pur partout (plus de filtre TG)
+    return select_hyb_p75_p80_all(candidates, duplicate_keys=duplicate_keys, limit=limit)
 
 
 def select_hybrid_picks_legacy(

@@ -37,7 +37,6 @@ from scripts.published_picks_store import (
     mark_published_no_picks,
     save_published_picks,
 )
-from scripts.telegram_top5_notify import filter_telegram_display_picks
 from scripts.tournament_tier import is_major_atp_wta_by_name
 
 
@@ -95,8 +94,7 @@ def _resolve_1d1p_from_tg_log(conn, cal: str, db_path: str) -> dict | None:
 
 def _select_top5_for_day(pool: list[dict], *, limit: int | None) -> list[dict]:
     dup = duplicate_model_prob_keys(pool)
-    picks = select_hyb_p75_p80_all(pool, duplicate_keys=dup, limit=limit)
-    return filter_telegram_display_picks(picks)
+    return select_hyb_p75_p80_all(pool, duplicate_keys=dup, limit=limit)
 
 
 def _select_1d1p_for_day(

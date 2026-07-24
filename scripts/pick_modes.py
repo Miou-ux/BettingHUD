@@ -149,7 +149,6 @@ def load_picks(
 
     if mode_enum == PickMode.TOP5:
         from scripts.daily_top_proba_store import collect_daily_ev_band_picks
-        from scripts.telegram_top5_notify import filter_telegram_display_picks
 
         matches, meta, ml = _load_matches_cached()
         picks = collect_daily_ev_band_picks(
@@ -161,8 +160,6 @@ def load_picks(
             calendar_date=cal_day,
             ml=ml,
         )
-        if channel_enum == Channel.TELEGRAM:
-            picks = filter_telegram_display_picks(picks)
         return _store_telegram_cache(
             PickLoadResult(
                 picks=picks,

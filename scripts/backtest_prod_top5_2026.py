@@ -57,7 +57,6 @@ from scripts.match_rank_quality import duplicate_model_prob_keys  # noqa: E402
 from scripts.ml_model import TennisMLModel  # noqa: E402
 from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT  # noqa: E402
 from scripts.pick_modes import DEFAULT_EV_MAX_PCT, DEFAULT_EV_MIN_PCT  # noqa: E402
-from scripts.telegram_top5_notify import filter_telegram_display_picks  # noqa: E402
 
 PROD_EV_MIN_FRAC = DEFAULT_EV_MIN_PCT / 100.0
 PROD_EV_MAX_FRAC = DEFAULT_EV_MAX_PCT / 100.0
@@ -317,7 +316,7 @@ def main() -> int:
     pack1_all = picks_pack_style(csv_rows, PACK1) + picks_pack_style(live_rows, PACK1)
 
     print(f"=== PROD Top {day_limit} — backtest {year} (real production logic) ===")
-    print("Code path: pick_modes.TOP5 → collect_daily_ev_band_picks → filter_telegram_display_picks")
+    print("Code path: pick_modes.TOP5 → collect_daily_ev_band_picks → select_hyb_p75_p80_all (HYB pur)")
     print(
         "Filters: majors 250+, proba>60%, EV +15%→+100%, reliability>=80 (null excluded), "
         f"sort proba↓, max {day_limit}/day"

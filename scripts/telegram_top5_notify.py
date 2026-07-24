@@ -13,8 +13,8 @@ Optionnel :
   TELEGRAM_TOP5_EV_MAX_PCT     (defaut 100)
   TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les picks EV+ /jour)
   TELEGRAM_JOUR_EV_MIN_PCT     (defaut 15 = EV >= 15 %)
-  TELEGRAM_MIN_PROBA_PCT       (defaut 60 = proba modèle strictement > 60 %)
-  TELEGRAM_MIN_EV_PCT          (defaut 15 = EV >= 15 %, filtre affichage)
+  TELEGRAM_MIN_PROBA_PCT       (filtre /today uniquement — proba > 60 %)
+  TELEGRAM_MIN_EV_PCT          (filtre /today uniquement — EV >= 15 %)
   TELEGRAM_JOURCHALLENGER_EV_MIN_PCT  (defaut 15)
   TELEGRAM_JOURCHALLENGER_EV_MAX_PCT  (defaut 100)
   TELEGRAM_TOP5_AFTER_MORNING  (pipeline matin)
@@ -125,7 +125,7 @@ def filter_telegram_display_picks(
     min_ev_pct: float | None = None,
     apply_proba_filter: bool = True,
 ) -> list[dict]:
-    """Filtre affichage Telegram : gates publics + EV / proba optionnels."""
+    """Filtre affichage Telegram /today (value bets) — pas utilisé pour /top (HYB pur)."""
     from scripts.match_rank_quality import passes_public_pick_gates
 
     mp = _telegram_min_proba_pct() if min_proba_pct is None else float(min_proba_pct)

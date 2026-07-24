@@ -151,7 +151,7 @@ Alias : `/majors`.
 
 Fonction : `load_live_tracker_major_day_picks` dans `scripts/live_tracker_picks.py`.
 
-### 3.4 `/top5` et envoi matinal — HYB P75+P80-all
+### 3.4 `/top` et envoi matinal — HYB P75+P80-all (pur)
 
 Aligné prod juillet 2026 — voir **`docs/HYBRID_PICK_SELECTION.md`**.
 
@@ -164,7 +164,7 @@ Aligné prod juillet 2026 — voir **`docs/HYBRID_PICK_SELECTION.md`**.
 | Tri | Proba modèle ↓ (union dédupliquée) |
 | Limite | **Pas de plafond** sur l’union (souvent ~3–8 picks/j) |
 
-Fonctions : `collect_hybrid_proba_picks` · `select_hybrid_picks` → `select_hyb_p75_p80_all` (+ `filter_telegram_display_picks` pour Telegram).
+Fonctions : `collect_hybrid_proba_picks` · `select_hybrid_picks` → `select_hyb_p75_p80_all` (HYB pur — **sans** `filter_telegram_display_picks`).
 
 **1 Day 1 Pick** : **meilleure proba fav** dans l’union (`hyb_p75_p80_best_proba`) — [[ONE_DAY_ONE_PICK]].
 
@@ -210,7 +210,7 @@ Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à to
 | `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
-| `/top` | `/top5` | HYB P75+P80-all main draw — **tous les picks** passant les filtres TG |
+| **`/top`** | `/top5` | **HYB P75+P80-all** — union complète, identique web/backtest/replay |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 | `/br` | — | Bankroll utilisateur (synthèse) |
 | `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |

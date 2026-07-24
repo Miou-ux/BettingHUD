@@ -83,11 +83,7 @@ from scripts.courtalphax_post_log import (  # noqa: E402
 from scripts.telegram_bet_flow import kelly_stake_for_pick  # noqa: E402
 
 from scripts.telegram_top5_notify import (  # noqa: E402
-
     _load_top5_context,
-
-    filter_telegram_display_picks,
-
 )
 
 from scripts.courtalphax_preflight import check_courtalphax_preflight  # noqa: E402
@@ -233,21 +229,13 @@ def run_daily_pick(*, dry_run: bool = False, force: bool = False, skip_preflight
                 "preflight": preflight,
             }
 
-    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
+    from scripts.telegram_top5_notify import _load_top5_context  # noqa: E402
 
     picks, _meta, cal_day, pool_n, _age = _load_top5_context(
-
-        limit=HYBRID_DEFAULT_LIMIT,
-
+        limit=None,
         ev_min_pct=15.0,
-
         ev_max_pct=100.0,
-
     )
-
-    picks = filter_telegram_display_picks(picks)
-
-
 
     conn = sqlite3.connect("data/bettinghud.db")
 
