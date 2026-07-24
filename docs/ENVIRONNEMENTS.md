@@ -59,7 +59,22 @@ Détail serveur : [[DEPLOY_SERVEUR]].
 |----------|---------|------|
 | `data/bettinghud.db` | Copie de travail locale | Base **référence** production |
 | `models/xgb_model_tml_v47.pkl` | Entraînement / essais | Bundle **actif** après validation PREPROD |
+| `models/candidates/*.pkl` | Candidats WTA delta / v48 | **Non déployés** tant que `promote` explicite |
+| `models/.ml_tour_routing_preprod.json` | Routage ATP/WTA niveau 1 | **Absent** — routage circuit **jamais** actif en PROD |
 | `data/cache/` (snapshots) | Rebuild fréquent | Rebuild pipeline matin + manuel |
+
+### Exploration routage ATP / WTA (PREPROD seulement)
+
+Le split circuit (v47 ATP + candidat WTA) est une **expérimentation locale** — le serveur PROD ignore toujours `BETTINGHUD_ML_TOUR_ROUTING` grâce au garde-fou `BETTINGHUD_ENV=prod`.
+
+Workflow typique :
+
+1. Pipeline delta WTA : `py -3 scripts/run_wta_delta_preprod.py`
+2. Activer routage : `ml_bundle_cli.py tour-routing on` + `$env:BETTINGHUD_ML_TOUR_ROUTING = "1"`
+3. Smoke + replay : `preprod_tour_routing_smoke.py`, `shadow_wta_candidate_replay.py`, `preprod_tour_routing_replay.py`
+4. Désactiver : `ml_bundle_cli.py tour-routing off`
+
+Référence complète : [[ML_BUNDLE_ROLLBACK]] · [[CHANGELOG_RECENT]] § exploration split.
 
 ### Promouvoir un modèle PREPROD → PROD
 
@@ -69,6 +84,18 @@ Après retrain validé en local (Brier, audit snapshot) :
 scp O:\Miouppy\Documents\BettingHUD\models\xgb_model_tml_v47.pkl bettinghud:/opt/bettinghud/models/
 ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/rebuild_live_projection.py"
 ```
+
+**Important** : si une API sœur (ex. `CourtAlpha` sous `/opt/courtalpha`) importe `scripts.ml_model.TennisMLModel`, le bundle actif doit être résolu **depuis le repo BettingHUD**, pas depuis le répertoire courant du service appelant. Le correctif de juillet 2026 dans `scripts/ml_model.py` couvre ce cas.
+
+### Déploiement d’un script métier non tracké par défaut
+
+Certaines routes CourtAlpha dépendent directement de scripts BettingHUD hors `app/` (ex. `scripts/backtest_prod_top5_2026.py` pour `/api/picks/top5-replay`). Si un script existe localement mais pas sur `/opt/bettinghud/scripts/`, une page PROD peut tomber en **500** malgré un dashboard BettingHUD sain.
+
+Checklist :
+
+1. Vérifier la présence serveur : `ssh bettinghud "ls /opt/bettinghud/scripts/<script>.py"`
+2. Si absent, copier explicitement : `scp ... bettinghud:/opt/bettinghud/scripts/`
+3. Redémarrer le service consommateur (`courtalpha-api`, `bettinghud-dashboard`, etc.)
 
 ### Copier la base PROD → PREPROD (debug uniquement)
 

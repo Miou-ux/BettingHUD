@@ -421,6 +421,8 @@ def collect_top5_proba_picks(
         if ev_f < float(ev_min_frac) or ev_f > float(ev_max_frac):
             continue
         ensure_match_reliability_scored(m, duplicate_keys=dup_prob_keys)
+        if not match_has_rank_points_source(m):
+            continue
         if not passes_public_pick_gates(
             m,
             duplicate_keys=dup_prob_keys,
@@ -480,30 +482,25 @@ def collect_hybrid_proba_picks(
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Top 5 / 1D1P prod : sélection hybride P77 + EV tier1/tier2 (max 6/jour)."""
-    from scripts.hybrid_pick_selection import (
-        HYBRID_DEFAULT_LIMIT,
-        HYBRID_FALLBACK_RELIABILITY_SCORE,
-        HYBRID_MIN_PROBA_FRAC,
-        HYBRID_POOL_EV_MAX_PCT,
-        HYBRID_POOL_EV_MIN_PCT,
-        select_hybrid_picks,
-    )
+    """Top 5 / 1D1P prod : HYB P75+P80-all."""
+    from scripts.hyb_p75_p80_selection import P80_MIN_PROBA_FRAC, P80_MIN_REL
+    from scripts.hybrid_pick_selection import select_hybrid_picks
 
     pool = collect_top5_proba_picks(
         matches,
         limit=None,
-        ev_min_frac=HYBRID_POOL_EV_MIN_PCT / 100.0,
-        ev_max_frac=HYBRID_POOL_EV_MAX_PCT / 100.0,
+        ev_min_frac=0.0,
+        ev_max_frac=1.0,
         today_only=today_only,
         major_only=major_only,
-        min_proba_frac=HYBRID_MIN_PROBA_FRAC,
-        min_reliability_score=HYBRID_FALLBACK_RELIABILITY_SCORE,
+        min_proba_frac=0.73,
+        min_reliability_score=P80_MIN_REL,
         calendar_date=calendar_date,
         ml=ml,
     )
     dup = duplicate_model_prob_keys(matches)
-    return select_hybrid_picks(pool, limit=limit if limit is not None else HYBRID_DEFAULT_LIMIT, duplicate_keys=dup)
+    cap = limit if limit is not None and int(limit) > 0 else None
+    return select_hybrid_picks(pool, limit=cap, duplicate_keys=dup)
 
 
 def collect_daily_ev_band_picks(
@@ -518,14 +515,11 @@ def collect_daily_ev_band_picks(
     calendar_date: str | None = None,
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
-    """Picks Top 5 prod (sélection hybride). Paramètres EV legacy ignorés."""
+    """Picks Top 5 prod (HYB P75+P80-all). Paramètres EV legacy ignorés."""
     _ = ev_min_frac, ev_max_frac, min_proba_frac
-    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
-
-    cap = HYBRID_DEFAULT_LIMIT if limit is None else limit
     return collect_hybrid_proba_picks(
         matches,
-        limit=cap,
+        limit=limit,
         today_only=today_only,
         major_only=major_only,
         calendar_date=calendar_date,

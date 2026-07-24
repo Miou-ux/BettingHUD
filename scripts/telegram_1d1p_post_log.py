@@ -84,36 +84,14 @@ def log_post(
 
 
 def fetch_daily_pick_keys_pending_result(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Picks publiés sur Telegram mais sans message résultat."""
+    """Picks publiés sur Telegram sans résultat (résolution via match publié)."""
+    from scripts.od1p_pick_key import fetch_od1p_pending_results
+
     ensure_telegram_1d1p_schema(conn)
-    rows = conn.execute(
-        """
-        SELECT d.calendar_date, d.pick_key
-        FROM telegram_1d1p_posts d
-        WHERE d.post_type = 'daily_pick'
-          AND d.pick_key IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM telegram_1d1p_posts r
-            WHERE r.post_type = 'result' AND r.pick_key = d.pick_key
-          )
-        ORDER BY d.calendar_date ASC
-        """
-    ).fetchall()
+    pending = fetch_od1p_pending_results(conn, posts_table="telegram_1d1p_posts")
     out: list[dict[str, Any]] = []
-    for _cal, pick_key in rows:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM daily_top_proba_picks
-            WHERE pick_key = ?
-            LIMIT 1
-            """,
-            (pick_key,),
-        ).fetchone()
-        if not row:
-            continue
-        pick = dict(row)
-        if str(pick.get("status") or "En cours") == "En cours":
-            continue
+    for post_pick_key, pick in pending:
+        pick = dict(pick)
+        pick["_od1p_post_pick_key"] = post_pick_key
         out.append(pick)
     return out

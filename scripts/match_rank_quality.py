@@ -36,13 +36,19 @@ MODEL_ODDS_INCONSISTENT_PENALTY = max(
 )
 
 # Incrémenter si la formule de score change (force rescore hors snapshot rebuild).
-RELIABILITY_SCORE_VERSION = 4
+RELIABILITY_SCORE_VERSION = 5
 
 # Repli ``stats_engine.get_player_stats`` / preview live quand aucune source rang/points.
 _DEFAULT_STATS_RANK = 100
 _DEFAULT_STATS_PTS = 1000.0
 _DEFAULT_STATS_SOURCES = frozenset(
-    {"no_ranking_source", "preview_default", "fast_default", "cache_default"}
+    {
+        "no_ranking_source",
+        "preview_default",
+        "fast_default",
+        "cache_default",
+        "rank_points_default",
+    }
 )
 
 
@@ -68,6 +74,27 @@ def match_both_default_player_stats(match: dict) -> bool:
     return is_default_player_stats(match.get("p1_stats")) and is_default_player_stats(
         match.get("p2_stats")
     )
+
+
+def match_has_any_default_player_stats(match: dict) -> bool:
+    """True si au moins un joueur a le repli rank=100 / pts=1000 (features modèle non fiables)."""
+    if not isinstance(match, dict):
+        return False
+    return is_default_player_stats(match.get("p1_stats")) or is_default_player_stats(
+        match.get("p2_stats")
+    )
+
+
+def _default_model_stats_flags(row: dict | None) -> bool:
+    """Pick matérialisé : flags fiabilité indiquant stats modèle par défaut."""
+    if not isinstance(row, dict):
+        return False
+    flags = row.get("data_reliability_flags")
+    if isinstance(flags, list):
+        blob = "|".join(str(x) for x in flags if x)
+    else:
+        blob = str(flags or "")
+    return "p1_default_model_stats" in blob or "p2_default_model_stats" in blob
 
 
 def book_gap_pp_from_favorite(p_model_fav: object, odd_fav: object) -> float | None:
@@ -168,7 +195,7 @@ def match_rank_exclude_reason(
     """Raison d'exclusion UI (None = éligible)."""
     if not isinstance(match, dict):
         return "invalid_match"
-    if match_both_default_player_stats(match):
+    if match_has_any_default_player_stats(match):
         return "default_stats_placeholder"
     p1 = match.get("p1_stats") or {}
     p2 = match.get("p2_stats") or {}
@@ -309,8 +336,12 @@ def passes_public_pick_gates(
     """Filtre unifié prod : fiabilité ≥ seuil, pas de duplicate proba, caps cohérents."""
     if not isinstance(match_or_pick, dict):
         return False
+    if match_has_any_default_player_stats(match_or_pick):
+        return False
     # Pick déjà matérialisé depuis un match snapshot (pas de feature_snapshot embarqué).
     if _is_materialized_pick_row(match_or_pick):
+        if _default_model_stats_flags(match_or_pick):
+            return False
         if not passes_data_reliability_filter(match_or_pick, min_score=min_score):
             return False
         if excluded_duplicate_model_prob_from_top5(
@@ -467,7 +498,10 @@ def match_data_reliability_score(
         elif src == "tennisexplorer_estimate":
             score -= 15
             flags.append(f"{side}_te_estimate")
-        if _player_rank_placeholder(st):
+        if is_default_player_stats(st):
+            score -= 20
+            flags.append(f"{side}_default_model_stats")
+        elif _player_rank_placeholder(st):
             score -= 20
             flags.append(f"{side}_rank_placeholder")
         if not player_rank_stats_fresh(st, anchor_date=anchor):

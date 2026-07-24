@@ -14,7 +14,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **1 Day 1 Pick matinal** | **05:00** `od1p_publish` (`TELEGRAM_1D1P_ENABLED=1`) | Pick unique/jour · broadcast · bouton **Bet** · résultats via daemon |
-| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | Top 5 **hybride** · P≥77 % · rel≥85 (repli ≥80 si vide) · gap≤30 pp · EV tier1/tier2 · tri proba ↓ |
+| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | **HYB P75+P80-all** · P75-TIER (p≥73 %, rel≥80, EV 6–55 %, max 6) + compléments P≥80 % rel≥80 · tri proba ↓ |
 | **`/1pick1day`** · **`/1d1p`** | Commande ou menu **🎯 1 Day 1 Pick** | Même pick que web · interactif + Bet |
 | **`/jour`** · **`/today`** | Menu **📅 Today** ou commande | Matchs **Aujourd’hui** · **proba > 60 %** · **EV ≥ 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
@@ -25,7 +25,7 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | **`/br`**, **`/brstats`** | Commandes Telegram | Bankroll utilisateur (synthèse / stats avancées) |
 | **Parier (inline)** | Bouton sous chaque pick **`/jour`**, **`/top5`** et **Top 5 matinal** | Cote perso → Kelly → confirmation → `user_bets` (`tracker_source=telegram_bet`) |
 
-> **Historique web CourtAlpha (juillet 2026)** : pour aligner l'historique avec les publications Telegram/Discord du matin, le replay Top5/1D1P prend la capture JSONL append-only de référence du jour (première capture `>= 05:00` Paris), puis synchronise le statut via SQL.
+> **Historique web CourtAlpha (juillet 2026)** : table **`daily_published_picks`** — snapshot Top5/1D1P **au moment de l’envoi Telegram** (~05:00). Le replay historique lit cette table ; repli hybride si absent. Détail : [[PUBLISHED_PICKS_REPLAY]].
 
 ```mermaid
 flowchart LR
@@ -151,25 +151,22 @@ Alias : `/majors`.
 
 Fonction : `load_live_tracker_major_day_picks` dans `scripts/live_tracker_picks.py`.
 
-### 3.4 `/top5` et envoi matinal — sélection hybride
+### 3.4 `/top5` et envoi matinal — HYB P75+P80-all
 
-Aligné backtest juillet 2026 — voir **`docs/HYBRID_PICK_SELECTION.md`**.
+Aligné prod juillet 2026 — voir **`docs/HYBRID_PICK_SELECTION.md`**.
 
 | Critère | Valeur |
 |---------|--------|
 | Tournois | **Majors ATP/WTA** uniquement (`is_major_atp_wta_match`) |
-| Proba | Favori modèle **≥ 77 %** |
-| EV tier 1 | **+15 % → +35 %** (inclus) — remplissage prioritaire |
-| EV tier 2 | **+30 % → +55 %** (30 exclus, 55 inclus) — complément si &lt; 6 picks |
-| Fiabilité | `data_reliability_score ≥ 85` (repli **≥ 80** si 0 pick ce jour) |
-| Gap book | **≤ 30 pp** |
+| **Base P75-TIER** | p≥73 %, rel≥80, EV **6–55 %**, tier_fill, **max 6** |
+| **Compléments P80** | p≥80 %, rel≥80, **EV libre** (matchs non déjà pris) |
 | **Exclusion dup** | Pas de publication si **`duplicate_model_prob`** |
-| Tri | Proba modèle ↓ |
-| Limite | **6** matchs (`TELEGRAM_TOP5_LIMIT`) |
+| Tri | Proba modèle ↓ (union dédupliquée) |
+| Limite | **Pas de plafond** sur l’union (souvent ~3–8 picks/j) |
 
-Fonctions : `collect_hybrid_proba_picks` · `select_hybrid_picks` (+ `filter_telegram_display_picks` pour Telegram).
+Fonctions : `collect_hybrid_proba_picks` · `select_hybrid_picks` → `select_hyb_p75_p80_all` (+ `filter_telegram_display_picks` pour Telegram).
 
-**1 Day 1 Pick** : même sélection, **rang 1** uniquement ([[ONE_DAY_ONE_PICK]]).
+**1 Day 1 Pick** : **meilleure proba fav** dans l’union (`hyb_p75_p80_best_proba`) — [[ONE_DAY_ONE_PICK]].
 
 ### 3.5 Parier depuis Telegram (`/jour`, `/top5`, Top 5 matinal)
 
@@ -211,7 +208,7 @@ Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à to
 | `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
-| `/top5` | `/top` | Top 5 hybride main draw (P≥77 %, rel≥85 repli ≥80, gap≤30 pp, EV tiers 15–35 / 30–55 %, tri proba ↓, max 6/j) |
+| `/top5` | `/top` | HYB P75+P80-all main draw (P75-TIER + P≥80 rel≥80, tri proba ↓) |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 | `/br` | — | Bankroll utilisateur (synthèse) |
 | `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |
@@ -242,7 +239,7 @@ Fichier : `scripts/telegram_access.py`.
 Message statique (`format_bot_strategy_message` dans `telegram_top5_notify.py`) :
 
 1. **Principe** — modèle ML ATP/WTA, edge vs book (EV &gt; 0)
-2. **Sélection** — `/top5` & `/1pick1day` : hybride P≥77 %, rel≥85 (repli ≥80 si vide), gap≤30 pp, EV tier1 15–35 % + tier2 30–55 %, tri proba ↓ (max 6/j) ; `/today` : value bets EV≥15 %
+2. **Sélection** — `/top5` & `/1pick1day` : **HYB P75+P80-all** (P75-TIER + P≥80 rel≥80, tri proba ↓ ; 1D1P = meilleure proba) ; `/today` : value bets EV≥15 %
 3. **Mise** — Kelly 0,65, facteur Brier segment, plafond 15 % BR
 4. **Pratique** — vérifier cote réelle, miser ≤ reco Kelly
 
@@ -469,7 +466,7 @@ python scripts/telegram_bot_daemon.py --once
 🎾 BettingHUD · Top 5 Hybride
 
 📅 ven. 29 mai 2026 · Europe/Paris
-📊 P≥77% · EV tier1 15–35% + tier2 30–55% · gap≤30pp · tri EV ↓
+📊 HYB P75+P80-all · P75-TIER + P≥80 rel≥80 · tri proba ↓
 🌅 Envoi matinal automatique
 ...
 ```

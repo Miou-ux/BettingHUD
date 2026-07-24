@@ -26,6 +26,7 @@ from scripts.wta_sackmann_common import (  # noqa: E402
     build_name_to_player_id,
     build_rank_history,
     build_te_cache_rank_maps,
+    build_wta_players_last_index,
     fill_ranks_if_missing,
     load_current_rankings_map,
     parse_yyyymmdd,
@@ -73,6 +74,7 @@ def backfill_ranks(
     name_to_id = build_name_to_player_id(all_df)
     current_rankings = load_current_rankings_map(work_dir, db_path=db_path)
     te_by_pid, te_by_name = build_te_cache_rank_maps(work_dir, name_to_id)
+    wta_last_index = build_wta_players_last_index(work_dir)
 
     rows_touched = 0
     ranks_filled = 0
@@ -98,6 +100,7 @@ def backfill_ranks(
                 name_to_id=name_to_id,
                 te_rank_by_pid=te_by_pid,
                 te_rank_by_name=te_by_name,
+                wta_players_last_index=wta_last_index,
             )
             if filled <= 0:
                 continue

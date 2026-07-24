@@ -69,7 +69,7 @@ Automatiquement en **mode daemon** (sans ouvrir Streamlit) :
 
 | Source | Rôle |
 |--------|------|
-| **`portfolio_results_daemon`** | Passe toutes les **10 min** : capture snapshot + sync résultats |
+| **`portfolio_results_daemon`** | Passe toutes les **10 min** : capture snapshot + sync résultats + **scrape TE si picks algo ouverts** (même sans pari portefeuille) |
 | **`live_data_daemon`** (dashboard ouvert) | Passe toutes les **15 min** après refresh snapshot |
 
 Autres déclencheurs :
@@ -146,10 +146,33 @@ Script d’audit RG existant : `scripts/audit_rg_top5_portfolio.py` (opportunit�
 
 Comme `algo_opportunities` :
 
-- daemon portefeuille (`portfolio_results_daemon.py`) ;
-- après chaque upsert.
+- daemon portefeuille (`portfolio_results_daemon.py`) — scrape TE si **paris portefeuille** ou **picks algo ouverts (7 j)** ;
+- `_sync_algo_report()` : `sync_daily_top_proba_from_results()` + `sync_algo_opportunities_from_results()` ;
+- cache `match_results` (TE + Sackmann).
 
-Résolution via cache `match_results` → `status` **Gagné/Perdu** sur le **favori modèle** (`fav_won`).
+Voir `docs/PUBLISHED_PICKS_REPLAY.md` pour le flux complet et les garde-fous perf (fenêtre 7 j, refresh TE forcé 2 j).
+
+---
+
+## Replay web CourtAlpha (picks publiés)
+
+| Besoin | Table |
+|--------|--------|
+| Pool top-15 / settlement | `daily_top_proba_picks` |
+| **Ce qui a été envoyé au public** | `daily_published_picks` (`mode` = `top5` ou `1d1p`) |
+
+- Écriture : `telegram_top5_notify` / `telegram_1d1p_notify` à chaque envoi prod.
+- Lecture : `scripts/published_picks_store.py` → CourtAlpha `top5_replay` / `one_day_one_pick`.
+- **Aujourd’hui** : toujours live hybride, pas l’archive.
+
+Backfill manuel : `scripts/backfill_published_picks.py --date YYYY-MM-DD`.
+
+---
+
+## Résolution (détail)
+
+- `_sync_algo_report()` après chaque upsert TE / settlement.
+- Résolution via cache `match_results` → `status` **Gagné/Perdu** sur le **favori modèle** (`fav_won`).
 
 ---
 
@@ -161,7 +184,11 @@ Résolution via cache `match_results` → `status` **Gagné/Perdu** sur le **fav
 | `scripts/bets_db.py` | Schéma SQLite + upsert + sync résultats |
 | `scripts/persist_daily_top_proba.py` | CLI manuel |
 | `scripts/backfill_daily_top_proba.py` | Récupération historique JSONL + algo_opportunities |
+| `scripts/published_picks_store.py` | Archive Top5/1D1P à la publication TG |
+| `scripts/backfill_published_picks.py` | Backfill manuel picks publiés |
 | `tests/test_daily_top_proba_store.py` | Tests collecte |
+| `tests/test_open_algo_resolution.py` | Scrape algo sans portefeuille |
+| `tests/test_published_picks_store.py` | Replay historique publié |
 
 ---
 

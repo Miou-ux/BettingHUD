@@ -1,90 +1,37 @@
-# Sélection hybride Top 5 / 1 Day 1 Pick
+# Hybride prod — HYB P75+P80-all
 
-Référence unique pour la logique **hybride** déployée en prod (juillet 2026).
+Sélection **Top 5**, **Telegram**, **dashboard**, **1D1P** (juillet 2026).
 
-## Périmètre
+## Règle
 
-| Canal / mode | Fichier d’entrée | Sélection |
-|--------------|------------------|-----------|
-| **Top 5** Telegram matin, `/top5`, API `/api/picks/top5`, dashboard | `pick_modes.TOP5` → `collect_hybrid_proba_picks` | Jusqu’à **6** picks/jour |
-| **1 Day 1 Pick** TG, Discord, web live | `pick_modes.ONE_PICK_ONE_DAY` → `load_1d1p_today_pick` | **Rang 1** de la même sélection hybride |
-| **Paris du jour** `/jour`, Live Tracker | `pick_modes.TODAY` | **Inchangé** (value bets EV ≥ 15 %, pas hybride) |
+1. **Base P75-TIER** (max **6** picks/jour)  
+   - p ≥ **73 %**, rel ≥ **80**, EV **6–55 %**, gap ≤ **35 pp**, Kelly ≥ **2 %**  
+   - tier fill (EV **15–35 %** d’abord) · tri score · BGF off  
 
-## Règles (prod depuis 22 juil. 2026)
+2. **Compléments P80** (sans plafond)  
+   - p ≥ **80 %**, rel ≥ **80**, **sans filtre EV**  
+   - matchs **non déjà** pris par P75-TIER  
 
-| Étape | Règle |
-|-------|--------|
-| Pool | Matchs du jour (Europe/Paris), tournois **majors 250+** main draw |
-| Proba | Favori modèle **≥ 77 %** |
-| Fiabilité | `data_reliability_score ≥ 85` (repli **≥ 80** si 0 pick ce jour) |
-| Gap book | **≤ 30 pp** (écart proba modèle vs cote book) |
-| Exclusion | Pas de publication si flag **`duplicate_model_prob`** |
-| **Tier 1** | EV favori **15–35 %** (inclus) — remplissage prioritaire |
-| **Tier 2** | EV favori **30–55 %** (30 exclus, 55 inclus) — complément si &lt; 6 picks tier 1 |
-| Tri | **Proba modèle** ↓ (tie-break EV, puis nom match) |
-| Dédup | `dedupe_top_proba_rows_by_match` (doublons snapshot TE) |
-| Cap | **6** picks/jour (Top 5) ; 1D1P = **pick #1** |
+3. **Union** dédoublonnée, tri **proba modèle ↓**, rang 1…N  
 
-### Historique
+## 1 Day 1 Pick
 
-| Date | Changement |
-|------|------------|
-| 15 juil. 2026 | COMBO_VOLUME : EV tier1 **15–35 %**, tier2 **30–55 %** |
-| 22 juil. 2026 | **rel 75→85**, **tri EV→proba**, **cap 5→6/j** |
-| 22 juil. 2026 (b) | **Fallback rel≥80** si 0 pick à rel≥85 (+836 € flat 2025+26 vs +834) |
-
-## Mise (Kelly)
-
-| Paramètre | Valeur prod |
-|-----------|-------------|
-| Fraction Kelly | **0,65** (`scripts/kelly_policy.py`) |
-| Ajustement | × `max(0, 1 − Brier_segment / 0,25)` |
-| Plafond | **15 %** de la liquidité / BR disponible par pari |
-| Code live | `bets_db._algo_kelly_stake_frac` |
+Meilleur pick = **proba fav max** dans l’union (`best_1d1p_pick_from_hyb`), pas le premier rang de la liste.
 
 ## Code
 
-| Module | Rôle |
-|--------|------|
-| `scripts/hybrid_pick_selection.py` | `select_hybrid_picks()`, constantes, ligne critères Telegram |
-| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks()` — pool rel≥80, sélection rel≥85→80 |
-| `scripts/discord_1d1p_core.py` | `load_1d1p_today_pick()` — rang 1 hybride |
-| `scripts/pick_modes.py` | Point d’entrée unifié web / TG / Discord |
-| `scripts/backtest_prod_top5_2026.py` | Backtest aligné prod (`select_prod_top5_day` → hybride) |
+| Fichier | Rôle |
+|---------|------|
+| `scripts/hyb_p75_p80_selection.py` | Logique P75+P80 |
+| `scripts/hybrid_pick_selection.py` | `select_hybrid_picks()` → prod |
+| `scripts/hybrid_pick_selection.py` | `select_hybrid_picks_legacy()` → ancien P77 |
+| `scripts/daily_top_proba_store.py` | `collect_hybrid_proba_picks()` |
+| `scripts/discord_1d1p_core.py` | `load_1d1p_today_pick()` |
 
-## Backtest 2026 (réf. juil. 2026)
+## Legacy (backtests comparatifs)
 
-| Config | 2026 flat | 2026 Kelly Σ/mois | Hit 2026 |
-|--------|----------:|------------------:|---------:|
-| Ancien (rel75, tri EV, 5/j) | +348 € | +1 073 € | 83,5 % |
-| **Nouveau prod** | **+367 €** | **+1 176 €** | **84,0 %** |
-| **+ fallback rel≥80** | **+370 €** | **+1 179 €** | **84,0 %** |
+Ancienne règle P77 · rel≥85 (repli 80) · EV tier1 15–35 % + tier2 30–55 % · max 6 :
 
-## Déploiement prod
-
-```bash
-scp scripts/hybrid_pick_selection.py scripts/daily_top_proba_store.py \
-    scripts/discord_1d1p_core.py scripts/pick_modes.py \
-    scripts/telegram_top5_notify.py scripts/discord_general_format.py \
-    bettinghud:/opt/bettinghud/scripts/
-scp app/dashboard.py bettinghud:/opt/bettinghud/app/
-
-ssh bettinghud "sudo systemctl restart courtalpha-api bettinghud-telegram-bot bettinghud-dashboard"
+```python
+from scripts.hybrid_pick_selection import select_hybrid_picks_legacy
 ```
-
-**Republication 1D1P** (si changement en cours de journée) :
-
-```bash
-ssh bettinghud "cd /opt/bettinghud && ./venv/bin/python scripts/repost_1d1p_today.py --apply"
-```
-
-## CourtAlpha (replay historique)
-
-Le replay web (`CourtAlpha/api/services/one_day_one_pick.py`, `top5_replay.py`) rejoue l'hybride sur l'archive DB pour les **jours passés** ; **aujourd'hui** = sélection live uniquement (évite un pick stale type Vacherot 04:30 vs Top 5 vide 05:00).
-
-## Liens
-
-- [[TELEGRAM_TOP5]] — bot et canaux
-- [[ONE_DAY_ONE_PICK]] — 1D1P publication
-- [[DATA_RELIABILITY]] — fiabilité et `duplicate_model_prob`
-- [[BACKTEST_PROD_TOP5_2025_2026]] — méthodo backtest

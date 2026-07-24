@@ -27,13 +27,14 @@ from scripts.tennis_data_results import _refresh_if_stale  # noqa: E402
 from scripts.wta_sackmann_common import (  # noqa: E402
     DEFAULT_CUTOFF,
     SACKMANN_COLUMNS,
+    apply_player_enrichment,
     build_age_lookup,
+    build_name_to_player_id,
+    build_player_profile_lookup,
     build_score,
     dedup_key,
     empty_row,
-    estimate_age,
     norm_name_key,
-    next_synthetic_player_id,
     parse_yyyymmdd,
     round_to_sackmann,
     surface_norm,
@@ -88,7 +89,15 @@ def _is_qual_itf(tier: str) -> bool:
     return "ITF" in t or t.startswith("Q") or "QUAL" in t
 
 
-def _row_from_tennis_data(row: pd.Series, *, age_lookup: dict, player_ids: set[int], cutoff: int) -> dict | None:
+def _row_from_tennis_data(
+    row: pd.Series,
+    *,
+    age_lookup: dict,
+    name_to_id: dict[str, int],
+    profiles: dict[int, dict],
+    player_ids: set[int],
+    cutoff: int,
+) -> dict | None:
     td = parse_yyyymmdd(row.get("Date"))
     if td is None or td < cutoff:
         return None
@@ -113,14 +122,16 @@ def _row_from_tennis_data(row: pd.Series, *, age_lookup: dict, player_ids: set[i
         out["tourney_level"] = TennisMLModel._infer_tourney_level_from_name(tourney_name)
     out["tourney_date"] = td
     out["match_num"] = pd.NA
-    wid = next_synthetic_player_id(player_ids)
-    lid = next_synthetic_player_id(player_ids)
-    out["winner_id"] = wid
-    out["loser_id"] = lid
     out["winner_name"] = winner
     out["loser_name"] = loser
-    out["winner_age"] = estimate_age(winner, td, age_lookup)
-    out["loser_age"] = estimate_age(loser, td, age_lookup)
+    apply_player_enrichment(
+        out,
+        tourney_date=td,
+        name_to_id=name_to_id,
+        profiles=profiles,
+        age_lookup=age_lookup,
+        player_ids=player_ids,
+    )
     out["score"] = build_score(row)
     bo = row.get("Best of")
     out["best_of"] = int(bo) if pd.notna(bo) else 3
@@ -144,8 +155,10 @@ def sync_delta(
         raise FileNotFoundError(work_dir)
 
     existing_keys = _load_existing_keys(work_dir)
-    age_lookup = build_age_lookup(_load_socle_matches_for_ages(work_dir))
-    player_ids: set[int] = set()
+    socle = _load_socle_matches_for_ages(work_dir)
+    age_lookup = build_age_lookup(socle)
+    name_to_id, profiles = build_player_profile_lookup(socle)
+    player_ids: set[int] = set(name_to_id.values()) | set(profiles.keys())
     for p in work_dir.glob("*.csv"):
         try:
             df = pd.read_csv(p, usecols=["winner_id", "loser_id"], low_memory=False)
@@ -168,7 +181,14 @@ def sync_delta(
         except FileNotFoundError:
             continue
         for _, row in tdf.iterrows():
-            rec = _row_from_tennis_data(row, age_lookup=age_lookup, player_ids=player_ids, cutoff=cutoff)
+            rec = _row_from_tennis_data(
+                row,
+                age_lookup=age_lookup,
+                name_to_id=name_to_id,
+                profiles=profiles,
+                player_ids=player_ids,
+                cutoff=cutoff,
+            )
             if rec is None:
                 continue
             k = dedup_key(rec)

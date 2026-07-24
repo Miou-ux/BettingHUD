@@ -1,9 +1,9 @@
-"""Sélection hybride prod — Top 5 et 1 Day 1 Pick.
+"""Sélection hybride prod — Top 5, 1D1P, Telegram.
 
-Tier 1 : proba modèle ≥ 77 %, fiabilité data ≥ 85, EV favori 15–35 % (inclus).
-Tier 2 : complément si < ``limit`` picks, EV 30–55 % (exclus 30, inclus 55).
-Tri proba modèle ↓ (puis EV), cap book_gap ≤ 30 pp, dédup match, exclusion duplicate_model_prob.
-Rel≥85 par défaut ; si 0 pick ce jour, repli rel≥80.
+Prod (juillet 2026) : **HYB P75+P80-all** — P75-TIER (p≥73 %, rel≥80, EV 6–55 %,
+tier fill, max 6) + compléments **P≥80 % rel≥80** (sans filtre EV), tri proba ↓.
+
+Legacy EV tier1/tier2 (P77) : voir ``select_hybrid_picks_legacy`` si besoin replay.
 """
 from __future__ import annotations
 
@@ -155,14 +155,29 @@ def _select_hybrid_picks_at_rel(
 def select_hybrid_picks(
     candidates: list[dict],
     *,
+    limit: int | None = None,
+    duplicate_keys: set | None = None,
+    apply_telegram_proba_filter: bool = False,
+) -> list[dict]:
+    """Sélection prod HYB P75+P80-all (sans plafond par défaut)."""
+    from scripts.hyb_p75_p80_selection import select_hyb_p75_p80_all
+
+    out = select_hyb_p75_p80_all(candidates, duplicate_keys=duplicate_keys, limit=limit)
+    if apply_telegram_proba_filter:
+        from scripts.telegram_top5_notify import filter_telegram_display_picks
+
+        out = filter_telegram_display_picks(out, apply_proba_filter=True)
+    return out
+
+
+def select_hybrid_picks_legacy(
+    candidates: list[dict],
+    *,
     limit: int | None = HYBRID_DEFAULT_LIMIT,
     duplicate_keys: set | None = None,
     apply_telegram_proba_filter: bool = False,
 ) -> list[dict]:
-    """Sélection hybride pour un jour (candidats déjà normalisés).
-
-    rel≥85 par défaut ; si 0 pick, repli rel≥80 (``HYBRID_FALLBACK_RELIABILITY_SCORE``).
-    """
+    """Ancienne hybride P77 tier1/tier2 (backtests comparatifs)."""
     out = _select_hybrid_picks_at_rel(
         candidates,
         rel_min=HYBRID_MIN_RELIABILITY_SCORE,
@@ -188,72 +203,52 @@ def select_hybrid_picks(
 
 
 def best_hybrid_pick(candidates: list[dict], **kwargs) -> dict | None:
+    from scripts.hyb_p75_p80_selection import best_1d1p_pick_from_hyb
+
     picks = select_hybrid_picks(candidates, **kwargs)
-    if not picks:
-        return None
-    out = dict(picks[0])
-    out["selection_mode"] = "hybrid_best"
-    return out
+    return best_1d1p_pick_from_hyb(picks)
 
 
 def count_hybrid_pool_candidates(candidates: list[dict], *, duplicate_keys: set | None = None) -> int:
-    return sum(1 for r in candidates if hybrid_pool_ok(r, duplicate_keys=duplicate_keys))
+    from scripts.hyb_p75_p80_selection import count_hyb_pool_candidates
+
+    return count_hyb_pool_candidates(candidates, duplicate_keys=duplicate_keys)
 
 
 def hybrid_criteria_line(*, english: bool | None = None) -> str:
     from scripts.comms_locale import comms_is_english
+    from scripts.hyb_p75_p80_selection import P80_MIN_PROBA_FRAC, P80_MIN_REL
 
     en = comms_is_english() if english is None else bool(english)
-    rel = HYBRID_MIN_RELIABILITY_SCORE
-    fb = HYBRID_FALLBACK_RELIABILITY_SCORE
-    rel_note = f"reliability ≥{rel} (fallback ≥{fb} if empty)" if fb < rel else f"reliability ≥{rel}"
-    _sort = str(HYBRID_SORT).lower()
-    sort_label = "EV" if _sort == "ev" else ("Proba" if _sort == "proba" else str(HYBRID_SORT))
     if en:
         return (
-            f"📊 Model proba <code>≥{HYBRID_MIN_PROBA_FRAC * 100:.0f}%</code> · "
-            f"EV tier1 <code>{HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f}%</code> · "
-            f"tier2 <code>{HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f}%</code> "
-            f"(fill to {HYBRID_DEFAULT_LIMIT}/day) · {rel_note} · "
-            f"book gap ≤{HYBRID_BOOK_GAP_MAX_PP:.0f}pp · sorted by {sort_label} ↓"
+            f"📊 <b>HYB P75+P80</b> · P75-TIER (p≥73%, rel≥80, EV 6–55%, max 6) + "
+            f"add-ons p≥{P80_MIN_PROBA_FRAC * 100:.0f}% rel≥{P80_MIN_REL} (any EV) · sorted by proba ↓"
         )
     return (
-        f"📊 Proba <code>≥{HYBRID_MIN_PROBA_FRAC * 100:.0f}%</code> · "
-        f"EV tier1 <code>{HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f}%</code> · "
-        f"tier2 <code>{HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f}%</code> "
-        f"(complément max {HYBRID_DEFAULT_LIMIT}/jour) · fiabilité ≥{rel} (repli ≥{fb} si vide) · "
-        f"écart cote ≤{HYBRID_BOOK_GAP_MAX_PP:.0f} pp · tri {sort_label} ↓"
+        f"📊 <b>HYB P75+P80</b> · P75-TIER (p≥73 %, rel≥80, EV 6–55 %, max 6) + "
+        f"compléments p≥{P80_MIN_PROBA_FRAC * 100:.0f} % rel≥{P80_MIN_REL} (EV libre) · tri proba ↓"
     )
 
 
 def hybrid_criteria_plain(*, english: bool | None = None, rank1: bool = False) -> str:
     """Texte critères hybride sans balises Telegram (web / API CourtAlpha)."""
     from scripts.comms_locale import comms_is_english
+    from scripts.hyb_p75_p80_selection import P80_MIN_PROBA_FRAC, P80_MIN_REL
 
     en = comms_is_english() if english is None else bool(english)
-    rel = HYBRID_MIN_RELIABILITY_SCORE
-    fb = HYBRID_FALLBACK_RELIABILITY_SCORE
-    rel_note = f"reliability ≥{rel} (fallback ≥{fb} if empty)" if fb < rel else f"reliability ≥{rel}"
-    _sort = str(HYBRID_SORT).lower()
-    sort_label = "EV" if _sort == "ev" else ("Proba" if _sort == "proba" else str(HYBRID_SORT))
-    p_pct = f"{HYBRID_MIN_PROBA_FRAC * 100:.0f}"
     if en:
         core = (
-            f"model proba >= {p_pct}%, data reliability >= {rel} "
-            f"(fallback >= {fb} if no picks), "
-            f"book gap <= {HYBRID_BOOK_GAP_MAX_PP:.0f}pp, "
-            f"EV tier 1: {HYBRID_TIER1_EV_MIN_PCT:.0f}-{HYBRID_TIER1_EV_MAX_PCT:.0f}% "
-            f"then tier 2: {HYBRID_TIER2_EV_MIN_PCT:.0f}-{HYBRID_TIER2_EV_MAX_PCT:.0f}% "
-            f"(fill to {HYBRID_DEFAULT_LIMIT}/day), sorted by {sort_label} down, majors 250+."
+            f"P75-TIER (p≥73%, rel≥80, EV 6–55%, tier fill, max 6/day) plus "
+            f"P≥{P80_MIN_PROBA_FRAC * 100:.0f}% rel≥{P80_MIN_REL} add-ons (no EV cap), "
+            f"deduped by match, sorted by model proba down, majors 250+."
         )
-        prefix = "Rank 1 of hybrid Top 5 selection: " if rank1 else "Hybrid Top 5: "
+        prefix = "Rank 1 by highest proba in HYB P75+P80: " if rank1 else "HYB P75+P80-all: "
         return prefix + core
     core = (
-        f"proba modèle ≥ {p_pct} %, fiabilité ≥ {rel} (repli ≥ {fb} si vide), "
-        f"écart cote ≤ {HYBRID_BOOK_GAP_MAX_PP:.0f} pp, "
-        f"EV tier 1 : {HYBRID_TIER1_EV_MIN_PCT:.0f}–{HYBRID_TIER1_EV_MAX_PCT:.0f} % "
-        f"puis tier 2 : {HYBRID_TIER2_EV_MIN_PCT:.0f}–{HYBRID_TIER2_EV_MAX_PCT:.0f} % "
-        f"(complément max {HYBRID_DEFAULT_LIMIT}/jour), tri {sort_label} ↓, majeurs 250+."
+        f"P75-TIER (p≥73 %, rel≥80, EV 6–55 %, tiers, max 6/j) + "
+        f"compléments P≥{P80_MIN_PROBA_FRAC * 100:.0f} % rel≥{P80_MIN_REL} (EV libre), "
+        f"dédoublonnés par match, tri proba ↓, majeurs 250+."
     )
-    prefix = "Rang 1 de la sélection hybride Top 5 : " if rank1 else "Top 5 hybride : "
+    prefix = "Rang 1 = meilleure proba HYB P75+P80 : " if rank1 else "HYB P75+P80-all : "
     return prefix + core

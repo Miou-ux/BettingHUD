@@ -36,7 +36,8 @@ Champ snapshot : `data_reliability_score` + `data_reliability_flags` (liste de c
 | `rang_vs_proba` | −40 | `unreliable` / contradiction rang vs proba modèle |
 | `hist_te_conflict` | −20 | Dernier match base officielle ancien mais profil TE plus récent |
 | `p1_unresolved_id` / `p2_unresolved_id` | −20 chacun | Pas de `player_id` résolu |
-| `p1_rank_placeholder` / `p2_rank_placeholder` | −20 chacun | Rang ≥ 1500 ou points < 10 |
+| `p1_rank_placeholder` / `p2_rank_placeholder` | −20 chacun | Rang ≥ 1500 ou points < 10 (hors défaut modèle déjà flaggé) |
+| **`p1_default_model_stats` / `p2_default_model_stats`** | **−20 chacun** | **rank=100 / pts=1000** ou source `rank_points_default` / `no_ranking_source` / `preview_default` — **+ exclusion dure publication** (v5) |
 | `p1_te_estimate` / `p2_te_estimate` | −15 | `stats_source = tennisexplorer_estimate` |
 | `preview_tier` | −15 | Ligne encore en phase preview (build rapide) |
 | `p1_no_rank_source` / `p2_no_rank_source` | −12 | Pas de source rang officielle |
@@ -90,6 +91,24 @@ Après déploiement : **`py -3 scripts/rebuild_live_projection.py`** pour recalc
 
 Canaux alignés : dashboard Top 5 Action, `daily_top_proba_picks`, hybride Top 5 / 1D1P, `filter_telegram_display_picks`, `live_tracker_picks` (`/jour`).
 
+### Score v5 + exclusion dure stats modèle par défaut (23 juillet 2026)
+
+| Changement | Effet |
+|------------|--------|
+| **`RELIABILITY_SCORE_VERSION = 5`** | Rescore auto (flags `p1_default_model_stats` / `p2_default_model_stats`) |
+| **Stats imputées** | `stats_engine._stats_from_match_row` : rang/points manquants → `stats_source = rank_points_default` (plus `matches_recent` + 100/1000 silencieux) |
+| **Exclusion dure** | **`match_has_any_default_player_stats()`** : un seul joueur en **rank=100 / pts=1000** (ou source `no_ranking_source`, `preview_default`, `rank_points_default`, …) → **aucun pari proposé** |
+| **`match_rank_exclude_reason`** | Avant : les deux joueurs en défaut ; **après** : **un seul** suffit (`default_stats_placeholder`) |
+| **`passes_public_pick_gates()`** | Rejet si stats par défaut sur le match snapshot **ou** flags `p*_default_model_stats` sur pick matérialisé |
+| **`collect_top5_proba_picks`** | Vérifie aussi `match_has_rank_points_source()` (aligné pool Paris du jour) |
+| **Dashboard** | Comparatif popover : rang/points `(défaut ML)`, avantage masqué si un côté est en défaut |
+
+**Cas prod corrigé** : Van Assche vs Carreno-Busta (23/07) — un côté à 100/1000 passait encore rel≥80 ; le match ne peut plus être publié Top 5 / 1D1P.
+
+**Helpers** : `is_default_player_stats`, `match_has_any_default_player_stats`, `_default_model_stats_flags`.
+
+**Prod** : déployé 23/07/2026 (`match_rank_quality.py`, `stats_engine.py`, `daily_top_proba_store.py`, `app/dashboard.py`) — services `bettinghud-*` redémarrés.
+
 ### Comparaison v3 vs scores stockés (historique)
 
 | Action | Script |
@@ -128,6 +147,7 @@ Tous les **paris proposés** (Top 5 Telegram, 1D1P, Paris du jour, tuiles Live T
 
 - seuil par défaut **`BETTINGHUD_MIN_DATA_RELIABILITY=80`**
 - exclusion si `unreliable=True` ou score absent
+- exclusion si **`match_has_any_default_player_stats`** (un joueur en rank/points modèle par défaut — v5)
 - exclusion si `duplicate_model_prob` (cluster même tournoi)
 - exclusion match brut si `model_odds_inconsistent` (`true_odd_*` stale vs `capped_p1_prob`)
 

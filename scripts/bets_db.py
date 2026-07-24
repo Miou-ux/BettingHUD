@@ -20,6 +20,7 @@ import sqlite3
 import sys
 from datetime import datetime
 from typing import Iterable, Optional
+from zoneinfo import ZoneInfo
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
@@ -27,6 +28,16 @@ if _SCRIPTS_DIR not in sys.path:
 
 DB_PATH_DEFAULT = os.path.join("data", "bettinghud.db")
 _WAL_ENABLED: set[str] = set()
+_PARIS_TZ = ZoneInfo("Europe/Paris")
+_PUBLICATION_LOCK_HOUR = 5
+_INTRADAY_CAPTURE_SOURCES = frozenset(
+    {
+        "portfolio_results_daemon",
+        "live_data_daemon",
+        "cli_persist_daily_top_proba",
+        "live_snapshot",
+    }
+)
 
 
 def resolve_db_path(db_path: str = DB_PATH_DEFAULT) -> str:
@@ -129,7 +140,9 @@ ML_MODEL_BUNDLE_REL = os.path.join("models", "xgb_model_tml_v47.pkl")
 
 
 def get_ml_bundle_abspath() -> str:
-    return os.path.join(_REPO_ROOT, ML_MODEL_BUNDLE_REL.replace("/", os.sep))
+    from scripts.ml_bundle_registry import resolve_active_bundle_abspath
+
+    return resolve_active_bundle_abspath()
 
 
 def get_ml_bundle_mtime() -> Optional[float]:
@@ -1840,11 +1853,46 @@ def ensure_daily_top_proba_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _parse_iso_ts(ts: str | None) -> datetime | None:
+    raw = str(ts or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _is_publication_locked(first_captured_ts: str | None, calendar_date: str | None) -> bool:
+    """Vrai si le pick a été capturé le matin (>= 05:00 Paris) du jour calendaire."""
+    dt = _parse_iso_ts(first_captured_ts)
+    cal = str(calendar_date or "")[:10]
+    if dt is None or not cal:
+        return False
+    local = dt.astimezone(_PARIS_TZ)
+    return str(local.date()) == cal and local.hour >= _PUBLICATION_LOCK_HOUR
+
+
+def _should_skip_intraday_identity_overwrite(
+    *,
+    existing_first_ts: str | None,
+    existing_calendar_date: str | None,
+    incoming_source: str | None,
+) -> bool:
+    """Bloque l'écrasement intraday d'un pick déjà publié le matin."""
+    src = str(incoming_source or "").strip()
+    if src.startswith("backfill_") or src.startswith("morning"):
+        return False
+    if not _is_publication_locked(existing_first_ts, existing_calendar_date):
+        return False
+    return src in _INTRADAY_CAPTURE_SOURCES
+
+
 def upsert_daily_top_proba_picks(
     rows: Iterable[dict],
     db_path: str = DB_PATH_DEFAULT,
 ) -> int:
-    """Upsert le top N du jour (dernière capture par rang) ; préserve first_captured_ts."""
+    """Upsert le top N du jour ; préserve first_captured_ts et le pick publié le matin."""
     rows_list = list(rows or [])
     if not rows_list:
         return 0
@@ -1863,13 +1911,28 @@ def upsert_daily_top_proba_picks(
             if not key or not cal or not tour or rank <= 0 or not match_name:
                 continue
             existing = cur.execute(
-                "SELECT first_captured_ts FROM daily_top_proba_picks WHERE pick_key = ?",
+                "SELECT first_captured_ts, calendar_date FROM daily_top_proba_picks WHERE pick_key = ?",
                 (key,),
             ).fetchone()
             first_ts = existing[0] if existing and existing[0] else (
                 _none_if_blank(r.get("first_captured_ts")) or now_iso
             )
             last_ts = _none_if_blank(r.get("last_captured_ts")) or now_iso
+            if existing and _should_skip_intraday_identity_overwrite(
+                existing_first_ts=existing[0],
+                existing_calendar_date=existing[1],
+                incoming_source=r.get("capture_source"),
+            ):
+                cur.execute(
+                    """
+                    UPDATE daily_top_proba_picks
+                    SET last_captured_ts = ?, updated_at = ?
+                    WHERE pick_key = ?
+                    """,
+                    (last_ts, now_iso, key),
+                )
+                n += 1
+                continue
             cur.execute(
                 """
                 INSERT INTO daily_top_proba_picks (
@@ -1970,6 +2033,17 @@ def upsert_daily_top_proba_picks(
         conn.close()
 
 
+def _match_result_ready_for_settlement(
+    score: str | None,
+    *,
+    walkover: bool,
+) -> bool:
+    """Ignore TE phantom winners (set count only, no score cells) while match is live."""
+    if walkover:
+        return True
+    return bool(str(score or "").strip())
+
+
 def _retired_from_match_hit(
     *,
     walkover: bool,
@@ -2008,6 +2082,65 @@ def _resolve_bet_status_from_match_result(
     return ("Gagné" if won else "Perdu"), (1 if won else 0)
 
 
+def attach_pick_settlement_from_results(pick: dict, conn: sqlite3.Connection) -> dict:
+    """Résout Gagné/Perdu/En cours via match_results (backtest live replay)."""
+    out = dict(pick)
+    day = str(out.get("calendar_date") or "")[:10]
+    md = str(out.get("match_date") or day)[:10]
+    p1, p2 = out.get("player1"), out.get("player2")
+    if not p1 or not p2 or not md:
+        out.setdefault("status", "En cours")
+        out["settled"] = False
+        out["won"] = False
+        return out
+    try:
+        from scripts.scraper_results import canonical_player
+    except Exception:
+        out.setdefault("status", "En cours")
+        out["settled"] = False
+        out["won"] = False
+        return out
+    ensure_match_results_cache(conn)
+    hit = _lookup_match_result_for_players(
+        conn,
+        md,
+        canonical_player(p1),
+        canonical_player(p2),
+        calendar_date=day or None,
+    )
+    if not hit:
+        out["status"] = out.get("status") or "En cours"
+        out["settled"] = False
+        out["won"] = False
+        return out
+    winner, score, walkover, retired, source, _resolved_date = hit
+    if not _match_result_ready_for_settlement(score, walkover=bool(walkover)):
+        out["status"] = "En cours"
+        out["settled"] = False
+        out["won"] = False
+        return out
+    retired_eff = _retired_from_match_hit(
+        walkover=bool(walkover), retired=bool(retired), score=score
+    )
+    status, fav_won = _resolve_bet_status_from_match_result(
+        out.get("fav_player"),
+        winner,
+        walkover=bool(walkover),
+        retired=retired_eff,
+    )
+    out["status"] = status
+    out["score_final"] = score
+    out["winner_resolved"] = winner
+    out["result_source"] = source
+    if status == "Gagné":
+        out["settled"], out["won"] = True, True
+    elif status == "Perdu":
+        out["settled"], out["won"] = True, False
+    else:
+        out["settled"], out["won"] = False, False
+    return out
+
+
 def _lookup_match_result_for_players(
     conn: sqlite3.Connection,
     match_date: str,
@@ -2029,6 +2162,7 @@ def _lookup_match_result_for_players(
           )
           AND winner_canonical IS NOT NULL
           AND TRIM(winner_canonical) != ''
+          AND (COALESCE(TRIM(score), '') != '' OR COALESCE(walkover, 0) != 0)
         ORDER BY source = 'tennisexplorer' DESC, scraped_at DESC
         LIMIT 1
         """,
@@ -2051,6 +2185,7 @@ def _lookup_match_result_for_players(
           )
           AND winner_canonical IS NOT NULL
           AND TRIM(winner_canonical) != ''
+          AND (COALESCE(TRIM(score), '') != '' OR COALESCE(walkover, 0) != 0)
           AND julianday(match_date) BETWEEN julianday(?) - ? AND julianday(?) + ?
         ORDER BY ABS(julianday(match_date) - julianday(?)) ASC,
                  source = 'tennisexplorer' DESC,

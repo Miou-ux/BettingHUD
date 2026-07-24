@@ -83,6 +83,7 @@ from scripts.data_quality import run_data_quality_checks
 from scripts.match_rank_quality import (
     STALE_RANK_STATS_MAX_DAYS,
     count_matches_excluded_by_reason,
+    is_default_player_stats as _is_default_player_stats,
     match_has_rank_points_source as _match_has_rank_points_source,
 )
 from scripts.model_monitor import compute_monthly_diagnostics, compute_feature_drift
@@ -1644,6 +1645,14 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
             return f"{s} (défaut ML)"
         return s
 
+    def _fmt_rank_pts_col(v, stats: dict):
+        s = _fmt_n(v)
+        if s == "—":
+            return s
+        if _is_default_player_stats(stats):
+            return f"{s} (défaut ML)"
+        return s
+
     rows = []
     # Classement (smaller rank = better, so we invert for "Avantage")
     p1_rank = p1_stats.get("rank")
@@ -1652,21 +1661,26 @@ def _build_comparison_rows(match: dict, p1_label: str, p2_label: str, p_num: int
     if p1_rank is not None and p2_rank is not None:
         try:
             v1 = float(p1_rank); v2 = float(p2_rank)
-            if abs(v1 - v2) < 1e-9:
+            if _is_default_player_stats(p1_stats) or _is_default_player_stats(p2_stats):
+                rank_adv = "— (défaut ML)"
+            elif abs(v1 - v2) < 1e-9:
                 rank_adv = "Égal"
             else:
                 lab = p1_label if v1 < v2 else p2_label
                 rank_adv = f"{lab} ({(v1 - v2):+.0f})"
         except Exception:
             pass
-    rows.append(["Classement", _fmt_n(p1_rank), _fmt_n(p2_rank), rank_adv])
+    rows.append(["Classement", _fmt_rank_pts_col(p1_rank, p1_stats), _fmt_rank_pts_col(p2_rank, p2_stats), rank_adv])
 
     # Points
+    pts_adv = _fmt_diff(p1_stats.get("pts"), p2_stats.get("pts"), p1_label, p2_label, fmt="{:+.0f}")
+    if _is_default_player_stats(p1_stats) or _is_default_player_stats(p2_stats):
+        pts_adv = "— (défaut ML)"
     rows.append([
         "Points",
-        _fmt_n(p1_stats.get("pts")),
-        _fmt_n(p2_stats.get("pts")),
-        _fmt_diff(p1_stats.get("pts"), p2_stats.get("pts"), p1_label, p2_label, fmt="{:+.0f}"),
+        _fmt_rank_pts_col(p1_stats.get("pts"), p1_stats),
+        _fmt_rank_pts_col(p2_stats.get("pts"), p2_stats),
+        pts_adv,
     ])
 
     # Âge / Taille / Main forte (combined)
@@ -7181,12 +7195,10 @@ def _collect_top_favorite_action_cards(
     *,
     limit: int | None = None,
 ) -> list[dict]:
-    """Top 5 prod (sélection hybride) — aligné Telegram / 1D1P."""
+    """Top 5 prod (HYB P75+P80-all) — aligné Telegram / 1D1P."""
     from scripts.daily_top_proba_store import collect_hybrid_proba_picks
-    from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
 
-    cap = HYBRID_DEFAULT_LIMIT if limit is None else limit
-    picks = collect_hybrid_proba_picks(matches, limit=cap)
+    picks = collect_hybrid_proba_picks(matches, limit=limit)
     by_name: dict[str, dict] = {}
     for m in matches:
         p1 = str(m.get("player1") or "").strip()

@@ -89,6 +89,74 @@ NEARBY_DAY_OFFSETS = (-2, -1, 1, 2, 3)  # handle longer postponements
 # Upper inclusive date for TE/Sackmann cache load + fuzzy lookup: Tennis Explorer often
 # files late EU matches on the "next calendar day" while bets stay on the booked date.
 LOOKUP_UPPER_EXTRA_DAYS = max(NEARBY_DAY_OFFSETS)  # 3 — keep aligned with NEARBY forward span
+# Rafraîchissement TE forcé pour picks algo ouverts (évite de re-scraper tout l'historique 7j).
+OPEN_PICK_TE_FORCE_DAYS = 2
+
+
+def open_algo_resolution_dates(
+    conn: sqlite3.Connection,
+    *,
+    window_days: int = WINDOW_DAYS_DEFAULT,
+) -> set[str]:
+    """Dates de match avec picks algo encore « En cours » (fenêtre glissante)."""
+    from scripts.bets_db import ensure_algo_opportunities_schema, ensure_daily_top_proba_schema
+
+    ensure_daily_top_proba_schema(conn)
+    ensure_algo_opportunities_schema(conn)
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=int(window_days))
+    lookup_upper = today + timedelta(days=LOOKUP_UPPER_EXTRA_DAYS)
+    out: set[str] = set()
+    queries = (
+        """
+        SELECT DISTINCT substr(match_date, 1, 10)
+        FROM daily_top_proba_picks
+        WHERE COALESCE(status, 'En cours') = 'En cours'
+          AND match_date IS NOT NULL AND trim(match_date) != ''
+        """,
+        """
+        SELECT DISTINCT substr(match_date, 1, 10)
+        FROM algo_opportunities
+        WHERE COALESCE(status, 'En cours') = 'En cours'
+          AND match_date IS NOT NULL AND trim(match_date) != ''
+        """,
+    )
+    for sql in queries:
+        for (md,) in conn.execute(sql).fetchall():
+            if not md:
+                continue
+            try:
+                d = datetime.strptime(str(md)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if d < cutoff or d > lookup_upper:
+                continue
+            out.add(d.isoformat())
+    return out
+
+
+def expand_resolution_target_dates(
+    seed_dates: Iterable[str],
+    *,
+    cutoff,
+    today,
+    lookup_upper,
+) -> set[str]:
+    """Élargit les dates de match avec les buckets TE voisins (reports / replanifs)."""
+    target: set[str] = set()
+    for raw in seed_dates:
+        try:
+            d = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff or d > today:
+            continue
+        target.add(d.isoformat())
+        for off in NEARBY_DAY_OFFSETS:
+            adj = d + timedelta(days=off)
+            if cutoff <= adj <= lookup_upper:
+                target.add(adj.isoformat())
+    return target
 RETIRED_TOKENS = ("ret.", "ret ", "retired", "abandon", " abd")
 WALKOVER_TOKENS = ("w.o.", "wo.", "walkover", " w/o", " w.o", "default")
 CANCELLED_TOKENS = ("cancel", "annul")
@@ -503,10 +571,25 @@ def _store_te_results_in_cache(
             """,
             (d,),
         )
+        conn.execute(
+            """
+            DELETE FROM match_results
+            WHERE match_date = ?
+              AND source = 'tennisexplorer'
+              AND winner_canonical IS NOT NULL
+              AND COALESCE(score, '') = ''
+              AND COALESCE(walkover, 0) = 0
+            """,
+            (d,),
+        )
     rows = []
     for d, matches in results_by_date.items():
         for m in matches:
-            if not m.get("winner_name") and not str(m.get("score_text") or "").strip():
+            score_txt = str(m.get("score_text") or "").strip()
+            walkover = bool(m.get("walkover", False))
+            if not m.get("winner_name") and not score_txt:
+                continue
+            if m.get("winner_name") and not score_txt and not walkover:
                 continue
             p1c = canonical_player(m["p1_name"])
             p2c = canonical_player(m["p2_name"])
@@ -656,32 +739,36 @@ class ResultsScraper:
                 """
             )
             pending = cur.fetchall()
-            if not pending:
-                LOGGER.info("No pending bets to resolve")
-            else:
+            open_dates = open_algo_resolution_dates(conn, window_days=self.window_days)
+            if not pending and not open_dates:
+                LOGGER.info("No pending bets or open algo picks to resolve")
+            elif not pending and open_dates:
+                LOGGER.info(
+                    "No pending user bets — refreshing cache for %d open algo pick date(s)",
+                    len(open_dates),
+                )
+
+            if pending or open_dates:
                 today = datetime.now().date()
                 cutoff = today - timedelta(days=self.window_days)
                 lookup_upper = today + timedelta(days=LOOKUP_UPPER_EXTRA_DAYS)
-                target_dates: set[str] = set()
+                seed_dates: set[str] = set(open_dates)
                 for row in pending:
                     placement_date = row[1]
                     raw_sched = row[6]
                     resolve_date = normalize_schedule_date(raw_sched) or placement_date
-                    try:
-                        d = datetime.strptime(str(resolve_date), "%Y-%m-%d").date()
-                    except Exception:
-                        continue
-                    if d < cutoff or d > today:
-                        continue
-                    target_dates.add(d.isoformat())
-                    for off in NEARBY_DAY_OFFSETS:
-                        adj = d + timedelta(days=off)
-                        if cutoff <= adj <= lookup_upper:
-                            target_dates.add(adj.isoformat())
+                    if resolve_date:
+                        seed_dates.add(str(resolve_date)[:10])
+                target_dates = expand_resolution_target_dates(
+                    seed_dates,
+                    cutoff=cutoff,
+                    today=today,
+                    lookup_upper=lookup_upper,
+                )
 
                 if not target_dates:
                     LOGGER.info(
-                        "Pending bets all outside window (%dd) — nothing to do",
+                        "Pending/open picks all outside window (%dd) — nothing to do",
                         self.window_days,
                     )
                 else:
@@ -691,6 +778,7 @@ class ResultsScraper:
                     # 2) determine which dates we still need to scrape on Tennis Explorer
                     dates_needing_te: set[str] = set()
                     pending_dates: set[str] = set()
+                    open_pick_dates = {d for d in open_dates if d in target_dates}
                     for row in pending:
                         placement_date = row[1]
                         raw_sched = row[6]
@@ -713,10 +801,13 @@ class ResultsScraper:
                         if d_iso == today.isoformat():
                             dates_needing_te.add(d_iso)
                             continue
-                        # If there are still pending bets on that date, force a fresh
-                        # TE pass to avoid stale cache locking unresolved bets forever.
+                        # Force refresh when user bets or recent algo picks still open on that date.
                         if d_iso in pending_dates:
                             dates_needing_te.add(d_iso)
+                            continue
+                        if d_iso in open_pick_dates:
+                            if d_obj >= today - timedelta(days=OPEN_PICK_TE_FORCE_DAYS):
+                                dates_needing_te.add(d_iso)
                             continue
                         has_te_entry = any(
                             v.get("source") == "tennisexplorer" for v in bucket.values()
@@ -751,7 +842,7 @@ class ResultsScraper:
                     # 4) Re-read cache (now potentially enriched)
                     cache = read_cached_results(conn, target_dates)
 
-                    # 5) Resolve pending bets
+                    # 5) Resolve pending user bets (algo picks synced by daemon afterward)
                     for bet_id, placement_date, match_name, bet_on, odds, stake, raw_sched in pending:
                         resolve_date = normalize_schedule_date(raw_sched) or placement_date
                         try:
@@ -895,17 +986,22 @@ def main() -> int:
 
             from scripts.bets_db import (
                 ensure_algo_opportunities_schema,
+                ensure_daily_top_proba_schema,
                 ensure_user_bets_schema,
                 sync_algo_opportunities_from_bets,
                 sync_algo_opportunities_from_results,
+                sync_daily_top_proba_from_results,
             )
 
             conn = sqlite3.connect(scraper.db_path)
             try:
                 ensure_user_bets_schema(conn)
                 ensure_algo_opportunities_schema(conn)
+                ensure_daily_top_proba_schema(conn)
                 sync_algo_opportunities_from_bets(conn)
                 sync_algo_opportunities_from_results(conn)
+                sync_daily_top_proba_from_results(conn)
+                conn.commit()
             finally:
                 conn.close()
         except Exception as sync_exc:

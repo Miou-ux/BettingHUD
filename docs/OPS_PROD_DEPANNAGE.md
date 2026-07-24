@@ -100,13 +100,23 @@ PY"
 - Les captures intraday tardives remplacent les lignes publiées le matin.
 - Le replay lisait cette table SQL comme source unique => historique “état final du jour”, pas “publication”.
 
-### Correctif appliqué (final)
+### Correctif appliqué (juillet 2026 — v2)
 
-- Replay historique : **source SQL `daily_top_proba_picks`** (comportement d'origine — ne pas remplacer globalement par JSONL, risque de tronquer l'historique fin mai).
-- Jour corrompu (`2026-07-06`) : **backfill ciblé** depuis `data/exports/daily_top_proba/2026-07-06.jsonl` (capture publication matin `>= 05:00` Paris).
-- **Prévention durable** (`scripts/bets_db.py`) : verrou publication — si `first_captured_ts >= 05:00` Paris pour un `pick_key`, les sources intraday (`portfolio_results_daemon`, `live_data_daemon`, `live_snapshot`, …) ne remplacent plus `match_name` / favori / proba / EV à ce rang.
-- Archive JSONL append-only inchangée (`data/exports/daily_top_proba/*.jsonl`) pour audit et backfill ponctuel.
-- Fallback robustesse si module `scripts.reliability_pick_match` indisponible (pas de 500).
+- **Table `daily_published_picks`** : snapshot exact Top5 / 1D1P à l’envoi Telegram matin (`scripts/published_picks_store.py`).
+- **Replay CourtAlpha** : historique = picks publiés si présents ; sinon repli re-sélection hybride.
+- **Backfill** : `scripts/backfill_published_picks.py --date YYYY-MM-DD`.
+- Verrou publication sur `daily_top_proba_picks` (≥ 05:00 Paris) **conservé** pour l’archive pool top-15.
+- Doc : `docs/PUBLISHED_PICKS_REPLAY.md`.
+
+### Correctif settlement (juillet 2026)
+
+Sans pari portefeuille « En cours », le daemon **ne scrapait plus TE** → picks algo bloqués « En cours » le soir.  
+→ `portfolio_results_daemon` + `scraper_results` déclenchent le scrape si picks algo ouverts (7 j). Voir `docs/PUBLISHED_PICKS_REPLAY.md` §2.
+
+### Correctif appliqué (v1 — juillet 2026)
+
+- Replay historique : source SQL `daily_top_proba_picks` + verrou publication matin.
+- Jour corrompu (`2026-07-06`) : backfill JSONL capture `>= 05:00` Paris.
 
 ### Régression évitée
 

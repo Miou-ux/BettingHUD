@@ -145,37 +145,14 @@ def log_post(
 
 
 def fetch_daily_pick_keys_pending_result(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Picks du jour publiés sur Discord mais sans tweet résultat."""
+    """Picks publiés sur Discord sans résultat (résolution via match publié, pas Top5 rank)."""
+    from scripts.od1p_pick_key import fetch_od1p_pending_results
+
     ensure_discord_1d1p_schema(conn)
-    rows = conn.execute(
-        """
-        SELECT d.calendar_date, d.pick_key, d.message_preview
-        FROM discord_1d1p_posts d
-        WHERE d.post_type = 'daily_pick'
-          AND d.pick_key IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM discord_1d1p_posts r
-            WHERE r.post_type = 'result' AND r.pick_key = d.pick_key
-          )
-        ORDER BY d.calendar_date ASC
-        """
-    ).fetchall()
+    pending = fetch_od1p_pending_results(conn, posts_table="discord_1d1p_posts")
     out: list[dict[str, Any]] = []
-    for cal, pick_key, preview in rows:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM daily_top_proba_picks
-            WHERE pick_key = ?
-            LIMIT 1
-            """,
-            (pick_key,),
-        ).fetchone()
-        if not row:
-            continue
-        pick = dict(row)
-        status = str(pick.get("status") or "En cours")
-        if status == "En cours":
-            continue
+    for post_pick_key, pick in pending:
+        pick = dict(pick)
+        pick["_od1p_post_pick_key"] = post_pick_key
         out.append(pick)
     return out

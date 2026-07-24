@@ -783,18 +783,23 @@ class TennisStatsEngine:
         ht = g("winner_ht", "loser_ht")
         pts = g("winner_rank_points", "loser_rank_points")
         hand = g("winner_hand", "loser_hand")
-        rank = 100 if rank is None or pd.isna(rank) else int(float(rank))
+        rank_missing = rank is None or pd.isna(rank)
+        pts_missing = pts is None or pd.isna(pts)
+        rank = 100 if rank_missing else int(float(rank))
         age = 25 if age is None or pd.isna(age) else float(age)
         ht = 185 if ht is None or pd.isna(ht) else float(ht)
-        pts = 1000 if pts is None or pd.isna(pts) else float(pts)
+        pts = 1000 if pts_missing else float(pts)
         hand = "U" if hand is None or pd.isna(hand) else str(hand).strip().upper()[:1] or "U"
+        stats_source = source_label
+        if (rank_missing or pts_missing) and rank == 100 and abs(pts - 1000.0) < 1e-6:
+            stats_source = "rank_points_default"
         return {
             "rank": rank,
             "age": age,
             "ht": ht,
             "pts": pts,
             "hand": hand,
-            "stats_source": source_label,
+            "stats_source": stats_source,
         }
 
     def _wta_rankings_current_meta(self, pid_int: int) -> Optional[tuple[int, float, Optional[str]]]:

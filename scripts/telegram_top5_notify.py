@@ -488,10 +488,9 @@ def format_bot_strategy_message() -> str:
             "<b>2. Pick selection</b>",
             "• <b>Today</b> matches (Europe/Paris), valid odds",
             "• <b>Model favorite</b> = highest model probability",
-            "• <b>/top5</b> & <b>/1pick1day</b>: hybrid selection — proba ≥77%, EV tier1 15–35%, "
-            "tier2 30–55% (fill to 6/day), reliability ≥85 (fallback ≥80 if empty), "
-            "book gap ≤30pp, majors, sorted by proba",
-            "• <b>/1pick1day</b>: rank 1 of that hybrid Top 5",
+            "• <b>/top5</b> & <b>/1pick1day</b>: <b>HYB P75+P80-all</b> — P75-TIER (p≥73%, rel≥80, "
+            "EV 6–55%, max 6/day) plus P≥80% rel≥80 add-ons (any EV), majors, sorted by proba ↓",
+            "• <b>/1pick1day</b>: highest model proba in that HYB union (not list rank 1)",
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
             "",
             "<b>3. Staking (Kelly)</b>",
@@ -518,11 +517,10 @@ def format_bot_help_message() -> str:
             f"ℹ️ <b>{BRAND_NAME} Bot — Help</b>",
             "",
             "<b>/1pick1day</b> · /1d1p",
-            "  One pick per day · best from hybrid Top 5 (rank 1) · majors.",
+            "  One pick per day · best proba in HYB P75+P80-all · majors.",
             "",
             "<b>/top5</b> · /top",
-            "  Hybrid Top 5 · <b>proba ≥77%</b> · rel≥85 (fallback ≥80 if empty) · "
-            "EV tier1 15–35% + tier2 30–55% · gap ≤30pp · tri proba · ATP/WTA 250+.",
+            "  HYB P75+P80-all · P75-TIER + P≥80% rel≥80 · sorted by proba ↓ · ATP/WTA 250+.",
             "  <b>Bet</b> button under each match.",
             "",
             "<b>/today</b>",
@@ -1094,7 +1092,7 @@ def _load_major_jour_context(
 
 def _load_top5_context(
     *,
-    limit: int,
+    limit: int | None,
     ev_min_pct: float,
     ev_max_pct: float,
 ) -> tuple[list[dict], dict, str, int, float | None]:
@@ -1147,7 +1145,7 @@ def run_notify(
             )
         send_interactive_load_ack(token=token, chat_id=target_chat)
     picks, _meta, cal_day, pool_n, age_min = _load_top5_context(
-        limit=int(limit if limit is not None else HYBRID_DEFAULT_LIMIT),
+        limit=limit,
         ev_min_pct=ev_min_pct,
         ev_max_pct=ev_max_pct,
     )
@@ -1236,6 +1234,30 @@ def run_notify(
         result["sent"] = sent
         result["chat_ids"] = target_chats
         result["chat_id"] = target_chats[0] if len(target_chats) == 1 else None
+
+    if not dry_run:
+        try:
+            from scripts.bets_db import DB_PATH_DEFAULT, open_db
+            from scripts.published_picks_store import MODE_TOP5, save_published_picks
+
+            conn = open_db(DB_PATH_DEFAULT)
+            try:
+                save_published_picks(
+                    conn,
+                    mode=MODE_TOP5,
+                    calendar_date=cal_day,
+                    picks=picks,
+                    source=source,
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("telegram_top5_notify").warning(
+                "Publication Top5 non archivée : %s", exc
+            )
+
     return result
 
 
@@ -1710,7 +1732,9 @@ def main() -> int:
         action="store_true",
         help="Afficher le message /strategie (apercu, sans envoi).",
     )
-    ap.add_argument("--limit", type=int, default=int(os.getenv("TELEGRAM_TOP5_LIMIT", str(HYBRID_DEFAULT_LIMIT))))
+    _lim_raw = os.getenv("TELEGRAM_TOP5_LIMIT", "").strip()
+    _lim_default = int(_lim_raw) if _lim_raw else None
+    ap.add_argument("--limit", type=int, default=_lim_default, help="Cap picks (defaut: union HYB complete)")
     ap.add_argument(
         "--ev-min-pct",
         type=float,

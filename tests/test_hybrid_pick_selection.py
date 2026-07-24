@@ -1,4 +1,4 @@
-"""Tests sélection hybride prod."""
+"""Tests HYB P75+P80-all prod selection."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from scripts.hybrid_pick_selection import select_hybrid_picks
+from scripts.hyb_p75_p80_selection import (
+    best_1d1p_pick_from_hyb,
+    select_hyb_p75_p80_all,
+)
+from scripts.hybrid_pick_selection import select_hybrid_picks, select_hybrid_picks_legacy
 
 
 def _row(
@@ -31,99 +35,52 @@ def _row(
         "ev_fav_pct": ev,
         "data_reliability_score": rel,
         "book_gap_pp": gap,
+        "theoretical_stake_frac": 0.03,
     }
 
 
-def test_hybrid_tier1_sorted_by_proba():
+def test_p80_addon_included_without_ev_filter():
     rows = [
-        _row("Low", "T2", 0.95, 40.0),
-        _row("High", "T1", 0.88, 20.0),
-        _row("Mid", "T1", 0.85, 25.0),
+        _row("Star", "A", 0.82, 20.0),  # P75 + P80
+        _row("Fav", "B", 0.81, -5.0, rel=85),  # P80 only (EV neg), not P75 (ev band)
     ]
-    picks = select_hybrid_picks(rows, limit=2, apply_telegram_proba_filter=False)
-    assert len(picks) == 2
-    assert picks[0]["player1"] == "High"
-    assert picks[0]["hybrid_tier"] == "tier1"
-    assert picks[1]["player1"] == "Mid"
-
-
-def test_hybrid_tier2_fills_when_tier1_sparse():
-    rows = [
-        _row("Only", "T1", 0.82, 18.0),
-        _row("TwoA", "X", 0.90, 35.0),  # tier1 (15–35)
-        _row("TwoB", "Y", 0.81, 45.0),  # tier2
-    ]
-    picks = select_hybrid_picks(rows, limit=3, apply_telegram_proba_filter=False)
-    assert len(picks) == 3
-    assert picks[0]["player1"] == "TwoA"
-    assert picks[0]["hybrid_tier"] == "tier1"
-    assert picks[1]["player1"] == "Only"
-    assert picks[2]["player1"] == "TwoB"
-    assert picks[2]["hybrid_tier"] == "tier2"
-
-
-def test_hybrid_accepts_combo_volume_ev_bands():
-    """COMBO_VOLUME prod : tier1 jusqu'à 35 %, tier2 jusqu'à 55 %."""
-    rows = [
-        _row("T1Edge", "A", 0.80, 32.0),
-        _row("T2Edge", "B", 0.81, 52.0),
-        _row("T2Mid", "C", 0.82, 36.0),  # tier2 only (>35)
-        _row("OverPool", "D", 0.83, 56.0),  # hors pool (>55)
-    ]
-    picks = select_hybrid_picks(rows, limit=5, apply_telegram_proba_filter=False)
+    picks = select_hybrid_picks(rows, apply_telegram_proba_filter=False)
     names = {p["player1"] for p in picks}
-    assert "T1Edge" in names
-    assert "T2Edge" in names
-    assert "T2Mid" in names
-    assert picks[[p["player1"] for p in picks].index("T2Mid")]["hybrid_tier"] == "tier2"
-    assert "OverPool" not in names
+    assert "Star" in names
+    assert "Fav" in names
 
 
-def test_hybrid_rejects_below_77_proba():
-    rows = [_row("Weak", "A", 0.76, 20.0), _row("Ok", "B", 0.77, 22.0)]
-    picks = select_hybrid_picks(rows, limit=5, apply_telegram_proba_filter=False)
+def test_1d1p_best_proba_not_first_rank():
+    rows = [
+        _row("Lower", "A", 0.88, 20.0),
+        _row("Higher", "B", 0.92, -2.0),
+    ]
+    picks = select_hyb_p75_p80_all(rows)
+    best = best_1d1p_pick_from_hyb(picks)
+    assert best is not None
+    assert best["player1"] == "Higher"
+    assert best["selection_mode"] == "hyb_p75_p80_best_proba"
+
+
+def test_dedupe_match_between_p75_and_p80():
+    rows = [_row("Same", "X", 0.85, 22.0)]
+    picks = select_hyb_p75_p80_all(rows)
+    assert len(picks) == 1
+
+
+def test_legacy_hybrid_still_available():
+    rows = [
+        _row("Ok", "B", 0.77, 22.0),
+        _row("Weak", "A", 0.76, 20.0),
+    ]
+    picks = select_hybrid_picks_legacy(rows, limit=5, apply_telegram_proba_filter=False)
     assert len(picks) == 1
     assert picks[0]["player1"] == "Ok"
 
 
-def test_hybrid_rel_fallback_when_primary_empty():
-    """Si rel≥85 ne retourne rien, repli rel≥80."""
-    rows = [
-        _row("A", "X", 0.85, 20.0, rel=80),
-        _row("B", "Y", 0.78, 22.0, rel=70),
-    ]
-    picks = select_hybrid_picks(rows, limit=6, apply_telegram_proba_filter=False)
-    assert len(picks) == 1
-    assert picks[0]["player1"] == "A"
-    assert picks[0].get("hybrid_rel_fallback") is True
-    assert picks[0].get("hybrid_rel_min") == 80
-
-
-def test_hybrid_no_fallback_when_primary_has_picks():
-    rows = [
-        _row("Strong", "X", 0.88, 18.0, rel=90),
-        _row("Weak", "Y", 0.85, 20.0, rel=80),
-    ]
-    picks = select_hybrid_picks(rows, limit=6, apply_telegram_proba_filter=False)
-    assert len(picks) == 1
-    assert picks[0]["player1"] == "Strong"
-    assert "hybrid_rel_fallback" not in picks[0]
-
-
-def test_hybrid_rejects_high_book_gap():
-    rows = [
-        _row("GapOk", "A", 0.80, 20.0, gap=25.0),
-        _row("GapBad", "B", 0.82, 24.0, gap=35.0),
-    ]
-    picks = select_hybrid_picks(rows, limit=5, apply_telegram_proba_filter=False)
-    assert len(picks) == 1
-    assert picks[0]["player1"] == "GapOk"
-
-
-def test_hybrid_criteria_plain_mentions_fallback():
+def test_hybrid_criteria_plain_mentions_p75_p80():
     from scripts.hybrid_pick_selection import hybrid_criteria_plain
 
     fr = hybrid_criteria_plain(english=False)
-    en = hybrid_criteria_plain(english=True)
-    assert "repli ≥ 80" in fr
-    assert "fallback >= 80" in en
+    assert "P75-TIER" in fr or "P75" in fr
+    assert "80" in fr

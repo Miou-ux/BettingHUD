@@ -6,6 +6,70 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# HYB P75+P80-all — sélection prod (24 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Règle prod** | **P75-TIER** (max 6/j) **+** compléments **P≥80 % rel≥80** (EV libre), dédup match, tri proba ↓ |
+| **1D1P** | Meilleure **proba** dans l’union (pas rang 1 liste) — `hyb_p75_p80_best_proba` |
+| **Legacy** | Ancienne hybride P77 tier1/tier2 : `select_hybrid_picks_legacy()` (backtests) |
+| **Code** | `scripts/hyb_p75_p80_selection.py`, `select_hybrid_picks()` |
+
+Backtest juillet 2026 (pool illimité, Kelly) vs hybride P77 : +720 € Σ2025, +12,4k € 2026, +95 € live.
+
+Doc détaillée : `docs/HYBRID_PICK_SELECTION.md`, `docs/ONE_DAY_ONE_PICK.md`.
+
+---
+
+# Exclusion stats modèle par défaut (23 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Règle** | Aucun pari Top 5 / 1D1P / Paris du jour si **un seul** joueur a rank=100 & pts=1000 (valeurs ML par défaut) |
+| **Cause** | Van Assche vs Carreno-Busta : un côté en défaut passait rel≥80 |
+| **Code** | `match_has_any_default_player_stats`, `passes_public_pick_gates`, `stats_source=rank_points_default` |
+| **UI** | Dashboard comparatif : `(défaut ML)` sur rang/points |
+| **Prod** | ✅ déployé 23/07 — `bettinghud-dashboard`, `bettinghud-daemon`, `bettinghud-telegram-bot` |
+
+Doc : `docs/DATA_RELIABILITY.md` (section score v5).
+
+### Fichiers
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/match_rank_quality.py` | Exclusion dure + flags `p*_default_model_stats` |
+| `scripts/stats_engine.py` | Source `rank_points_default` si imputation |
+| `scripts/daily_top_proba_store.py` | `match_has_rank_points_source` dans collect Top5 |
+| `app/dashboard.py` | Badge `(défaut ML)` comparatif |
+| `tests/test_match_rank_quality.py` | Cas un côté en défaut |
+
+---
+
+# Picks publiés + résolution algo sans portefeuille (23 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Replay web** | Table `daily_published_picks` — archive Top5/1D1P **au moment de l’envoi TG** (plus re-hybrid sur archive intraday) |
+| **Exemple corrigé** | 22/07 : Droguet + Hanfmann affichés (plus Vacherot seul) |
+| **Settlement soir** | `portfolio_results_daemon` scrape TE si picks algo ouverts, même sans pari `user_bets` |
+| **Perf scrape** | Fenêtre 7 j · refresh TE forcé 2 j seulement |
+
+### Fichiers
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/published_picks_store.py` | Schéma + save/load replay |
+| `scripts/scraper_results.py` | `open_algo_resolution_dates`, scrape sans portefeuille |
+| `scripts/portfolio_results_daemon.py` | Déclenche scrape si picks algo 7j |
+| `scripts/telegram_top5_notify.py` | Archive Top5 à l’envoi |
+| `scripts/telegram_1d1p_notify.py` | Archive 1D1P à l’envoi |
+| `scripts/backfill_published_picks.py` | Backfill manuel |
+| `CourtAlpha/api/services/top5_replay.py` | Replay historique publié |
+| `CourtAlpha/api/services/one_day_one_pick.py` | Idem 1D1P |
+| `docs/PUBLISHED_PICKS_REPLAY.md` | Doc complète + diagramme daemons |
+
+---
+
 # Fallback rel≥80 si 0 pick (22 juillet 2026)
 
 | Élément | Détail |
@@ -1285,4 +1349,4 @@ Après déploiement : `python scripts/fetch_wta_sackmann_raw.py` puis `python sc
 - Après chaque **run d’entraînement** significatif : reporter dans `MODELE_V45_CHANGELOG_ET_PERFORMANCE.md` (ou une page v47 dédiée) les **Brier globaux et segmentaires** mesurés sur le même protocole de test.
 - Aligner **`README.md`** racine (encore en partie sur v45) lors d’une prochaine passe README.
 
-*Dernière mise à jour de ce fichier : 8 juillet 2026.*
+*Dernière mise à jour de ce fichier : 23 juillet 2026.*

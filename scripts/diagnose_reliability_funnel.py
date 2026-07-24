@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument(
         "--rescore",
         action="store_true",
-        help="Force rescore v2 même si score snapshot présent",
+        help="Force rescore v3 même si score snapshot présent",
     )
     args = parser.parse_args()
 

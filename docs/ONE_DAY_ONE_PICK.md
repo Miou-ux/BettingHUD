@@ -1,6 +1,6 @@
 # 1 Day 1 Pick (1pick1day) — référence complète
 
-Pick **unique par jour** : **meilleur pick (rang 1)** de la sélection hybride Top 5 — même règles que `/top5`.  
+Pick **unique par jour** : **meilleure proba fav** dans **HYB P75+P80-all** (même union que `/top5`).  
 Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalpha.tech/1-day-1-pick).
 
 > **Langue canaux** : Telegram & Discord en **anglais** ([[COMMS_LOCALE]]). Web FR + EN.
@@ -11,15 +11,13 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 
 | Étape | Règle |
 |-------|--------|
-| Pool | Même sélection que **Top 5 hybride** (voir [[HYBRID_PICK_SELECTION]]) |
-| Proba | Favori modèle **≥ 77 %** |
-| EV | Tier 1 **15–35 %** puis complément tier 2 **30–55 %** (max 6 candidats/jour) |
-| Fiabilité | **≥ 85** (repli **≥ 80** si 0 pick ce jour) |
-| Écart cote | **book_gap ≤ 30 pp** |
-| Pick retenu | **Rang 1** au tri **proba** ↓ (`selection_mode`: `hybrid_best`) |
+| Pool | **HYB P75+P80-all** (voir [[HYBRID_PICK_SELECTION]]) |
+| Base | **P75-TIER** : p≥73 %, rel≥80, EV 6–55 %, max 6/j |
+| Compléments | **P≥80 %**, rel≥80, EV libre (matchs non déjà pris) |
+| Pick retenu | **Meilleure proba fav** dans l’union (`hyb_p75_p80_best_proba`) |
 | Mise théorique | Kelly **0,65** × Brier, plafond 15 % BR |
 
-> **Juillet 2026** : remplace l’ancienne règle « 1er EV par circuit ATP/WTA + repli EV+ si p &lt; 70 % ».
+> **Juillet 2026** : remplace « rang 1 Top 5 hybride P77 tier1/tier2 ».
 
 **Republication** après changement de règle :
 ```bash
@@ -31,9 +29,10 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 
 | Couche | Fichier |
 |--------|---------|
-| Sélection hybride | `scripts/hybrid_pick_selection.py` → `select_hybrid_picks()` |
+| Sélection hybride | `scripts/hyb_p75_p80_selection.py` → `select_hyb_p75_p80_all()` |
+| Wrapper prod | `scripts/hybrid_pick_selection.py` → `select_hybrid_picks()` |
 | Top 5 pool | `scripts/daily_top_proba_store.py` → `collect_hybrid_proba_picks()` |
-| 1D1P live | `scripts/discord_1d1p_core.py` → `load_1d1p_today_pick()` (rang 1) |
+| 1D1P live | `scripts/discord_1d1p_core.py` → `load_1d1p_today_pick()` (meilleure proba HYB) |
 | Unifié | `scripts/pick_modes.py` (`PickMode.ONE_PICK_ONE_DAY`, `TOP5`) |
 | Replay / stats | `CourtAlpha/api/services/one_day_one_pick.py` — historique DB ; **aujourd'hui = live hybride** (comme Top 5) |
 | Dédup snapshot TE | `scripts/daily_top_proba_store.py` → `dedupe_top_proba_rows_by_match()` |
@@ -158,9 +157,14 @@ flowchart TB
 | Source | Table / fichier |
 |--------|-----------------|
 | Classement journalier | `daily_top_proba_picks` (top 15 ATP/WTA/jour) |
+| **Publication publique (replay)** | `daily_published_picks` (`mode=1d1p`) — écrit à l’envoi TG matin |
 | Clé pick | `pick_key = {calendar_date}\|{tour}\|{rank:02d}` |
 | JSONL archive | `data/exports/daily_top_proba/{date}.jsonl` |
-| Settlement | `sync_daily_top_proba_from_results()` |
+| Settlement | `sync_daily_top_proba_from_results()` via daemon (~10 min) |
+
+**Replay CourtAlpha** : historique = picks **publiés** si présents ; sinon repli sélection hybride. **Aujourd’hui** = live. Voir [[PUBLISHED_PICKS_REPLAY]].
+
+Backfill archive publication : `scripts/backfill_published_picks.py --date YYYY-MM-DD`.
 
 **Déduplication** : le snapshot TE peut lister le même match avec des `match_id` différents → une seule entrée par identité (joueurs + tournoi + date + circuit) avant classement.
 
@@ -191,7 +195,9 @@ Planning global : [[SCHEDULE_MISES_A_JOUR]].
 | Pas de pick TG/Discord le matin | Cron 05:00 ou `TELEGRAM_1D1P_ENABLED=0` | Logs `morning_publish_cron.log` |
 | `already_posted` | Normal (anti-doublon) | `--force` en test seulement |
 | Résultat manquant | Pick non journalisé (`daily_pick` + `pick_key`) | Vérifier `telegram_1d1p_posts` / `discord_1d1p_posts` |
-| Pick web ≠ TG | Snapshot âge différent | Comparer `snapshot_age_min` ; publications 05:00 |
+| Pick web ≠ TG (historique) | Replay re-sélectionnait sur archive intraday | Vérifier `daily_published_picks` ; backfill si absent |
+| Pick web ≠ TG (aujourd’hui) | Snapshot âge différent | Comparer `snapshot_age_min` ; publications 05:00 |
+| Résultat « En cours » le soir | Daemon n’a pas scrapé TE (0 pari portefeuille) | Corrigé juil. 2026 — voir [[PUBLISHED_PICKS_REPLAY]] §2 |
 | Doublon match dans pool | Ancien snapshot TE | Dédup actif ; attendre prochain daemon top-proba |
 | Discord pin absent | Pas de `DISCORD_BOT_TOKEN` | Pin manuel du message track record |
 
@@ -212,6 +218,7 @@ Ops général : [[OPS_PROD_DEPANNAGE]].
 
 - [[TELEGRAM_TOP5]] — bot Telegram complet
 - [[DISCORD_1D1P]] — Discord détail
+- [[PUBLISHED_PICKS_REPLAY]] — archive publication + settlement algo
 - [[DAILY_TOP_PROBA_REPLAY]] — persistance & replay
 - [[COMMS_LOCALE]] — anglais TG/Discord
 - [[WEB_REACT]] — pages CourtAlpha

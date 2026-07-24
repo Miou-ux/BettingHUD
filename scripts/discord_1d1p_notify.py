@@ -62,6 +62,14 @@ def _username() -> str:
 
 
 def _pick_key(pick: dict) -> str:
+    from scripts.od1p_pick_key import od1p_post_pick_key
+
+    post_key = str(pick.get("_od1p_post_pick_key") or "").strip()
+    if post_key:
+        return post_key
+    cal = str(pick.get("calendar_date") or "")[:10]
+    if cal:
+        return od1p_post_pick_key(cal)
     return str(
         pick.get("pick_key")
         or f"{pick.get('calendar_date')}|{pick.get('tour')}|{pick.get('rank', 1):02d}"
@@ -103,29 +111,32 @@ def run_daily_pick(*, dry_run: bool = False, force: bool = False) -> dict:
 
         embed = build_daily_pick_embed(pick, calendar_date=cal_day)
         preview = str(pick.get("match_name") or embed.get("title") or "")
+        from scripts.od1p_pick_key import od1p_post_pick_key
+
+        post_key = od1p_post_pick_key(cal_day)
         if dry_run:
             print(
                 json.dumps(
-                    {"embed": embed, "pick_key": _pick_key(pick)},
+                    {"embed": embed, "pick_key": post_key},
                     ensure_ascii=True,
                     indent=2,
                 )
             )
-            return {"ok": True, "dry_run": True, "calendar_date": cal_day, "pick_key": _pick_key(pick)}
+            return {"ok": True, "dry_run": True, "calendar_date": cal_day, "pick_key": post_key}
 
         res = post_webhook(embeds=[embed], username=_username())
         log_post(
             conn,
             post_type="daily_pick",
             calendar_date=cal_day,
-            pick_key=_pick_key(pick),
+            pick_key=post_key,
             discord_message_id=str(res.get("id") or ""),
             message_preview=preview[:200],
         )
         return {
             "ok": True,
             "calendar_date": cal_day,
-            "pick_key": _pick_key(pick),
+            "pick_key": post_key,
             "match_name": pick.get("match_name"),
         }
     finally:

@@ -27,6 +27,17 @@ Le modèle principal est un `XGBClassifier` avec :
 
 Important : les hard caps post-prédiction ont été retirés (pas de clamps manuels type `cap_*`).
 
+### 1bis) Deux « routages » distincts (ne pas confondre)
+
+| Routage | Périmètre | Mécanisme | Où |
+|---------|-----------|-----------|-----|
+| **BO3 / BO5** | Format de match (best-of) | Deux calibrateurs isotoniques dans **le même bundle** ; `predict_proba_calibrated_routed` | **PROD** — toujours actif |
+| **ATP / WTA** | Circuit tennis | Deux **bundles** `.pkl` distincts ; `TourModelRouter` + `model_for_inference(tour)` | **PREPROD uniquement** (exploration) |
+
+**PROD (juillet 2026)** : un seul bundle `xgb_model_tml_v47.pkl` pour ATP et WTA. Le routage circuit est désactivé sur le serveur (`BETTINGHUD_ENV=prod`).
+
+**PREPROD (exploration)** : avec `BETTINGHUD_ML_TOUR_ROUTING=1`, les matchs WTA passent par le candidat delta, l’ATP reste sur la baseline v47 figée. Détail activation, scripts replay et critères : **`docs/ML_BUNDLE_ROLLBACK.md`** · **`docs/CHANGELOG_RECENT.md`** § exploration split.
+
 ## 2) Features utilisées
 
 `self.features` dans `TennisMLModel` est la source de vérité et est persistée dans le bundle.  
@@ -34,7 +45,7 @@ Toute modification de cette liste impose un retrain.
 
 Vue d’ensemble des **ajouts / thèmes récents** (détail et fichiers : `docs/CHANGELOG_RECENT.md`) :
 
-- charge récente : `minutes_played_last7d_diff` ; tie-breaks : `tb_win_pct_52w_diff`
+- charge récente : `minutes_played_last7d_diff` ; tie-breaks : `tb_win_pct_52w_diff` — **causalité** : deque historique uniquement, append du match courant **après** calcul (audit QA juillet 2026, voir `CHANGELOG_RECENT.md` § « Session documentation & QA »)
 - météo / surface : `humidity_impact`, `temperature_impact` (CPI effectif)
 - marché : `market_sentiment_signal`
 - calendrier / fatigue : `pre_slam_fatigue`, `travel_fatigue_index`, `age_x_travel_fatigue`, `age_x_inactivity`
@@ -125,7 +136,8 @@ Détails et variables d’env : `docs/CHANGELOG_RECENT.md` § 4 et § 9.
 
 ## 8) Backtest et comparabilité
 
-- Script de référence : **`scripts/backtest_2026.py`** (ré-entraînement sans fuite, cotes réelles tennis-data, CSV de paris). Garde-fou de nommage sur **`xgb_model_tml_v47.pkl`**. Détails : `CHANGELOG_RECENT.md`.
+- Script de référence : **`scripts/backtest_2026.py`** (ré-entraînement sans fuite, cotes réelles tennis-data, CSV de paris). Garde-fou de nommage sur **`xgb_model_tml_v47.pkl`**. Détails : `CHANGELOG_RECENT.md` § 5.
+- **Validé sans modification de code** (smoke test mai 2026) : `build_dataset_with_identity` produit toutes les colonnes `ml.features` sans NA ; voir commande de rejouabilité dans `CHANGELOG_RECENT.md` § « Session documentation & QA ».
 - **Campagne « top 10 probas / jour »** (EV 15–100 %, Kelly ½, comparatif 2024–2026) : **`docs/BACKTEST_TOP10_PROBA_SIMULATIONS.md`** — scripts `simulate_top10_proba_2026.py`, `bets_to_br_target.py`, `export_backtest_bets_sample.py`.
 - Les signaux **uniquement live** sont à **0** dans le dataset backtest (colonnes alignées sur `ml.features`).
 - Les anciens CSV de backtest restent utilisables si le format colonnes est inchangé.

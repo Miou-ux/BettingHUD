@@ -12,33 +12,58 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from scripts.qc_common import QcReport  # noqa: E402
-from scripts.wta_sackmann_common import DEFAULT_CUTOFF  # noqa: E402
+from scripts.wta_sackmann_common import DEFAULT_CUTOFF, WTA_ITF_TOURNEY_LEVELS  # noqa: E402
 
 
 def _wta_raw_dir() -> Path:
     return Path(ROOT) / "data" / "raw" / "tennis_wta"
 
 
-def _rank_rate_post_cutoff_sqlite(db_path: str, cutoff: int) -> tuple[float, int, int]:
+def _qc_main_tour_only() -> bool:
+    return os.getenv("BETTINGHUD_WTA_QC_RANK_MAIN_ONLY", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def _rank_rate_post_cutoff_sqlite(
+    db_path: str,
+    cutoff: int,
+    *,
+    main_tour_only: bool | None = None,
+) -> tuple[float, int, int]:
+    """Couverture rangs WTA post-cutoff en SQLite.
+
+    Par défaut exclut ITF/W15 (``15``, ``I``) — aligné gate D1 main_delta et picks prod 250+.
+    """
+    main_only = _qc_main_tour_only() if main_tour_only is None else bool(main_tour_only)
     cutoff_s = str(cutoff)
-    cutoff_iso = f"{cutoff_s[:4]}-{cutoff_s[4:6]}-{cutoff_s[6:8]}"
+    level_filter = ""
+    params: list[object] = [int(cutoff_s)]
+    if main_only:
+        placeholders = ",".join("?" * len(WTA_ITF_TOURNEY_LEVELS))
+        level_filter = f" AND tourney_level NOT IN ({placeholders})"
+        params.extend(sorted(WTA_ITF_TOURNEY_LEVELS))
     conn = sqlite3.connect(db_path)
     try:
         total = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM wta_matches
             WHERE CAST(REPLACE(SUBSTR(tourney_date, 1, 10), '-', '') AS INTEGER) > ?
+            {level_filter}
             """,
-            (int(cutoff_s),),
+            params,
         ).fetchone()[0]
         with_ranks = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM wta_matches
             WHERE CAST(REPLACE(SUBSTR(tourney_date, 1, 10), '-', '') AS INTEGER) > ?
+            {level_filter}
               AND winner_rank IS NOT NULL AND loser_rank IS NOT NULL
               AND CAST(winner_rank AS REAL) > 0 AND CAST(loser_rank AS REAL) > 0
             """,
-            (int(cutoff_s),),
+            params,
         ).fetchone()[0]
     finally:
         conn.close()
@@ -114,22 +139,26 @@ def run_wta_delta_qc_gates(
     dbp = db_path or os.path.join(ROOT, "data", "bettinghud.db")
     if os.path.isfile(dbp):
         rate, ok_n, tot = _rank_rate_post_cutoff_sqlite(dbp, cutoff_eff)
+        scope = "main WTA" if _qc_main_tour_only() else "all tiers"
         if tot > 0:
+            label = f"SQLite rangs post-cutoff ({scope}) {rate:.1f}% ({ok_n}/{tot})"
             if rate < 80.0:
                 report.add_blocking(
                     "wta_sqlite_ranks_post_cutoff",
-                    f"SQLite rangs post-cutoff {rate:.1f}% ({ok_n}/{tot})",
+                    label,
                     pct=rate,
                     ok=ok_n,
                     total=tot,
+                    main_tour_only=_qc_main_tour_only(),
                 )
             elif rate < 90.0:
                 report.add_warning(
                     "wta_sqlite_ranks_post_cutoff",
-                    f"SQLite rangs post-cutoff {rate:.1f}% ({ok_n}/{tot})",
+                    label,
                     pct=rate,
                     ok=ok_n,
                     total=tot,
+                    main_tour_only=_qc_main_tour_only(),
                 )
 
     return report

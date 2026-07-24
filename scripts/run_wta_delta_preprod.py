@@ -30,10 +30,11 @@ from scripts.wta_socle_manager import (  # noqa: E402
     verify_backup,
 )
 from scripts.wta_sackmann_common import DEFAULT_CUTOFF  # noqa: E402
+from scripts.ml_bundle_registry import BASELINE_REL, candidate_output_path  # noqa: E402
 
 PREPROD_DB = ROOT / "data" / "preprod" / "bettinghud_wta_delta.db"
-CANDIDATE_MODEL = ROOT / "models" / "preprod" / "xgb_wta_delta_candidate.pkl"
-BASELINE_MODEL = ROOT / "models" / "xgb_model_tml_v47.pkl"
+CANDIDATE_MODEL = candidate_output_path("xgb_wta_delta_candidate.pkl")
+BASELINE_MODEL = ROOT / BASELINE_REL
 
 
 def _run(cmd: list[str], *, desc: str) -> int:
@@ -52,6 +53,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-train", action="store_true")
     ap.add_argument("--skip-check", action="store_true")
     ap.add_argument("--force-refresh-work", action="store_true")
+    ap.add_argument(
+        "--segment-calib",
+        action="store_true",
+        help="Entraînement candidat avec calibration isotonique par segment (Phase 2).",
+    )
     args = ap.parse_args(argv)
 
     # 1) Vérifier sauvegarde
@@ -77,6 +83,22 @@ def main(argv: list[str] | None = None) -> int:
             str(args.cutoff_date),
         ],
         desc="Sync delta tennis-data",
+    )
+    if rc != 0:
+        return rc
+
+    # 4b) Métadonnées joueuses (IDs Sackmann, âges, hand/ht/ioc)
+    rc = _run(
+        [
+            sys.executable,
+            "scripts/enrich_wta_delta_metadata.py",
+            "--work-dir",
+            str(WORK_DIR),
+            "--cutoff-date",
+            str(args.cutoff_date),
+            "--dedup",
+        ],
+        desc="Enrichissement métadonnées joueuses WTA",
     )
     if rc != 0:
         return rc
@@ -140,18 +162,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # 7) Train candidat (sans sync réseau)
     CANDIDATE_MODEL.parent.mkdir(parents=True, exist_ok=True)
+    train_cmd = [
+        sys.executable,
+        "scripts/update_model_tml.py",
+        "--min-year",
+        "2020",
+        "--skip-sync",
+        "--db-path",
+        str(PREPROD_DB),
+        "--output-pkl",
+        str(CANDIDATE_MODEL),
+    ]
+    if args.segment_calib:
+        train_cmd.append("--segment-calib")
     rc = _run(
-        [
-            sys.executable,
-            "scripts/update_model_tml.py",
-            "--min-year",
-            "2020",
-            "--skip-sync",
-            "--db-path",
-            str(PREPROD_DB),
-            "--output-pkl",
-            str(CANDIDATE_MODEL),
-        ],
+        train_cmd,
         desc="Entraînement candidat preprod",
     )
     if rc != 0:

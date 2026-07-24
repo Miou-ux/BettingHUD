@@ -34,6 +34,14 @@ from scripts.telegram_1d1p_post_log import (  # noqa: E402
 def _pick_key(pick: dict | None) -> str | None:
     if not pick:
         return None
+    from scripts.od1p_pick_key import od1p_post_pick_key
+
+    post_key = str(pick.get("_od1p_post_pick_key") or "").strip()
+    if post_key:
+        return post_key
+    cal = str(pick.get("calendar_date") or "")[:10]
+    if cal:
+        return od1p_post_pick_key(cal)
     return str(
         pick.get("pick_key")
         or f"{pick.get('calendar_date')}|{pick.get('tour')}|{pick.get('rank', 1):02d}"
@@ -81,7 +89,9 @@ def run_daily_pick(
     res = load_picks(PickMode.ONE_PICK_ONE_DAY)
     cal_day = res.calendar_date
     pick = res.pick_today
-    pk = _pick_key(pick)
+    from scripts.od1p_pick_key import od1p_post_pick_key
+
+    post_key = od1p_post_pick_key(cal_day)
 
     conn = open_db(DB_PATH_DEFAULT)
     try:
@@ -105,7 +115,7 @@ def run_daily_pick(
                 "ok": True,
                 "dry_run": True,
                 "calendar_date": cal_day,
-                "pick_key": pk,
+                "pick_key": post_key,
                 "n_picks": 1 if pick else 0,
             }
 
@@ -156,14 +166,23 @@ def run_daily_pick(
                 conn,
                 post_type="daily_pick",
                 calendar_date=cal_day,
-                pick_key=pk,
+                pick_key=post_key,
                 message_preview=preview,
+            )
+            from scripts.published_picks_store import MODE_1D1P, save_published_picks
+
+            save_published_picks(
+                conn,
+                mode=MODE_1D1P,
+                calendar_date=cal_day,
+                picks=[pick_row],
+                source=source,
             )
 
         return {
             "ok": True,
             "calendar_date": cal_day,
-            "pick_key": pk,
+            "pick_key": post_key,
             "sent": sent,
             "n_picks": 1 if pick else 0,
         }

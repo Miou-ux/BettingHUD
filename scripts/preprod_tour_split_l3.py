@@ -87,6 +87,44 @@ def train_tour_bundles(
         )
 
 
+def _holdout_eval(
+    ml: TennisMLModel,
+    *,
+    min_year: int,
+    tour_filter: str,
+) -> tuple[dict, np.ndarray, np.ndarray]:
+    """Hold-out 80/20 — un seul ``prepare_data`` par (bundle, tour)."""
+    from scripts.ml_model import TennisMLModel as TML
+
+    ml._load_bundle_if_needed()
+    tf = tour_filter.strip().upper()
+    _log(f"[eval] prepare_data tour={tf} …")
+    ds = ml.prepare_data(min_year=min_year, tour_filter=tf)
+    X = ds[ml.features]
+    y = ds["target"]
+    split_idx = int(len(ds) * 0.8)
+    X_test, y_test = X.iloc[split_idx:], y.iloc[split_idx:]
+    routing = ds.loc[X_test.index, list(TML.ROUTING_COLS_BO5)]
+    y_prob = np.asarray(
+        ml.predict_proba_calibrated_routed(X_test, routing=routing),
+        dtype=float,
+    ).ravel()
+    y_arr = y_test.to_numpy(dtype=float)
+    brier = float(brier_score_loss(y_arr, y_prob))
+    seg_b, seg_n = ml.brier_segments_test_split(X_test, y_test, y_prob)
+    meta = {
+        "tour_filter": tf,
+        "min_year": int(min_year),
+        "n_total": int(len(ds)),
+        "n_test": int(len(y_test)),
+        "n_train": int(split_idx),
+        "global_test_brier": brier,
+        "segment_brier_scores": seg_b,
+        "segment_test_sizes": seg_n,
+    }
+    return meta, y_arr, y_prob
+
+
 def evaluate_split_l3(
     *,
     db_path: Path,
@@ -100,27 +138,8 @@ def evaluate_split_l3(
     ml_atp = TML.from_bundle(str(atp_bundle.relative_to(ROOT)), db_path=str(db_path))
     ml_wta = TML.from_bundle(str(wta_bundle.relative_to(ROOT)), db_path=str(db_path))
 
-    atp_eval = ml_atp.eval_temporal_holdout(min_year=min_year, tour_filter="ATP")
-    wta_eval = ml_wta.eval_temporal_holdout(min_year=min_year, tour_filter="WTA")
-
-    # Combined Brier on concatenated hold-out rows (same 80/20 per tour).
-    def _holdout_arrays(ml: TML, tf: str) -> tuple[np.ndarray, np.ndarray]:
-        ml._load_bundle_if_needed()
-        ds = ml.prepare_data(min_year=min_year, tour_filter=tf)
-        X = ds[ml.features]
-        y = ds["target"]
-        split_idx = int(len(ds) * 0.8)
-        X_test = X.iloc[split_idx:]
-        y_test = y.iloc[split_idx:].to_numpy(dtype=float)
-        routing = ds.loc[X_test.index, list(TML.ROUTING_COLS_BO5)]
-        y_prob = np.asarray(
-            ml.predict_proba_calibrated_routed(X_test, routing=routing),
-            dtype=float,
-        ).ravel()
-        return y_test, y_prob
-
-    y_atp, p_atp = _holdout_arrays(ml_atp, "ATP")
-    y_wta, p_wta = _holdout_arrays(ml_wta, "WTA")
+    atp_eval, y_atp, p_atp = _holdout_eval(ml_atp, min_year=min_year, tour_filter="ATP")
+    wta_eval, y_wta, p_wta = _holdout_eval(ml_wta, min_year=min_year, tour_filter="WTA")
     y_all = np.concatenate([y_atp, y_wta])
     p_all = np.concatenate([p_atp, p_wta])
     combined_brier = float(brier_score_loss(y_all, p_all))
@@ -144,30 +163,14 @@ def evaluate_split_l3(
 
     if joint_bundle and joint_bundle.is_file():
         ml_joint = TML.from_bundle(str(joint_bundle.relative_to(ROOT)), db_path=str(db_path))
-        joint_eval = ml_joint.eval_temporal_holdout(min_year=min_year, tour_filter=None)
-        ds_joint_atp = ml_joint.prepare_data(min_year=min_year, tour_filter="ATP")
-        Xa = ds_joint_atp[ml_joint.features]
-        ya = ds_joint_atp["target"]
-        sia = int(len(ds_joint_atp) * 0.8)
-        Xa_t, ya_t = Xa.iloc[sia:], ya.iloc[sia:]
-        ra = ds_joint_atp.loc[Xa_t.index, list(TML.ROUTING_COLS_BO5)]
-        pa = np.asarray(ml_joint.predict_proba_calibrated_routed(Xa_t, routing=ra), dtype=float).ravel()
-
-        ds_joint_wta = ml_joint.prepare_data(min_year=min_year, tour_filter="WTA")
-        Xw = ds_joint_wta[ml_joint.features]
-        yw = ds_joint_wta["target"]
-        siw = int(len(ds_joint_wta) * 0.8)
-        Xw_t, yw_t = Xw.iloc[siw:], yw.iloc[siw:]
-        rw = ds_joint_wta.loc[Xw_t.index, list(TML.ROUTING_COLS_BO5)]
-        pw = np.asarray(ml_joint.predict_proba_calibrated_routed(Xw_t, routing=rw), dtype=float).ravel()
-
-        yj = np.concatenate([ya_t.to_numpy(dtype=float), yw_t.to_numpy(dtype=float)])
+        _, ya_t, pa = _holdout_eval(ml_joint, min_year=min_year, tour_filter="ATP")
+        _, yw_t, pw = _holdout_eval(ml_joint, min_year=min_year, tour_filter="WTA")
+        yj = np.concatenate([ya_t, yw_t])
         pj = np.concatenate([pa, pw])
         joint_routed_brier = float(brier_score_loss(yj, pj))
 
         out["joint_baseline"] = {
             "bundle": str(joint_bundle.relative_to(ROOT)).replace("\\", "/"),
-            "global_test_brier_joint_train": float(joint_eval["global_test_brier"]),
             "global_test_brier_same_rows": joint_routed_brier,
             "tour_ATP": float(brier_score_loss(ya_t, pa)),
             "tour_WTA": float(brier_score_loss(yw_t, pw)),

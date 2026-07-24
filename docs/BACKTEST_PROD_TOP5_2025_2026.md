@@ -6,6 +6,8 @@ Journal des actions, scripts et résultats pour rejouer le **Top 5 production r�
 
 **Dernière mise à jour** : juillet 2026
 
+> **Exploration optimisation (juil. 2026)** : [[BACKTEST_OPTIMIZATION_JUIL2026]] — grilles, candidats shadow, manques CLV/challengers.
+
 ---
 
 ## 1. Objectif

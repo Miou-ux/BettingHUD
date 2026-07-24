@@ -45,7 +45,9 @@ BettingHUD est une app locale Streamlit qui :
 - `scripts/backtest_2026.py`
   - backtest annuel no-leak (ré-entraînement avant cutoff, cotes tennis-data)
 - `scripts/create_full_project_backup.py`
-  - archive ZIP quasi complète + `RESTAURATION.md`
+  - archive ZIP quasi complète + `RESTAURATION.md` (voir `CHANGELOG_RECENT.md` § 6)
+- `scripts/ml_bundle_cli.py`, `scripts/ml_bundle_registry.py`, `scripts/ml_tour_router.py`
+  - freeze / rollback / promote bundle ; routage ATP-WTA PREPROD — voir **`docs/ML_BUNDLE_ROLLBACK.md`**
 - `scripts/scraper_prematch.py`, `scripts/scraper_profiles.py`, `scripts/scraper_results.py`
   - cotes prematch, enrichissement profils (`force_refresh` pour MAJ manuelle), résultats / résolution de paris
 - `scripts/live_snapshot.py`

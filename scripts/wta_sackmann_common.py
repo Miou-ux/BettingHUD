@@ -64,6 +64,9 @@ SACKMANN_COLUMNS: tuple[str, ...] = (
 
 DEFAULT_CUTOFF = 20260526
 
+# ITF / W15 : pas de rang WTA officiel pour la plupart des joueuses — QC aligné sur main_delta (D1).
+WTA_ITF_TOURNEY_LEVELS = frozenset({"15", "I"})
+
 MIN_PLAYER_AGE = 15.0
 MAX_PLAYER_AGE = 45.0
 
@@ -405,6 +408,110 @@ def _rank_val_ok(val: object) -> bool:
     return bool(s) and s.lower() not in {"nan", "none"}
 
 
+_TE_HASH_SUFFIX_RE = re.compile(r"\s[a-f0-9]{5}$", re.I)
+
+
+def te_name_key_safe(key: object) -> bool:
+    """False pour clés TE internes type ``oliveira 7b451`` (non utilisables comme alias)."""
+    k = str(key or "").strip()
+    if not k or len(k) < 3:
+        return False
+    if _TE_HASH_SUFFIX_RE.search(k):
+        return False
+    return any(ch.isalpha() for ch in k)
+
+
+def name_last_first_initial(nk: str) -> tuple[str, str]:
+    """Déduit (nom de famille, initiale) depuis une clé ``norm_name_key``."""
+    parts = str(nk or "").split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    if len(parts[-1].rstrip(".")) <= 2:
+        last = " ".join(parts[:-1])
+        fi = parts[-1].rstrip(".")[:1]
+        return last, fi
+    last = parts[-1]
+    fi = parts[0][:1] if parts else ""
+    return last, fi
+
+
+def build_wta_players_last_index(work_dir: Path | str) -> dict[tuple[str, str], int]:
+    """(last_norm, first_initial) -> player_id depuis ``wta_players.csv``."""
+    path = Path(work_dir) / "wta_players.csv"
+    out: dict[tuple[str, str], int] = {}
+    if not path.is_file():
+        return out
+    try:
+        pdf = pd.read_csv(path, low_memory=False)
+    except Exception:
+        return out
+    for _, row in pdf.iterrows():
+        try:
+            pid = int(float(row.get("player_id")))
+        except (TypeError, ValueError):
+            continue
+        ln = norm_name_key(row.get("last_name"))
+        fn = str(row.get("first_name") or "").strip()
+        if not ln:
+            continue
+        fi = fn[:1].lower() if fn else ""
+        for key in ((ln, fi), (ln, "")):
+            out.setdefault(key, pid)
+    return out
+
+
+def lookup_te_rank_fuzzy(
+    raw_name: object,
+    *,
+    te_rank_by_name: dict[str, tuple[float, float]],
+    te_rank_by_pid: dict[int, tuple[float, float]] | None = None,
+    name_to_id: dict[str, int] | None = None,
+    wta_players_last_index: dict[tuple[str, str], int] | None = None,
+) -> tuple[float, float] | None:
+    """Rang TE via clé exacte sûre, index joueuses WTA, ou match nom+initiale."""
+    nk = norm_name_key(raw_name)
+    if not nk:
+        return None
+    if nk in te_rank_by_name and te_name_key_safe(nk):
+        return te_rank_by_name[nk]
+
+    te_pid = te_rank_by_pid or {}
+    id_map = name_to_id or {}
+    try:
+        from scripts.wta_name_aliases import canonical_wta_name_key
+
+        cnk = canonical_wta_name_key(raw_name)
+    except Exception:
+        cnk = nk
+    pid = id_map.get(cnk) or id_map.get(nk)
+    if pid is not None and int(pid) in te_pid:
+        return te_pid[int(pid)]
+
+    last, fi = name_last_first_initial(nk)
+    if last and wta_players_last_index:
+        for key in ((last, fi), (last, "")):
+            p = wta_players_last_index.get(key)
+            if p is not None and int(p) in te_pid:
+                return te_pid[int(p)]
+
+    best: tuple[float, float] | None = None
+    best_len = 999
+    for pk, val in te_rank_by_name.items():
+        if not te_name_key_safe(pk):
+            continue
+        pp = pk.split()
+        if not pp or pp[0] != last:
+            continue
+        if fi and len(pp) > 1 and not pp[1].startswith(fi):
+            continue
+        if len(pp) < best_len:
+            best = val
+            best_len = len(pp)
+    return best
+
+
 def build_rank_history(matches_df: pd.DataFrame) -> dict[int, list[tuple[int, float, float]]]:
     """Historique (tourney_date, rank, rank_points) par player_id, trié par date."""
     out: dict[int, list[tuple[int, float, float]]] = {}
@@ -631,7 +738,7 @@ def build_te_cache_rank_maps(
         if pid is not None:
             by_pid[pid] = (float(rank_i), pts)
         nk_slug = norm_name_key(slug.replace("-", " "))
-        if nk_slug:
+        if nk_slug and te_name_key_safe(nk_slug):
             by_name[nk_slug] = (float(rank_i), pts)
     return by_pid, by_name
 
@@ -645,6 +752,7 @@ def fill_ranks_if_missing(
     name_to_id: dict[str, int] | None = None,
     te_rank_by_pid: dict[int, tuple[float, float]] | None = None,
     te_rank_by_name: dict[str, tuple[float, float]] | None = None,
+    wta_players_last_index: dict[tuple[str, str], int] | None = None,
 ) -> int:
     """Complète winner/loser rank (+ points) depuis historique, forward, classement ou cache TE."""
     filled = 0
@@ -679,8 +787,18 @@ def fill_ranks_if_missing(
                 nk = canonical_wta_name_key(row.get(f"{side}_name"))
             except Exception:
                 nk = norm_name_key(row.get(f"{side}_name"))
-            if nk and nk in te_name:
+            if nk and nk in te_name and te_name_key_safe(nk):
                 rank, pts = te_name[nk]
+        if rank is None:
+            te_hit = lookup_te_rank_fuzzy(
+                row.get(f"{side}_name"),
+                te_rank_by_name=te_name,
+                te_rank_by_pid=te_pid,
+                name_to_id=name_to_id,
+                wta_players_last_index=wta_players_last_index,
+            )
+            if te_hit is not None:
+                rank, pts = te_hit
         if rank is not None:
             row[rank_col] = rank
             filled += 1

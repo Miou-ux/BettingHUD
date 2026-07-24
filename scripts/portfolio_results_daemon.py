@@ -75,6 +75,31 @@ def _count_pending(db_path: str) -> int:
         conn.close()
 
 
+def _count_open_algo_picks(db_path: str, *, window_days: int = 7) -> int:
+    """Picks algo « En cours » dans la fenêtre de résolution (évite stale >7j)."""
+    from scripts.bets_db import ensure_algo_opportunities_schema, ensure_daily_top_proba_schema
+
+    conn = sqlite3.connect(db_path)
+    try:
+        ensure_daily_top_proba_schema(conn)
+        ensure_algo_opportunities_schema(conn)
+        row = conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM daily_top_proba_picks
+               WHERE COALESCE(status, 'En cours') = 'En cours'
+                 AND match_date >= date('now', printf('-%d days', ?)))
+            + (SELECT COUNT(*) FROM algo_opportunities
+               WHERE COALESCE(status, 'En cours') = 'En cours'
+                 AND match_date >= date('now', printf('-%d days', ?)))
+            """,
+            (window_days, window_days),
+        ).fetchone()
+        return int(row[0] or 0)
+    finally:
+        conn.close()
+
+
 def _run_daily_top_proba_pass(db_path: str) -> None:
     from scripts.daily_top_proba_store import run_daily_top_proba_daemon_pass
 
@@ -192,8 +217,9 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
         LOGGER.warning("Top probas journalier ignoré : %s", exc)
 
     pending = _count_pending(db_path)
-    if pending == 0:
-        LOGGER.info("Aucun pari « En cours » — scrape ignoré")
+    open_picks = _count_open_algo_picks(db_path, window_days=7)
+    if pending == 0 and open_picks == 0:
+        LOGGER.info("Aucun pari « En cours » ni pick algo ouvert — scrape ignoré")
         try:
             _sync_algo_report(db_path)
         except Exception as exc:
@@ -210,7 +236,13 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
         return 2
 
     try:
-        LOGGER.info("Début passe (%d pari(s) en cours)…", pending)
+        if pending:
+            LOGGER.info("Début passe (%d pari(s) portefeuille en cours)…", pending)
+        else:
+            LOGGER.info(
+                "Début passe (0 pari portefeuille, %d pick(s) algo ouvert(s))…",
+                open_picks,
+            )
         t0 = time.time()
         scraper = ResultsScraper(db_path=db_path)
         n = asyncio.run(scraper.update_pending_bets())

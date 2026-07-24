@@ -10,6 +10,7 @@ sys.path.insert(0, ROOT)
 from scripts.match_rank_quality import (
     match_has_rank_points_source,
     match_rank_exclude_reason,
+    passes_public_pick_gates,
     player_rank_stats_fresh,
 )
 
@@ -74,8 +75,60 @@ def test_default_stats_placeholder_excluded():
     assert match_rank_exclude_reason(m) == "default_stats_placeholder"
     score, flags = match_data_reliability_score(m)
     assert score < 80
-    assert "p1_rank_placeholder" in flags
-    assert "p2_rank_placeholder" in flags
+    assert "p1_default_model_stats" in flags
+    assert "p2_default_model_stats" in flags
+
+
+def test_single_side_default_stats_excluded():
+    real = {
+        "rank": 86,
+        "pts": 737,
+        "stats_source": "matches_recent",
+        "stats_reference_date": "2026-07-20",
+    }
+    default = {
+        "rank": 100,
+        "pts": 1000,
+        "stats_source": "matches_recent",
+        "stats_reference_date": "2026-07-20",
+    }
+    m = {
+        "date": "2026-07-23",
+        "player1": "Van Assche L.",
+        "player2": "Carreno-Busta P.",
+        "p1_stats": real,
+        "p2_stats": default,
+        "feature_snapshot": {"capped_p1_prob": 0.35},
+        "odd_p1": 2.5,
+        "odd_p2": 1.55,
+        "data_reliability_score": 82,
+    }
+    assert match_rank_exclude_reason(m) == "default_stats_placeholder"
+    assert not match_has_rank_points_source(m)
+    assert not passes_public_pick_gates(m, min_score=80)
+
+
+def test_rank_points_default_source_detected():
+    from scripts.match_rank_quality import is_default_player_stats
+
+    imputed = {
+        "rank": 100,
+        "pts": 1000,
+        "stats_source": "rank_points_default",
+        "stats_reference_date": "2026-07-20",
+    }
+    assert is_default_player_stats(imputed)
+    m = {
+        "date": "2026-07-23",
+        "p1_stats": {
+            "rank": 10,
+            "pts": 3000,
+            "stats_source": "matches_recent",
+            "stats_reference_date": "2026-07-20",
+        },
+        "p2_stats": imputed,
+    }
+    assert match_rank_exclude_reason(m) == "default_stats_placeholder"
 
 
 def test_duplicate_model_prob_penalizes_score():
@@ -129,5 +182,7 @@ if __name__ == "__main__":
     test_missing_ref_date_excluded()
     test_tennisexplorer_estimate_excluded()
     test_default_stats_placeholder_excluded()
+    test_single_side_default_stats_excluded()
+    test_rank_points_default_source_detected()
     test_duplicate_model_prob_penalizes_score()
     print("OK")
