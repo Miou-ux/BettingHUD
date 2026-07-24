@@ -67,8 +67,7 @@ def _run_hybrid(
             merged = _merge_picks(base, extra)
             for p in merged:
                 row = dict(p)
-                if year == 2026 and day >= LIVE_CUTOFF:
-                    row = _attach_settlement(row, smap, conn=conn)
+                row = _attach_settlement(row, smap, conn=conn)
                 picks.append(row)
     return picks
 

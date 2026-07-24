@@ -250,7 +250,10 @@ def _resolve_kelly_frac(kelly_frac: float | None) -> float:
 
 def _kelly_eligible(pick: dict) -> bool:
     st = str(pick.get("status") or "")
-    return st in ("Gagné", "Perdu")
+    if st in ("Gagné", "Perdu"):
+        return True
+    # CSV no-leak (< LIVE_CUTOFF): settled/won without French status
+    return pick.get("settled") is True and pick.get("won") is not None
 
 
 def kelly_replay_metrics(

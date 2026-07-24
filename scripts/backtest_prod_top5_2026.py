@@ -141,12 +141,14 @@ def _csv_rows_for_year(year: int, *, csv_path: str | None = None) -> list[dict]:
 
 
 def _norm_pick_row(r: dict) -> dict:
-    """Normalize pick fields; preserve CSV ``settled``/``won`` (no French status)."""
+    """Normalize pick fields; map CSV ``settled``/``won`` to French status when missing."""
     out = _norm(r)
     if "settled" in r:
         out["settled"] = bool(r.get("settled"))
     if "won" in r:
         out["won"] = bool(r.get("won"))
+    if out.get("settled") and str(out.get("status") or "").strip() not in ("Gagné", "Perdu", "Annulé"):
+        out["status"] = "Gagné" if out.get("won") else "Perdu"
     return out
 
 
