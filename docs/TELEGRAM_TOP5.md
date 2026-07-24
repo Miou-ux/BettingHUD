@@ -195,6 +195,8 @@ Alias `/brstats` : `/bradv`, `/brdetail`.
 
 Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à ton `telegram_user_id` (dashboard **Miouppy** + paris bot). Capital de départ et ajustements sont **par compte**, pas globaux au chat.
 
+**Reset complet (ops)** : `scripts/reset_user_portfolio.py` — supprime l'historique `user_bets`, archive JSON, reset BR web + TG. Voir [[PORTFOLIO_TRACKING]] §5.
+
 État temporaire : `data/cache/telegram_pick_registry.json`, `data/cache/telegram_bet_sessions.json` (TTL 24 h).
 
 ---

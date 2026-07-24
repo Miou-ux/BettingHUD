@@ -2589,6 +2589,12 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
     n += _correct_retirement_voids_daily_top_proba(conn)
     n += correct_retirement_voids_user_bets(conn)
     n += _void_stale_open_daily_top_proba(conn)
+    try:
+        from scripts.portfolio_tracking_store import refresh_portfolio_tracking
+
+        refresh_portfolio_tracking(conn)
+    except Exception:
+        pass
     return n
 
 

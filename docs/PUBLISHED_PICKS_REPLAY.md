@@ -166,4 +166,17 @@ py -3 -m pytest tests/test_open_algo_resolution.py tests/test_published_picks_st
 # Sur Windows si teardown pytest : ajouter --capture=no
 ```
 
-Voir aussi : [[DAILY_TOP_PROBA_REPLAY]], [[ONE_DAY_ONE_PICK]], [[OPS_PROD_DEPANNAGE]] § replay.
+Voir aussi : [[DAILY_TOP_PROBA_REPLAY]], [[ONE_DAY_ONE_PICK]], [[PORTFOLIO_TRACKING]], [[OPS_PROD_DEPANNAGE]] § replay.
+
+---
+
+## 4. Ledger portfolio théorique (juillet 2026)
+
+En plus de `daily_published_picks`, le suivi **reconstructible** Top5 / 1D1P utilise :
+
+- `portfolio_tracking_config` — date de départ + bankroll théorique par mode
+- `portfolio_daily_bets` — une ligne par pari publié avec Kelly / P/L / bankroll
+
+Alimentation : hooks sur publication TG et settlement algo. CourtAlpha lit ce ledger quand la config est active.
+
+Détail complet : [[PORTFOLIO_TRACKING]].

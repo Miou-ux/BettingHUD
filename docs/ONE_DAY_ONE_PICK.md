@@ -162,7 +162,7 @@ flowchart TB
 | JSONL archive | `data/exports/daily_top_proba/{date}.jsonl` |
 | Settlement | `sync_daily_top_proba_from_results()` via daemon (~10 min) |
 
-**Replay CourtAlpha** : historique = picks **publiés** si présents ; sinon repli sélection hybride. **Aujourd’hui** = live. Voir [[PUBLISHED_PICKS_REPLAY]].
+**Replay CourtAlpha** : historique = picks **publiés** si présents ; sinon repli sélection hybride. **Aujourd’hui** = live. Voir [[PUBLISHED_PICKS_REPLAY]] · [[PORTFOLIO_TRACKING]].
 
 Backfill archive publication : `scripts/backfill_published_picks.py --date YYYY-MM-DD`.
 

@@ -9,6 +9,7 @@ from typing import Any
 
 MODE_TOP5 = "top5"
 MODE_1D1P = "1d1p"
+NO_PICK_KEY = "__none__"
 
 
 def ensure_published_picks_schema(conn: sqlite3.Connection) -> None:
@@ -162,7 +163,40 @@ def save_published_picks(
         )
         n += 1
     conn.commit()
+    try:
+        from scripts.portfolio_tracking_store import on_published_picks_saved
+
+        on_published_picks_saved(conn, mode=mode, calendar_date=cal)
+    except Exception:
+        pass
     return n
+
+
+def mark_published_no_picks(
+    conn: sqlite3.Connection,
+    *,
+    mode: str,
+    calendar_date: str,
+    source: str = "backfill",
+) -> None:
+    """Archive un jour sans publication (évite re-sélection fallback au replay)."""
+    ensure_published_picks_schema(conn)
+    cal = str(calendar_date)[:10]
+    conn.execute(
+        "DELETE FROM daily_published_picks WHERE calendar_date = ? AND mode = ?",
+        (cal, mode),
+    )
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        INSERT INTO daily_published_picks (
+            calendar_date, mode, publish_rank, pick_key, fav_player,
+            published_ts, publish_source, payload_json
+        ) VALUES (?, ?, 0, ?, NULL, ?, ?, ?)
+        """,
+        (cal, mode, NO_PICK_KEY, now, source, '{"no_pick": true}'),
+    )
+    conn.commit()
 
 
 def has_published_for_date(
@@ -209,6 +243,8 @@ def load_published_replay_picks(
         out: list[dict[str, Any]] = []
         for pub in pub_rows:
             d = dict(pub)
+            if str(d.get("pick_key") or "") == NO_PICK_KEY or int(d.get("publish_rank") or 0) <= 0:
+                continue
             pk = d.get("pick_key")
             merged: dict[str, Any] | None = None
             if pk:

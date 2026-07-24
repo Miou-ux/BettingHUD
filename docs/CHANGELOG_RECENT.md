@@ -6,6 +6,34 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ledger portfolio Top5 / 1D1P + reset Miouppy (24 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Suivi théorique** | Tables `portfolio_tracking_config` + `portfolio_daily_bets` — 1 ligne par pari publié, P/L Kelly séquentiel reconstructible |
+| **CourtAlpha** | Replay lit le ledger si config active (`replay_mode: portfolio_ledger`) ; filtre ≥ `start_date` |
+| **Hooks** | Publication TG → ledger ; settlement algo → refresh ledger |
+| **Pick du jour** | Merge settlement DB (fix affichage « Open » alors qu’`Annulé` en base, ex. walkover Oliynykova) |
+| **Prod reset** | Start **2026-07-24**, BR théorique **300 €** (Top5 + 1D1P) |
+| **Miouppy** | 102 `user_bets` supprimés, archivés JSON ; BR web + TG **300 €** (sans ajustement manuel) |
+| **CLI** | `init_portfolio_tracking.py`, `reset_user_portfolio.py` |
+
+Doc : `docs/PORTFOLIO_TRACKING.md`.
+
+### Fichiers
+
+| Fichier | Rôle |
+|---------|------|
+| `scripts/portfolio_tracking_store.py` | Schéma, sync publish/settle, recompute Kelly |
+| `scripts/init_portfolio_tracking.py` | Init suivi théorique |
+| `scripts/reset_user_portfolio.py` | Reset utilisateur + option portfolio |
+| `scripts/live_replay_engine.py` | Sélection historique + priorité ledger |
+| `deploy/courtalpha/api/services/one_day_one_pick.py` | Replay 1D1P ledger + settlement today |
+| `deploy/courtalpha/api/services/top5_replay.py` | Replay Top5 ledger |
+| `tests/test_portfolio_tracking_store.py` | Test ledger |
+
+---
+
 # Kelly **0,85** prod (24 juillet 2026)
 
 | Élément | Détail |

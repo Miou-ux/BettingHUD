@@ -27,6 +27,7 @@ Code et dashboard : `O:\Miouppy\Documents\BettingHUD\` (Cursor / Streamlit).
 | [[DEPLOY_SERVEUR]] | **Hébergement Ubuntu** (systemd, nginx, SSH, git pull) |
 | [[OPS_PROD_DEPANNAGE]] | **Ops & dépannage PROD** (sync données, HEADLESS, incidents, checklist) |
 | [[PUBLISHED_PICKS_REPLAY]] | **Picks publiés + settlement algo** — replay CourtAlpha, flux daemons (juil. 2026) |
+| [[PORTFOLIO_TRACKING]] | **Ledger Top5 / 1D1P** — suivi théorique reconstructible, reset BR (juil. 2026) |
 | [[WTA_SACKMANN_ARCHIVE]] | **Archive WTA Sackmann** — backup, delta prod, Brier, restauration |
 | [[PROD_RESILIENCE]] | **Redémarrage auto** serveur + app (systemd, boot, crash) |
 | [[PROD_AUDIT]] | **Audit PROD** résilience & sécurité (checklist améliorations) |
