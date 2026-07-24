@@ -40,16 +40,16 @@ REPLACEMENTS = [
         "Top 5: HYB P75+P80-all — P75-TIER (p≥73%, rel≥80, EV 6–55%, max 6/day) plus P≥80% rel≥80 add-ons (any EV), sorted by proba ↓. 1 Day 1 Pick: highest model proba in that union. Today's picks (/today) remain value bets EV ≥ 15%.",
     ),
     (
-        "Strategy: hybrid Top 5 (P≥77%, rel≥75, gap≤30pp, EV tiers 15–35 / 30–55%, sorted by EV ↓), majors 250+, Kelly 0.65",
-        "Strategy: HYB P75+P80-all (P75-TIER + P≥80 rel≥80, sorted by proba ↓), majors 250+, Kelly 0.65",
+        "Strategy: hybrid Top 5 (P≥77%, rel≥75, gap≤30pp, EV tiers 15–35 / 30–55%, sorted by EV ↓), majors 250+, Kelly 0.85",
+        "Strategy: HYB P75+P80-all (P75-TIER + P≥80 rel≥80, sorted by proba ↓), majors 250+, Kelly 0.85",
     ),
     (
         "sélection hybride Top 5 (P≥77 %, rel≥75, gap≤30 pp, EV tiers 15–35 / 30–55 %, tri EV ↓), modèle entraîné avant chaque année testée. ROI année = Kelly 0,65 × Brier (cap 15 % liquidité). ROI 1D1P = rang 1 hybride/jour, mise fixe 1 unité",
         "sélection HYB P75+P80-all (P75-TIER + P≥80 rel≥80, tri proba ↓), modèle entraîné avant chaque année testée. ROI année = Kelly 0,65 × Brier (cap 15 % liquidité). ROI 1D1P = meilleure proba HYB/jour, mise fixe 1 unité",
     ),
     (
-        "hybrid Top 5 selection (P≥77%, rel≥75, gap≤30pp, EV tiers 15–35 / 30–55%, sorted by EV ↓), model trained before each test year. Year ROI = Kelly 0.65 × Brier (15% liquidity cap). 1D1P ROI = hybrid rank 1/day, fixed 1-unit stake",
-        "HYB P75+P80-all selection (P75-TIER + P≥80 rel≥80, sorted by proba ↓), model trained before each test year. Year ROI = Kelly 0.65 × Brier (15% liquidity cap). 1D1P ROI = best HYB proba/day, fixed 1-unit stake",
+        "hybrid Top 5 selection (P≥77%, rel≥75, gap≤30pp, EV tiers 15–35 / 30–55%, sorted by EV ↓), model trained before each test year. Year ROI = Kelly 0.85 × Brier (15% liquidity cap). 1D1P ROI = hybrid rank 1/day, fixed 1-unit stake",
+        "HYB P75+P80-all selection (P75-TIER + P≥80 rel≥80, sorted by proba ↓), model trained before each test year. Year ROI = Kelly 0.85 × Brier (15% liquidity cap). 1D1P ROI = best HYB proba/day, fixed 1-unit stake",
     ),
     (
         "Top 5 hybride · P≥77 % · EV tiers 15–35 / 30–55 %",

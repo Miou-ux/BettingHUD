@@ -119,7 +119,7 @@ Même pool de matchs que le Live Tracker (**Aujourd’hui**), filtrés **proba m
 | Proba modèle | `capped_p1_prob` via `model_prob_for_side` (aligné Top 5 — plus `1 / true_odd` stale) |
 | EV | `ValueDetector` |
 | Cote | Cote book du côté parié |
-| Kelly reco | `_algo_kelly_stake_frac` (Kelly 0,65 × Brier adaptatif) |
+| Kelly reco | `_algo_kelly_stake_frac` (Kelly **0,85** × Brier adaptatif — `kelly_policy.KELLY_BASE_FRAC`) |
 
 Messages longs : découpés automatiquement (~3900 caractères / message) avec en-tête « Partie 1/2 ».
 
@@ -174,7 +174,7 @@ Sur demande via le daemon **ou** sur l’envoi matinal automatique (`run_notify(
 
 1. Un **message par match** avec bouton **💰 Parier**
 2. Clic → le bot demande ta **cote réelle** (ex. `1.92`)
-3. Calcul **Kelly 0,65 × Brier** sur la bankroll app (comme le dashboard)
+3. Calcul **Kelly 0,85 × Brier** sur la bankroll app (comme le dashboard)
 4. **✅ Confirmer** (mise Kelly), **✏️ Autre mise**, ou envoi d’un montant en € (ex. `2.50`)
 5. Cumul autorisé sur le même match ; insertion `user_bets` (`tracker_source=telegram_bet`)
 
@@ -240,7 +240,7 @@ Message statique (`format_bot_strategy_message` dans `telegram_top5_notify.py`) 
 
 1. **Principe** — modèle ML ATP/WTA, edge vs book (EV &gt; 0)
 2. **Sélection** — `/top5` & `/1pick1day` : **HYB P75+P80-all** (P75-TIER + P≥80 rel≥80, tri proba ↓ ; 1D1P = meilleure proba) ; `/today` : value bets EV≥15 %
-3. **Mise** — Kelly 0,65, facteur Brier segment, plafond 15 % BR
+3. **Mise** — Kelly **0,85**, facteur Brier segment, plafond 15 % BR
 4. **Pratique** — vérifier cote réelle, miser ≤ reco Kelly
 
 Aperçu PREPROD : `py -3 scripts/telegram_top5_notify.py --strategy`

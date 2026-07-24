@@ -48,7 +48,7 @@ METHOD_PROTO_FR = (
 METHOD_PROTO_EN = (
     "Protocol: ATP+WTA, G/M/A tournaments, HYB P75+P80-all selection "
     "(P75-TIER + P≥80 rel≥80, sorted by proba ↓), model trained before each test year. "
-    "Year ROI = Kelly 0.65 × Brier (15% liquidity cap). "
+    "Year ROI = Kelly 0.85 × Brier (15% liquidity cap). "
     "1D1P ROI = best HYB proba/day, fixed 1-unit stake. "
     "Full details not published — indicative results, past ≠ future."
 )
@@ -103,7 +103,7 @@ def _patch_methodo() -> None:
     )
     _replace_in(
         ROOT / "frontend/src/lib/methodoContentEn.ts",
-        "Protocol: ATP+WTA, G/M/A tournaments, hybrid Top 5 selection (P≥77%, rel≥75, gap≤30pp, EV tiers 15–30 / 30–50%, sorted by EV ↓), model trained before each test year. Year ROI = Kelly 0.65 × Brier (15% liquidity cap). 1D1P ROI = hybrid rank 1/day, fixed 1-unit stake. Full details not published — indicative results, past ≠ future.",
+        "Protocol: ATP+WTA, G/M/A tournaments, hybrid Top 5 selection (P≥77%, rel≥75, gap≤30pp, EV tiers 15–30 / 30–50%, sorted by EV ↓), model trained before each test year. Year ROI = Kelly 0.85 × Brier (15% liquidity cap). 1D1P ROI = hybrid rank 1/day, fixed 1-unit stake. Full details not published — indicative results, past ≠ future.",
         METHOD_PROTO_EN,
     )
 

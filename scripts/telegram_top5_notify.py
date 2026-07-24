@@ -424,7 +424,9 @@ def format_bot_invite_start_message() -> str:
 def format_bot_onboarding_after_approval() -> str:
     """Post-approval onboarding (English)."""
     from scripts.comms_locale import DISCLAIMER_EN
+    from scripts.kelly_policy import kelly_base_label_long
 
+    kelly_lbl = kelly_base_label_long()
     return "\n".join(
         [
             "🚀 <b>Getting started</b>",
@@ -444,7 +446,7 @@ def format_bot_onboarding_after_approval() -> str:
             "  (<code>/cancel</code> to abort a flow in progress)",
             "",
             "<b>4. Learn more</b>",
-            "  <code>/strategy</code> — selection & staking (Kelly 0.65 × Brier)",
+            f"  <code>/strategy</code> — selection & staking ({kelly_lbl} × Brier)",
             "  <code>/help</code> — full command list",
             "",
             "🌅 Every morning (~05:00 Paris): auto <code>/top5</code>.",
@@ -475,7 +477,9 @@ def format_bot_welcome_message() -> str:
 def format_bot_strategy_message() -> str:
     """Strategy summary (/strategy)."""
     from scripts.comms_locale import DISCLAIMER_EN
+    from scripts.kelly_policy import kelly_base_label_long
 
+    kelly_lbl = kelly_base_label_long()
     return "\n".join(
         [
             f"📖 <b>{BRAND_NAME} — Strategy</b>",
@@ -494,7 +498,7 @@ def format_bot_strategy_message() -> str:
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
             "",
             "<b>3. Staking (Kelly)</b>",
-            "• <b>Kelly 0.65</b> (fractional Kelly, Brier-adjusted)",
+            f"• <b>{kelly_lbl}</b> (fractional Kelly, Brier-adjusted)",
             "• <b>Brier</b> adjustment by segment (surface / tour)",
             "• <b>15% cap</b> of available bankroll per bet",
             "",

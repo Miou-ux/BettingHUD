@@ -1,6 +1,6 @@
 """
 Simulation 2026 sans leak : top 10 probas / jour, EV >= 15 %, filtres backtest dashboard,
-gestion BR = Kelly 0,65 × facteur Brier segment (÷0,25), plafond 15 % liquidité intraday.
+gestion BR = Kelly 0,85 × facteur Brier segment (÷0,25), plafond 15 % liquidité intraday.
 
 Étapes :
   1. CSV no-leak via ``backtest_2026.py`` (ou fichier existant).
@@ -30,6 +30,7 @@ from scripts.backtest_staking_sim import (  # noqa: E402
     resolve_backtest_csv,
     simulate_sequential_intraday,
 )
+from scripts.kelly_policy import KELLY_BASE_FRAC as KELLY_BASE  # noqa: E402
 from scripts.ml_model import TennisMLModel, resolve_match_brier_segment_key  # noqa: E402
 
 # Filtres alignés onglet Backtest Kelly (dashboard.py, défauts)
@@ -41,7 +42,6 @@ DEFAULT_TOP_N = 10
 DEFAULT_EV_MIN_PCT = 15.0
 DEFAULT_EV_MAX_PCT = 100.0
 DEFAULT_BR0 = 100.0
-KELLY_BASE = 0.65  # prod default — voir scripts/kelly_policy.py
 MAX_STAKE_PCT = 15.0
 
 

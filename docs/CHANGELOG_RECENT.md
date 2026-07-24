@@ -6,6 +6,21 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Kelly **0,85** prod (24 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Changement** | Fraction Kelly de base **0,65 → 0,85** (`scripts/kelly_policy.py` → `KELLY_BASE_FRAC`) |
+| **Plafond** | Inchangé — **15 %** BR / liquidité + ajustement Brier segment |
+| **Backtest live replay** (≥ 18 mai, HYB, BR 100 €) | 0,65 → **238 €** · 0,85 → **271 €** (+33 €, DD 32 → 38 %) |
+| **Juillet seul** | +7 € vs 0,65 (100 €) — gain marginal, caps souvent actifs |
+| **YTD 2026** | Tous les mois positifs en 0,85–1,25 ; sweet spot backtest ~0,85–1,0 |
+| **UI / bot** | Dashboard, Telegram `/strategy`, `_algo_kelly_stake_frac` — source unique `kelly_policy` |
+
+Doc : `PREDICTION_ET_MISE.md` §6, `TELEGRAM_TOP5.md`.
+
+---
+
 # HYB P75+P80-all — sélection prod (24 juillet 2026)
 
 | Élément | Détail |
@@ -823,7 +838,7 @@ BETTINGHUD_HEADLESS=1 ./venv/bin/python scripts/rebuild_live_projection.py
 
 | Commande | Alias | Contenu |
 |----------|-------|---------|
-| `/strategie` | `/strategy` | Synthèse sélection (Top 5, EV 15–100 %) + mise Kelly 0,65 × Brier, cap 15 % |
+| `/strategie` | `/strategy` | Synthèse sélection (Top 5, EV 15–100 %) + mise Kelly **0,85** × Brier, cap 15 % |
 
 Fichiers : `scripts/telegram_top5_notify.py` (`format_bot_strategy_message`), `scripts/telegram_bot_daemon.py`.
 

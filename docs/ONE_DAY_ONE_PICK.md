@@ -15,7 +15,7 @@ Track record public auditable : [courtalpha.tech/1-day-1-pick](https://courtalph
 | Base | **P75-TIER** : p≥73 %, rel≥80, EV 6–55 %, max 6/j |
 | Compléments | **P≥80 %**, rel≥80, EV libre (matchs non déjà pris) |
 | Pick retenu | **Meilleure proba fav** dans l’union (`hyb_p75_p80_best_proba`) |
-| Mise théorique | Kelly **0,65** × Brier, plafond 15 % BR |
+| Mise théorique | Kelly **0,85** × Brier, plafond 15 % BR |
 
 > **Juillet 2026** : remplace « rang 1 Top 5 hybride P77 tier1/tier2 ».
 

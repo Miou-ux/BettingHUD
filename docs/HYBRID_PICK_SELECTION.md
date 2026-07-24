@@ -18,6 +18,16 @@ Sélection **Top 5**, **Telegram**, **dashboard**, **1D1P** (juillet 2026).
 
 Meilleur pick = **proba fav max** dans l’union (`best_1d1p_pick_from_hyb`), pas le premier rang de la liste.
 
+## Mise (Kelly prod)
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Fraction Kelly | **0,85** × Kelly plein (`scripts/kelly_policy.py`) |
+| Ajustement | Facteur Brier segment `(1 − Brier/0,25)` |
+| Plafond | **15 %** bankroll / liquidité disponible |
+
+Source unique : `KELLY_BASE_FRAC` — dashboard, Telegram bot, `_algo_kelly_stake_frac`.
+
 ## Code
 
 | Fichier | Rôle |

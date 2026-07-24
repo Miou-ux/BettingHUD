@@ -1,8 +1,8 @@
 """Politique de mise Kelly prod (live, Telegram, backtests de référence)."""
 from __future__ import annotations
 
-# Fraction de Kelly plein avant ajustement Brier segment (juillet 2026 : 0.65, ex-0.5).
-KELLY_BASE_FRAC = 0.65
+# Fraction de Kelly plein avant ajustement Brier segment (juillet 2026 : 0.85, ex-0.65).
+KELLY_BASE_FRAC = 0.85
 
 # Plafond par pari (% bankroll / liquidité disponible).
 KELLY_MAX_STAKE_FRAC = 0.15

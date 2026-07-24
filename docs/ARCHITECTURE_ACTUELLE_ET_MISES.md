@@ -294,14 +294,14 @@ kelly_full = (b*p - (1-p)) / b
 Puis :
 
 ```text
-kelly_fraction = 0.5 * kelly_full
+kelly_fraction = KELLY_BASE_FRAC * kelly_full   # prod : 0.85 (scripts/kelly_policy.py)
 ```
 
 Cette fraction est ensuite ajustée par le Brier du segment :
 
 ```text
 brier_factor = max(0, 1 - segment_brier / 0.25)
-stake_frac = 0.5 * kelly_full * brier_factor
+stake_frac = KELLY_BASE_FRAC * kelly_full * brier_factor
 ```
 
 Enfin, la mise est plafonnée :
