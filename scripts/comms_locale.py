@@ -85,6 +85,18 @@ def tg(en: str, fr: str) -> str:
     return en if comms_is_english() else fr
 
 
+def top_picks_label(*, short: bool = False) -> str:
+    """Display name for HYB P75+P80-all daily picks (formerly « Top 5 »)."""
+    if short:
+        return tg("Top picks", "Top picks du jour")
+    return tg("Top picks of the day", "Top picks du jour")
+
+
+def top_picks_command() -> str:
+    """Slash command Telegram (``/top`` ; ``/top5`` reste alias)."""
+    return "/top"
+
+
 def format_calendar_date_label(calendar_date: str, *, tz: ZoneInfo = PARIS_TZ) -> str:
     """Human date for TG/Discord headers (Europe/Paris today/tomorrow)."""
     try:

@@ -67,7 +67,7 @@ LOG_PATH = os.path.join(LOG_DIR, "telegram_bot_daemon.log")
 OFFSET_PATH = os.path.join(ROOT, "data", "cache", ".telegram_bot_offset")
 
 ONE_PICK_ONE_DAY_COMMANDS = telegram_command_aliases("/1pick1day", "/1d1p")
-TOP5_COMMANDS = telegram_command_aliases("/top5", "/top")
+TOP5_COMMANDS = telegram_command_aliases("/top", "/top5")
 TODAY_COMMANDS = telegram_command_aliases("/today", "/jour", "/picks", "/picksdujour")
 # Alias historiques → redirigés vers /top5 ou /today
 CHALLENGER_PICKS_COMMANDS = telegram_command_aliases("/jourchallenger", "/challengers")
@@ -531,8 +531,8 @@ def _handle_message(
         cmd = "/today"
 
     if cmd in MAJOR_PICKS_COMMANDS or cmd in ("/jourmajor", "/majors"):
-        LOGGER.info("Alias /jourmajor → /top5 — chat_id=%s", chat_id)
-        cmd = "/top5"
+        LOGGER.info("Alias /jourmajor → /top — chat_id=%s", chat_id)
+        cmd = "/top"
 
     if cmd in TODAY_COMMANDS or cmd in DAILY_PICKS_COMMANDS or cmd in ("/today", "/jour", "/picks", "/picksdujour"):
         if not telegram_user_id:
@@ -567,7 +567,7 @@ def _handle_message(
             )
         return
 
-    if cmd in TOP5_COMMANDS or cmd in ("/top5", "/top"):
+    if cmd in TOP5_COMMANDS or cmd in ("/top", "/top5"):
         if not telegram_user_id:
             send_telegram_message(
                 "⚠️ Could not identify your Telegram account.",
@@ -575,7 +575,7 @@ def _handle_message(
                 chat_id=chat_id,
             )
             return
-        LOGGER.info("Commande /top5 — chat_id=%s user=%s", chat_id, telegram_user_id)
+        LOGGER.info("Commande /top — chat_id=%s user=%s", chat_id, telegram_user_id)
         send_telegram_chat_action(token=token, chat_id=chat_id, action="typing")
         try:
             out = run_notify(
@@ -585,15 +585,15 @@ def _handle_message(
                 telegram_user_id=telegram_user_id,
             )
             LOGGER.info(
-                "Top 5 envoye a %s : %d pick(s) (%s)",
+                "Top picks envoye a %s : %d pick(s) (%s)",
                 chat_id,
                 int(out.get("n_picks") or 0),
                 out.get("calendar_date"),
             )
         except Exception as exc:
-            LOGGER.exception("Echec /top5 : %s", exc)
+            LOGGER.exception("Echec /top : %s", exc)
             send_telegram_message(
-                format_telegram_error_message("Erreur Top 5", exc),
+                format_telegram_error_message("Erreur Top picks (/top)", exc),
                 token=token,
                 chat_id=chat_id,
             )
@@ -601,7 +601,7 @@ def _handle_message(
 
     if text.startswith("/"):
         send_telegram_message(
-            "❓ Commande inconnue. Essaie /1pick1day, /top5, /today, /strategie ou /help.",
+            "❓ Commande inconnue. Essaie /1pick1day, /top, /today, /strategie ou /help.",
             token=token,
             chat_id=chat_id,
         )

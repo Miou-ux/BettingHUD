@@ -1,6 +1,6 @@
 # Suivi portfolio Top5 / 1D1P — ledger journalier
 
-Depuis **juillet 2026**, le suivi **théorique** CourtAlpha (Top 5 + 1 Day 1 Pick) repose sur un **ledger SQLite reconstructible**, distinct des paris réels `user_bets`.
+Depuis **juillet 2026**, le suivi **théorique** CourtAlpha (**Top picks du jour** + 1 Day 1 Pick) repose sur un **ledger SQLite reconstructible**, distinct des paris réels `user_bets`.
 
 > Voir aussi : [[PUBLISHED_PICKS_REPLAY]] · [[ONE_DAY_ONE_PICK]] · [[TELEGRAM_TOP5]] · [[CHANGELOG_RECENT]]
 
@@ -42,7 +42,7 @@ Depuis **juillet 2026**, le suivi **théorique** CourtAlpha (Top 5 + 1 Day 1 Pic
 | Kelly / PnL | `stake_frac`, `stake_eur`, `profit_eur`, `bankroll_before_eur`, `bankroll_after_eur` |
 | Audit | `published_ts`, `publish_source`, `payload_json` |
 
-**Top5** : jusqu'à 5 lignes / jour (`bet_rank` 1…5).  
+**Top picks du jour** (`mode=top5`) : **N lignes / jour** — union HYB P75+P80-all complète (sans plafond 5).  
 **1D1P** : 1 ligne / jour (`bet_rank` = 1).
 
 ---
@@ -123,6 +123,7 @@ py -3 scripts/reset_user_portfolio.py \
 | `scripts/bets_db.py` | Hook settlement → refresh ledger |
 | `deploy/courtalpha/api/services/one_day_one_pick.py` | Replay 1D1P ledger |
 | `deploy/courtalpha/api/services/top5_replay.py` | Replay Top5 ledger |
+| `scripts/reconcile_portfolio_tracking.py` | Réconciliation ledger vs Kelly replay |
 | `tests/test_portfolio_tracking_store.py` | Test roundtrip ledger |
 
 ---
@@ -176,8 +177,8 @@ py -3 scripts/reconcile_portfolio_tracking.py --json
 | `--tol-eur` | Tolérance P/L (défaut 0,02 €) |
 | `--fail-on-drift` | Exit code 1 si écart (cron / CI) |
 
-Cron suggéré (après daemon, ~06:30 Paris) :
+Cron suggéré (après daemon, ~06:40 Paris) — installé via `deploy/cron/reconcile-portfolio` :
 
 ```cron
-30 6 * * * cd /opt/bettinghud && ./venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift >> data/logs/reconcile_portfolio.log 2>&1
+40 6 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Portfolio reconcile 06:40" --log data/logs/reconcile_portfolio.log --dedup-key portfolio_reconcile_drift -- /opt/bettinghud/venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift
 ```

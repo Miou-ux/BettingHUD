@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flux interactif Telegram : parier un pick (/jour, /top5) avec cote perso + Kelly."""
+"""Flux interactif Telegram : parier un pick (/jour, /top) avec cote perso + Kelly."""
 from __future__ import annotations
 
 import json
@@ -815,8 +815,8 @@ def handle_callback_query(
             answer_callback(
                 cq,
                 tg(
-                    "Pick expired — run /today, /top5 or /1pick1day again",
-                    "Pick expiré — relance /jour ou /top5",
+                    "Pick expired — run /today, /top or /1pick1day again",
+                    "Pick expiré — relance /jour ou /top",
                 ),
                 alert=True,
             )
@@ -1026,8 +1026,8 @@ def handle_text_message(
         send_message(
             chat_id,
             tg(
-                "⚠️ Pick expired — run <b>/today</b>, <b>/top5</b> or <b>/1pick1day</b> again.",
-                "⚠️ Pick expiré — relance <b>/jour</b> ou <b>/top5</b>.",
+                "⚠️ Pick expired — run <b>/today</b>, <b>/top</b> or <b>/1pick1day</b> again.",
+                "⚠️ Pick expiré — relance <b>/jour</b> ou <b>/top</b>.",
             ),
         )
         return True

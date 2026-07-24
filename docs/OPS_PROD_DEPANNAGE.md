@@ -217,11 +217,12 @@ tail -30 /opt/bettinghud/data/logs/telegram_bot_daemon.log
 | **04:15** quotidien | `bettinghud-ops-p0` | Backup DB serveur |
 | ***/5 min** | `bettinghud-ops-p0` | Watchdog santé + restart auto |
 | **02:15** dimanche | `bettinghud-wta-backup` | Backup archive WTA |
+| **06:40** quotidien | `bettinghud-reconcile-portfolio` | Réconciliation ledger portfolio vs Kelly replay |
 | **08:00** lundi | `bettinghud-ml-weekly` | Rapport Brier WTA → admin Telegram |
 | **04:55** quotidien | `bettinghud-acquisition-traffic` | Image OG stats |
 | ***/2 min** | `bettinghud-billing` | Indexeur ETH |
 
-Logs : `morning_build_cron.log`, `morning_publish_cron.log`, `tours_auto_sync.log`, `ml_train_cron.log`, `ml_weekly_telegram.log`.
+Logs : `morning_build_cron.log`, `morning_publish_cron.log`, `reconcile_portfolio.log`, `tours_auto_sync.log`, `ml_train_cron.log`, `ml_weekly_telegram.log`.
 
 **Déploiement** : fichiers cron en **LF** (pas CRLF). `sudo sed -i 's/\r$//' /etc/cron.d/bettinghud-<nom>`
 

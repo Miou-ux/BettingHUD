@@ -1,4 +1,4 @@
-"""Replay Top 5 hybride — pool matin JSONL + Kelly fresh (aligné backtest live)."""
+"""Replay Top picks du jour (HYB P75+P80-all) — pool matin JSONL + Kelly fresh."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -18,11 +18,17 @@ from api.services.one_day_one_pick import (
 )
 
 
+def _cap_picks(items: list, limit: int | None) -> list:
+    if limit is None or int(limit) <= 0:
+        return items
+    return items[: int(limit)]
+
+
 def _select_top5_per_day(
     *,
     db_path: str,
     exclude_date: str | None,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     from scripts.live_replay_engine import load_ml, select_historical_top5_live
 
@@ -37,7 +43,7 @@ def _select_top5_per_day(
 
 def _resolve_today_picks(
     *,
-    limit: int = 5,
+    limit: int | None = None,
     ev_min_pct: float = EV_MIN_PCT,
     ev_max_pct: float = EV_MAX_PCT,
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -53,7 +59,7 @@ def _resolve_today_picks(
     if not res.picks:
         return [], res.calendar_date
     out: list[dict[str, Any]] = []
-    for rank, pick in enumerate(res.picks[:limit], start=1):
+    for rank, pick in enumerate(_cap_picks(res.picks, limit), start=1):
         row = dict(pick)
         row["rank"] = rank
         row["is_today"] = True
@@ -110,7 +116,7 @@ def _build_tracked_top5_picks(
     today: str,
     today_picks: list[dict[str, Any]],
     exclude_today: bool,
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     from scripts.bets_db import open_db
     from scripts.portfolio_tracking_store import (
@@ -129,7 +135,7 @@ def _build_tracked_top5_picks(
         picks_raw = load_portfolio_replay_picks(conn, MODE_TOP5, exclude_date=None)
         if not exclude_today and today_picks:
             picks_raw = [p for p in picks_raw if str(p.get("calendar_date") or "") != today]
-            for rank, row in enumerate(today_picks[:limit], start=1):
+            for rank, row in enumerate(_cap_picks(today_picks, limit), start=1):
                 merged = _merge_today_settlement(db_path, dict(row))
                 merged["rank"] = rank
                 merged["is_today"] = True
@@ -156,9 +162,9 @@ def build_top5_replay(
     ev_min_pct: float = EV_MIN_PCT,
     ev_max_pct: float = EV_MAX_PCT,
     exclude_today: bool = False,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> dict[str, Any]:
-    """Replay Top 5 : pool matin JSONL + picks publiés + Kelly séquentiel fresh."""
+    """Replay Top picks du jour : pool matin JSONL + picks publiés + Kelly séquentiel fresh."""
     from scripts.live_replay_engine import kelly_replay_metrics, load_ml
     from scripts.published_picks_store import MODE_TOP5
 
@@ -233,7 +239,8 @@ def build_top5_replay(
 
     return {
         "selection": {
-            "mode": "top5_hybrid_live_replay",
+            "mode": "top_picks_hybrid_live_replay",
+            "label": "Top picks du jour",
             "description": hybrid_selection_description(rank1=False),
             "ev_min_pct": ev_min_pct,
             "ev_max_pct": ev_max_pct,

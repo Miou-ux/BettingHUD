@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Envoie des notifications Telegram CourtAlpha (Top 5 et /jour Live Tracker).
+"""Envoie des notifications Telegram CourtAlpha (Top picks du jour et /jour Live Tracker).
 
 Documentation : docs/TELEGRAM_TOP5.md
 
@@ -8,7 +8,7 @@ Variables d'environnement :
   TELEGRAM_CHAT_ID     — id du chat / canal / groupe
 
 Optionnel :
-  TELEGRAM_TOP5_LIMIT          (defaut 6 — aligné HYBRID_DEFAULT_LIMIT)
+  TELEGRAM_TOP5_LIMIT          (defaut: union HYB complete, illimite)
   TELEGRAM_TOP5_EV_MIN_PCT     (defaut 15)
   TELEGRAM_TOP5_EV_MAX_PCT     (defaut 100)
   TELEGRAM_DAILY_PICKS_LIMIT   (defaut 0 = tous les picks EV+ /jour)
@@ -40,8 +40,7 @@ os.environ.setdefault("BETTINGHUD_HEADLESS", "1")
 
 import requests
 
-from scripts.comms_locale import BRAND_NAME, PUBLIC_SITE_URL, comms_disclaimer, tg
-from scripts.hybrid_pick_selection import HYBRID_DEFAULT_LIMIT
+from scripts.comms_locale import BRAND_NAME, PUBLIC_SITE_URL, comms_disclaimer, tg, top_picks_command, top_picks_label
 from scripts.daily_top_proba_store import (
     collect_daily_ev_band_picks,
     collect_paris_du_jour_picks,
@@ -307,17 +306,19 @@ def format_snapshot_freshness_line(snapshot_age_min: float | None) -> str:
     if age <= 120:
         return (
             f"⚠️ Odds data · <b>{age:.0f} min ago</b> — may be outdated; "
-            "use menu <b>Top 5</b> or <b>Today</b> to refresh"
+            "use menu <b>Top picks</b> or <b>Today</b> to refresh"
         )
     return (
         f"🔴 Odds data · <b>{age:.0f} min ago</b> — stale; "
-        "refresh via menu <b>Top 5</b> / <b>Today</b> before betting"
+        "refresh via menu <b>Top picks</b> / <b>Today</b> before betting"
     )
 
 
 _MENU_BUTTON_TO_COMMAND: dict[str, str] = {
     "🎯 1 day 1 pick": "/1pick1day",
-    "📊 top 5": "/top5",
+    "📊 top 5": "/top",
+    "📊 top picks": "/top",
+    "📊 top picks du jour": "/top",
     "📅 today": "/today",
     "💰 bankroll": "/br",
     "❓ help": "/help",
@@ -333,11 +334,12 @@ def resolve_menu_button_text(text: str) -> str | None:
 
 def main_menu_reply_keyboard() -> dict:
     """Clavier reply persistant — évite de mémoriser les commandes."""
+    top_picks_btn = tg("📊 Top picks", "📊 Top picks du jour")
     return {
         "keyboard": [
             [
                 {"text": "🎯 1 Day 1 Pick"},
-                {"text": "📊 Top 5"},
+                {"text": top_picks_btn},
             ],
             [
                 {"text": "📅 Today"},
@@ -361,7 +363,7 @@ def register_bot_commands(token: str) -> bool:
     commands = [
         {"command": "start", "description": "Welcome & keyboard menu"},
         {"command": "1pick1day", "description": "One pick per day (majors)"},
-        {"command": "top5", "description": "Top 5 model proba"},
+        {"command": "top", "description": "Top picks of the day (HYB)"},
         {"command": "today", "description": "Today's value picks"},
         {"command": "br", "description": "Bankroll summary"},
         {"command": "help", "description": "Full command list"},
@@ -436,7 +438,7 @@ def format_bot_onboarding_after_approval() -> str:
             "  <code>/br</code> — available BR · <code>/brstats</code> — detailed stats",
             "",
             "<b>2. Daily picks</b>",
-            "  <code>/top5</code> — Top 5 model proba",
+            f"  <code>{top_picks_command()}</code> — {top_picks_label()}",
             "  <code>/today</code> — Today's Pick (value bets EV ≥15%)",
             "  <code>/1pick1day</code> — one pick per day (same as the website)",
             "",
@@ -449,7 +451,7 @@ def format_bot_onboarding_after_approval() -> str:
             f"  <code>/strategy</code> — selection & staking ({kelly_lbl} × Brier)",
             "  <code>/help</code> — full command list",
             "",
-            "🌅 Every morning (~05:00 Paris): auto <code>/top5</code>.",
+            f"🌅 Every morning (~05:00 Paris): auto <code>{top_picks_command()}</code>.",
             "",
             f"ℹ️ <i>{DISCLAIMER_EN}</i>",
         ]
@@ -461,13 +463,13 @@ def format_bot_welcome_message() -> str:
         [
             f"👋 <b>Welcome to {BRAND_NAME} Bot</b>",
             "",
-            "I send the <b>Top 5</b> each morning (model proba &gt;60%, EV 15–100%).",
+            f"I send <b>{top_picks_label()}</b> each morning (HYB P75+P80-all).",
             "",
             "📌 <b>Quick menu</b> — use the buttons below or type commands",
-            "  🎯 1 Day 1 Pick · 📊 Top 5 · 📅 Today",
+            f"  🎯 1 Day 1 Pick · {tg('📊 Top picks', '📊 Top picks du jour')} · 📅 Today",
             "  💰 Bankroll · ❓ Help · 📖 Strategy",
             "",
-            "Slash commands still work: <code>/1pick1day</code> <code>/top5</code> <code>/today</code>",
+            f"Slash commands still work: <code>/1pick1day</code> <code>{top_picks_command()}</code> <code>/today</code>",
             "",
             f"🌐 {PUBLIC_SITE_URL.replace('https://', '')}",
         ]
@@ -492,8 +494,8 @@ def format_bot_strategy_message() -> str:
             "<b>2. Pick selection</b>",
             "• <b>Today</b> matches (Europe/Paris), valid odds",
             "• <b>Model favorite</b> = highest model probability",
-            "• <b>/top5</b> & <b>/1pick1day</b>: <b>HYB P75+P80-all</b> — P75-TIER (p≥73%, rel≥80, "
-            "EV 6–55%, max 6/day) plus P≥80% rel≥80 add-ons (any EV), majors, sorted by proba ↓",
+            f"• <b>{top_picks_command()}</b> & <b>/1pick1day</b>: <b>HYB P75+P80-all</b> — full union (P75-TIER + "
+            "P≥80% rel≥80 add-ons), majors, sorted by proba ↓ — no daily cap",
             "• <b>/1pick1day</b>: highest model proba in that HYB union (not list rank 1)",
             "• <b>/today</b>: value bets EV ≥15% (majors + minors)",
             "",
@@ -503,10 +505,10 @@ def format_bot_strategy_message() -> str:
             "• <b>15% cap</b> of available bankroll per bet",
             "",
             "<b>4. Bet from Telegram</b>",
-            "Under each <b>/today</b> or <b>/top5</b> pick: <b>Bet</b> → your odds → Kelly → Confirm.",
+            f"Under each <b>/today</b> or <b>{top_picks_command()}</b> pick: <b>Bet</b> → your odds → Kelly → Confirm.",
             "",
             "<b>5. In practice</b>",
-            "1️⃣ Check /top5, /today or /1pick1day",
+            f"1️⃣ Check {top_picks_command()}, /today or /1pick1day",
             "2️⃣ Verify <b>real odds</b> at your bookmaker",
             "3️⃣ Stake at most the Kelly suggestion",
             "",
@@ -523,8 +525,8 @@ def format_bot_help_message() -> str:
             "<b>/1pick1day</b> · /1d1p",
             "  One pick per day · best proba in HYB P75+P80-all · majors.",
             "",
-            "<b>/top5</b> · /top",
-            "  HYB P75+P80-all · P75-TIER + P≥80% rel≥80 · sorted by proba ↓ · ATP/WTA 250+.",
+            f"<b>{top_picks_command()}</b>",
+            f"  {top_picks_label()} · HYB P75+P80-all · all picks passing filters · sorted by proba ↓.",
             "  <b>Bet</b> button under each match.",
             "",
             "<b>/today</b>",
@@ -551,7 +553,7 @@ def format_bot_help_message() -> str:
             "<b>/start</b>",
             "  Welcome message.",
             "",
-            "🌅 Auto /top5 ~05:00 Paris.",
+            f"🌅 Auto {top_picks_command()} ~05:00 Paris.",
         ]
     )
 
@@ -565,7 +567,7 @@ def format_top5_telegram_message(
     source: str = "morning",
 ) -> str:
     lines = [
-        f"🎾 <b>{BRAND_NAME}</b> · Top 5 Proba",
+        f"🎾 <b>{BRAND_NAME}</b> · {top_picks_label()}",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
@@ -631,7 +633,7 @@ def format_top5_interactive_header(
     n_picks: int = 0,
 ) -> str:
     lines = [
-        f"🎾 <b>{BRAND_NAME}</b> · Top 5 Proba",
+        f"🎾 <b>{BRAND_NAME}</b> · {top_picks_label()}",
         "",
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
@@ -1140,6 +1142,11 @@ def run_notify(
     telegram_user_id: str | None = None,
 ) -> dict:
     _require_prod_for_send(force=force, dry_run=dry_run)
+    if limit is None:
+        limit = _resolve_pick_limit(
+            os.getenv("TELEGRAM_TOP5_LIMIT", ""),
+            default=None,
+        )
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     target_chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     if interactive and not dry_run:
@@ -1278,8 +1285,8 @@ def format_1d1p_telegram_message(
         f"📅 {_format_date_label(calendar_date)} · Europe/Paris",
         format_snapshot_freshness_line(snapshot_age_min),
         tg(
-            "Majors 250+ · best pick from hybrid Top 5 selection (rank 1)",
-            "Majeurs 250+ · meilleur pick de la sélection hybride Top 5 (rang 1)",
+            "Majors 250+ · best pick from hybrid top picks selection (rank 1)",
+            "Majeurs 250+ · meilleur pick de la sélection Top picks du jour (rang 1)",
         ),
         _telegram_pick_criteria_line(hybrid=True),
         "━━━━━━━━━━━━━━━━━━━━",
@@ -1837,7 +1844,10 @@ def main() -> int:
     out = run_notify(
         dry_run=bool(args.dry_run),
         force=bool(args.force),
-        limit=int(args.limit),
+        limit=_resolve_pick_limit(
+            args.limit,
+            default=_resolve_pick_limit(os.getenv("TELEGRAM_TOP5_LIMIT", ""), default=None),
+        ),
         ev_min_pct=float(args.ev_min_pct),
         ev_max_pct=float(args.ev_max_pct),
         chat_id=str(args.chat_id).strip() or None,

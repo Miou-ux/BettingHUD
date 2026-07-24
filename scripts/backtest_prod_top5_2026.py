@@ -62,7 +62,7 @@ from scripts.telegram_top5_notify import filter_telegram_display_picks  # noqa: 
 PROD_EV_MIN_FRAC = DEFAULT_EV_MIN_PCT / 100.0
 PROD_EV_MAX_FRAC = DEFAULT_EV_MAX_PCT / 100.0
 PROD_MIN_PROBA_FRAC = 0.60
-PROD_LIMIT = HYBRID_DEFAULT_LIMIT
+PROD_LIMIT: int | None = None
 
 BASE_TOP5 = Strategy("BASE top5", "top5", rel_min=80, book_gap_max=None, surface_cap=None, top_n=5)
 LIVE_REPLAY_CSV_2026 = os.path.join(ROOT, "data", "backtest_2026_live_replay.csv")
@@ -170,8 +170,8 @@ def _candidate_passes_prod_pool(row: dict) -> bool:
     return True
 
 
-def select_prod_top5_day(candidates: list[dict], *, limit: int = PROD_LIMIT) -> list[dict]:
-    """Production Top 5 for one calendar day (hybrid tier selection)."""
+def select_prod_top5_day(candidates: list[dict], *, limit: int | None = PROD_LIMIT) -> list[dict]:
+    """Top picks du jour — HYB P75+P80-all (union complète par défaut)."""
     from scripts.hybrid_pick_selection import select_hybrid_picks
 
     dup = duplicate_model_prob_keys(candidates)
@@ -285,7 +285,7 @@ def _pick_keys(picks: list[dict]) -> set[tuple[str, str]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Backtest production Top 5 (real prod logic)")
     ap.add_argument("--year", type=int, default=2026, choices=(2025, 2026))
-    ap.add_argument("--limit", type=int, default=PROD_LIMIT, help="Max picks per day (default 5 = prod Top 5)")
+    ap.add_argument("--limit", type=int, default=PROD_LIMIT, help="Max picks per day (default: unlimited HYB union)")
     ap.add_argument("--csv", default="", help="Override CSV path (default: live_replay for 2026 if present)")
     ap.add_argument(
         "--kelly-frac",

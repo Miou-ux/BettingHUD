@@ -1,4 +1,4 @@
-"""Sélection hybride prod — Top 5, 1D1P, Telegram.
+"""Sélection hybride prod — Top picks du jour, 1D1P, Telegram.
 
 Prod (juillet 2026) : **HYB P75+P80-all** — P75-TIER (p≥73 %, rel≥80, EV 6–55 %,
 tier fill, max 6) + compléments **P≥80 % rel≥80** (sans filtre EV), tri proba ↓.

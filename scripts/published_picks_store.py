@@ -293,7 +293,7 @@ def select_historical_top5_picks(
     rows: list[dict[str, Any]],
     *,
     exclude_date: str | None,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     from scripts.backtest_prod_top5_2026 import _norm_pick_row, select_prod_top5_day
     from scripts.daily_top_proba_store import dedupe_top_proba_rows_by_match
@@ -311,7 +311,8 @@ def select_historical_top5_picks(
     for cal in sorted(by_day.keys()):
         pub = load_published_replay_picks(db_path, mode=MODE_TOP5, calendar_date=cal)
         if pub:
-            for pick in pub[:limit]:
+            capped = pub if limit is None or int(limit) <= 0 else pub[: int(limit)]
+            for pick in capped:
                 r = dict(pick)
                 r["rank"] = int(r.get("publish_rank") or r.get("rank") or 0)
                 picks.append(r)

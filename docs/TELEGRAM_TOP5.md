@@ -14,12 +14,12 @@ PREPROD (PC local) : prévisualisation `--dry-run` seulement, pas d’envoi rée
 | Fonction | Déclencheur | Contenu |
 |--------|-------------|---------|
 | **1 Day 1 Pick matinal** | **05:00** `od1p_publish` (`TELEGRAM_1D1P_ENABLED=1`) | Pick unique/jour · broadcast · bouton **Bet** · résultats via daemon |
-| **Top 5 matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | **HYB P75+P80-all** · P75-TIER (p≥73 %, rel≥80, EV 6–55 %, max 6) + compléments P≥80 % rel≥80 · tri proba ↓ |
+| **Top picks matinal** | **05:00** (`TELEGRAM_TOP5_AFTER_MORNING=1`) | **HYB P75+P80-all** · union complète (P75-TIER + P≥80 rel≥80) · tri proba ↓ |
 | **`/1pick1day`** · **`/1d1p`** | Commande ou menu **🎯 1 Day 1 Pick** | Même pick que web · interactif + Bet |
 | **`/jour`** · **`/today`** | Menu **📅 Today** ou commande | Matchs **Aujourd’hui** · **proba > 60 %** · **EV ≥ 15 %** (tri proba ↓) |
 | **`/jourchallenger`** | Commande Telegram | Tournois **Challenger** ATP/WTA du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
 | **`/jourmajor`** | Commande Telegram | Tournois **main draw 250+** du jour · EV **+15 % → +100 %** · tri **proba** ↓ |
-| **`/top5`** | Commande Telegram | Même logique que le Top 5 matinal, à la demande |
+| **`/top`** | Commande Telegram | Même logique que le Top picks matinal, à la demande (`/top5` = alias) |
 | **`/start`**, **`/help`** | Commandes Telegram | Bienvenue et aide |
 | **`/strategie`** | Commande Telegram | Résumé stratégie sélection + mise (Kelly) |
 | **`/br`**, **`/brstats`** | Commandes Telegram | Bankroll utilisateur (synthèse / stats avancées) |
@@ -210,7 +210,7 @@ Kelly par **utilisateur Telegram** (`from.id`) : tous les paris rattachés à to
 | `/jour` | `/picks`, `/picksdujour` | **Aujourd’hui** · proba > 60 % · EV > 15 % |
 | `/jourchallenger` | `/challengers` | Challengers + WTA 125 · EV 15–100 % · tri proba ↓ |
 | `/jourmajor` | `/majors` | Main draw 250+ · EV 15–100 % · tri proba ↓ |
-| `/top5` | `/top` | HYB P75+P80-all main draw (P75-TIER + P≥80 rel≥80, tri proba ↓) |
+| `/top` | `/top5` | HYB P75+P80-all main draw — **tous les picks** passant les filtres TG |
 | `/strategie` | `/strategy` | Stratégie BettingHUD + mise Kelly (synthèse) |
 | `/br` | — | Bankroll utilisateur (synthèse) |
 | `/brstats` | `/bradv`, `/brdetail` | Bankroll avancée (ROI, forme, historique) |
@@ -291,8 +291,8 @@ TELEGRAM_CHAT_ID=123456789
 # Envoi Top 5 après pipeline matin
 TELEGRAM_TOP5_AFTER_MORNING=1
 
-# Top 5 (Paris du jour)
-TELEGRAM_TOP5_LIMIT=5
+# Top picks (Paris du jour) — union HYB complète, sans cap
+TELEGRAM_TOP5_LIMIT=
 TELEGRAM_TOP5_EV_MIN_PCT=15
 TELEGRAM_TOP5_EV_MAX_PCT=100
 
@@ -319,7 +319,7 @@ TELEGRAM_DAILY_PICKS_LIMIT=0
 | `TELEGRAM_CHAT_ID` | — | Chat principal (notifications + commandes) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | — | Liste additionnelle de chats autorisés |
 | `TELEGRAM_TOP5_AFTER_MORNING` | `0` | `1` = Top 5 à **05:00** via `morning_live_pipeline.py --morning-publish` |
-| `TELEGRAM_TOP5_LIMIT` | `5` | Nombre de picks Top 5 |
+| `TELEGRAM_TOP5_LIMIT` | *(vide)* | Cap optionnel ; vide ou `0` = **union HYB complète** (illimité) |
 | `TELEGRAM_TOP5_EV_MIN_PCT` | `15` | EV min favori (Top 5) |
 | `TELEGRAM_TOP5_EV_MAX_PCT` | `100` | EV max favori (Top 5) |
 | `TELEGRAM_DAILY_PICKS_LIMIT` | `0` | Max lignes `/jour` (`0` = illimité) |

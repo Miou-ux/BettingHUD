@@ -63,6 +63,7 @@ gantt
     Image OG stats        :04:55, 5m
     Publications TG/Discord :05:00, 15m
     Digest admin          :06:30, 5m
+    Portfolio reconcile   :06:40, 5m
     section Continu
     Billing ETH (*/2 min)   :00:00, 24h
 ```
@@ -81,6 +82,7 @@ gantt
 | **04:40** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
 | **04:55** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
 | **05:00** | `morning_live_pipeline.py --morning-publish` | Chaîne **sync tours** (si besoin) → **build** → **1D1P** + Top 5 + canal ; **alerte soft-fail** si tours KO | `data/logs/morning_publish_cron.log` |
+| **06:40** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` | Ledger Top picks / 1D1P vs Kelly replay (alerte si dérive) | `data/logs/reconcile_portfolio.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
 **Ordre matin** : 02:00 (préparation) → 03:30 (sync tours) → 04:15 backup → 04:40 preflight → 04:55 (OG) → 05:00 (publish).
@@ -121,6 +123,7 @@ gantt
 
 | Fichier repo | Sur serveur | Contenu |
 |--------------|-------------|---------|
+| `deploy/cron/reconcile-portfolio` | `bettinghud-reconcile-portfolio` | 06:40 réconciliation ledger |
 | `deploy/cron/morning-pipeline` | `bettinghud-morning-pipeline` | 02:00 + 05:00 (alertes TG) |
 | `deploy/cron/data-sync` | `bettinghud-data-sync` | 03:30 quotidien · 04:00 dim. ML |
 | `deploy/cron/ops-p0` | `bettinghud-ops-p0` | 04:15 backup · */5 min watchdog |

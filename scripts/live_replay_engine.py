@@ -74,7 +74,13 @@ def _attach_all(picks: list[dict], *, db_path: str, smap: dict[str, dict], conn)
     return out
 
 
-def _select_hyb_top5_from_pool(pool: list[dict], dup: set, *, limit: int) -> list[dict]:
+def _cap_picks(items: list, limit: int | None) -> list:
+    if limit is None or int(limit) <= 0:
+        return items
+    return items[: int(limit)]
+
+
+def _select_hyb_top5_from_pool(pool: list[dict], dup: set, *, limit: int | None = None) -> list[dict]:
     picks = select_hyb_p75_p80_all(pool, duplicate_keys=dup, limit=limit)
     out: list[dict] = []
     for rank, pick in enumerate(picks, start=1):
@@ -90,11 +96,11 @@ def select_historical_top5_live(
     ml: TennisMLModel,
     *,
     exclude_date: str | None,
-    limit: int = 5,
+    limit: int | None = None,
     end_date: str | None = None,
     start_date: str | None = None,
 ) -> list[dict]:
-    """Top5 historique aligné backtest live replay."""
+    """Top picks du jour — historique aligné backtest live replay (HYB illimité par défaut)."""
     from scripts.published_picks_store import (
         MODE_TOP5,
         has_published_for_date,
@@ -133,7 +139,7 @@ def select_historical_top5_live(
             if has_published_for_date(conn, cal, MODE_TOP5):
                 pub = load_published_replay_picks(db_path, mode=MODE_TOP5, calendar_date=cal)
                 day_picks = []
-                for pick in pub[:limit]:
+                for pick in _cap_picks(pub, limit):
                     row = dict(pick)
                     row["rank"] = int(row.get("publish_rank") or row.get("rank") or 0)
                     row["pool_source"] = "published"
@@ -459,7 +465,7 @@ def run_top5_live_replay_backtest(
         db_path,
         ml,
         exclude_date="2099-01-01",
-        limit=5,
+        limit=None,
         end_date=end_date,
     )
     _, _, summary = kelly_replay_metrics(

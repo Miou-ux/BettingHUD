@@ -1,0 +1,5 @@
+# Réconciliation ledger portfolio Top picks / 1D1P vs Kelly replay (Europe/Paris)
+CRON_TZ=Europe/Paris
+
+# 06:40 — après publish 05:00, digest admin 06:30 et cycles daemon (~10 min)
+40 6 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Portfolio reconcile 06:40" --log data/logs/reconcile_portfolio.log --dedup-key portfolio_reconcile_drift -- /opt/bettinghud/venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift

@@ -1,4 +1,4 @@
-"""Replay 1 Day 1 Pick : rang 1 de la sélection hybride Top 5 (même règles que /top5)."""
+"""Replay 1 Day 1 Pick : rang 1 de la sélection Top picks du jour (même règles que /top5)."""
 from __future__ import annotations
 
 import sqlite3

@@ -6,6 +6,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Top picks du jour illimité + renommage (24 juillet 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Sélection** | HYB P75+P80-all **sans plafond journalier** (aligné backtest `_hyb_live_kelly_compare`) |
+| **Affichage** | « Top 5 » → **Top picks du jour** (TG, dashboard, CourtAlpha) ; commande `/top5` inchangée |
+| **Replay** | `live_replay_engine`, `top5_replay.py`, backfill : `limit=None` par défaut |
+| **Prod ops** | Retirer `TELEGRAM_TOP5_LIMIT=5` du `.env` (ou `0`) ; re-backfill publications si besoin |
+
+---
+
 # Ledger portfolio Top5 / 1D1P + reset Miouppy (24 juillet 2026)
 
 | Élément | Détail |

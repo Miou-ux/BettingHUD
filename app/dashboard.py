@@ -7195,7 +7195,7 @@ def _collect_top_favorite_action_cards(
     *,
     limit: int | None = None,
 ) -> list[dict]:
-    """Top 5 prod (HYB P75+P80-all) — aligné Telegram / 1D1P."""
+    """Top picks du jour prod (HYB P75+P80-all) — aligné Telegram / 1D1P."""
     from scripts.daily_top_proba_store import collect_hybrid_proba_picks
 
     picks = collect_hybrid_proba_picks(matches, limit=limit)
@@ -7244,7 +7244,7 @@ def _render_top5_proba_action_tab() -> None:
     """Onglet épuré : top 5 probas favori avec saisie cote réelle + mise Kelly/Brier."""
     if st.session_state.pop("_live_link_success_toast", False):
         st.toast("Filtre appliqué — onglet Live Tracker ouvert.", icon="↪")
-    st.header("🎯 Top 5 hybride · Action rapide")
+    st.header("🎯 Top picks du jour · Action rapide")
     from scripts.hybrid_pick_selection import hybrid_criteria_plain
 
     st.caption(
@@ -7295,7 +7295,7 @@ def _render_top5_proba_action_tab() -> None:
         ))
         if int(_funnel.get("with_metrics") or 0) > 0:
             st.warning(
-                f"Aucun pick Top 5 hybride — {hybrid_criteria_plain(english=False)} · "
+                f"Aucun pick — {hybrid_criteria_plain(english=False)} · "
                 f"**0** / **{_funnel['with_metrics']}** match(s) avec métriques. "
                 "Consultez **Top probas jour** ou attendez de meilleures cotes."
             )
