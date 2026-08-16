@@ -325,11 +325,20 @@ def run_sync_bundle() -> int:
             except Exception:
                 pass
             try:
+                from scripts.ops_alert_human import format_simple_ops
                 from scripts.ops_telegram_alert import send_ops_alert
 
+                _, body = format_simple_ops(
+                    "Contrôle données après sync — erreur technique",
+                    [
+                        f"• {str(e)[:400]}",
+                        "",
+                        "Le contrôle qualité n'a pas pu s'exécuter.",
+                    ],
+                )
                 send_ops_alert(
                     "QC post-sync EXCEPTION",
-                    str(e)[:500],
+                    body,
                     dedup_key="qc_post_sync_fail",
                 )
             except Exception:

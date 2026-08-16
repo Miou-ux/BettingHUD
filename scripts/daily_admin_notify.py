@@ -20,31 +20,9 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
 def _pipeline_summary_lines() -> list[str]:
-    from scripts.bets_db import DB_PATH_DEFAULT, get_data_freshness_snapshot
-    from scripts.morning_chain_state import get_step, step_ok_today
+    from scripts.ops_alert_human import format_pipeline_digest_human
 
-    fresh = get_data_freshness_snapshot(os.path.join(ROOT, DB_PATH_DEFAULT))
-    lines = ["<b>Pipeline</b>"]
-    lines.append(f"Sync tours : {fresh.get('last_tours_sync_iso') or '—'}")
-    tours_ok = step_ok_today("tours_sync")
-    qc = get_step("qc_post_sync")
-    qc_ok = step_ok_today("qc_post_sync")
-    lines.append(f"Chaîne tours_sync today : {'OK' if tours_ok else 'KO/—'}")
-    if qc:
-        detail = qc.get("detail") or {}
-        blocking = detail.get("blocking") if isinstance(detail, dict) else None
-        n_block = len(blocking) if isinstance(blocking, list) else "?"
-        lines.append(
-            f"QC post-sync today : {'OK' if qc_ok else 'KO'} "
-            f"(blocking={n_block}, rc={qc.get('rc')})"
-        )
-    else:
-        lines.append("QC post-sync today : —")
-    lines.append(f"Train ML : {fresh.get('last_ml_train_iso') or '—'}")
-    lm = fresh.get("last_wta_match") or {}
-    if lm.get("tourney_date"):
-        lines.append(f"Dernier WTA : {str(lm.get('tourney_date'))[:10]}")
-    return lines
+    return [format_pipeline_digest_human()]
 
 
 def format_daily_digest(*, calibration_report: dict) -> str:
@@ -58,6 +36,14 @@ def format_daily_digest(*, calibration_report: dict) -> str:
         "",
     ]
     parts.extend(_pipeline_summary_lines())
+    try:
+        from scripts.portfolio_projection_track import build_projection_report, format_projection_telegram
+
+        proj = build_projection_report()
+        if proj.get("ok"):
+            parts.extend(["", format_projection_telegram(proj)])
+    except Exception as exc:
+        parts.extend(["", f"<b>📊 Projection HYB</b>", f"— indisponible ({exc})"])
     return "\n".join(parts)
 
 
@@ -98,12 +84,11 @@ def run_daily_admin_notify(*, dry_run: bool = False) -> dict:
 
     if cal.get("status") == "alert":
         try:
+            from scripts.ops_alert_human import format_calibration_drift_alert
             from scripts.ops_telegram_alert import send_ops_alert
 
-            send_ops_alert(
-                "Calibration ML — dérive",
-                "\n".join((cal.get("alerts") or [])[:5]),
-            )
+            subject, body = format_calibration_drift_alert(list(cal.get("alerts") or []))
+            send_ops_alert(subject, body)
         except Exception:
             pass
 

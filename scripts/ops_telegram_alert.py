@@ -117,9 +117,12 @@ def send_ops_alert(
         print(f"[ops-alert] skip dedup key={key} ({cool}s)", flush=True)
         return True
 
-    text = f"🚨 OPS — {subject}"
-    if body:
-        text = f"{text}\n{body}"[:3900]
+    if body and ("<b>" in body or body.lstrip().startswith("<")):
+        text = body[:3900]
+    else:
+        text = f"🚨 OPS — {subject}"
+        if body:
+            text = f"{text}\n{body}"[:3900]
     if dry_run:
         print(text, flush=True)
         _remember_dedup(key, subject)

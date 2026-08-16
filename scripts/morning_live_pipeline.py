@@ -329,12 +329,21 @@ def main(argv: list[str] | None = None) -> int:
                 if not validate_build(_log=_log):
                     _log("Post-check validate_build ÉCHEC après build 02:00.")
                     try:
+                        from scripts.ops_alert_human import format_simple_ops
                         from scripts.ops_telegram_alert import send_ops_alert
 
+                        _, body = format_simple_ops(
+                            "Préparation snapshot (02:00) — contrôle final KO",
+                            [
+                                "Le snapshot a été construit mais ne passe pas les garde-fous qualité.",
+                                "• Profils joueurs TE incomplets ou snapshot trop vieux",
+                                "",
+                                "<b>Impact</b> : la publication de 05:00 risque d'échouer ou de publier des picks incomplets.",
+                            ],
+                        )
                         send_ops_alert(
-                            "Morning build 02:00 — validate_build FAIL",
-                            "Snapshot construit mais garde-fou build KO (âge / TE profiles). "
-                            "Le cron 05:00 risque d'échouer.",
+                            "Morning build validate FAIL",
+                            body,
                             dedup_key="morning_build_validate_fail",
                         )
                     except Exception:

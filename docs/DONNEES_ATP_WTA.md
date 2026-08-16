@@ -189,3 +189,26 @@ Résultat :
 | `scripts/_probe_wta_date_display.py` | Dernier match + meta sync |
 | `scripts/check_wta_delta_acceptance.py` | Checklist acceptance delta |
 | `scripts/wta_delta_qc_gates.py` | Gates C1/D1 post-sync |
+| `scripts/ops_alert_human.py` | Messages TG admin lisibles (échecs cron / QC) |
+| `scripts/cron_run_with_alert.py` | Wrapper cron + alerte TG |
+
+---
+
+## 8. Notifications Telegram admin (nuit)
+
+Les jobs nocturnes alertent via `cron_run_with_alert.py` → `ops_alert_human.py`.
+
+| Heure | Job | Message typique |
+|-------|-----|-----------------|
+| **02:00** | Préparation snapshot | Problème TE / snapshot + impact publication 05:00 |
+| **03:30** | Sync ATP+WTA | Doublons WTA, script en échec, état ATP/WTA actuel |
+| **04:40** | Preflight | Liste des contrôles FAIL avant publish |
+| **05:00** | Publication picks | Échec chaîne publish |
+| **06:30** | Digest admin | Calibration en langage clair + bloc « Données tennis » |
+
+Sections standard : **Ce qui bloque** · **État des données** · **Impact** · **Que faire**.
+
+```bash
+python scripts/daily_admin_notify.py --dry-run
+python -m pytest tests/test_ops_alert_human.py -q
+```

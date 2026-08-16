@@ -90,26 +90,17 @@ def main() -> int:
             fh.write(f"exit_code={proc.returncode}\n")
 
     from scripts.ops_telegram_alert import send_ops_alert
+    from scripts.ops_alert_human import format_cron_failure
 
     if proc.returncode != 0:
-        tail_lines = out.strip().splitlines()[-14:] if out.strip() else ["(pas de sortie)"]
-        # Surligne les lignes QC / BLOCK si présentes
-        highlight = [ln for ln in tail_lines if "BLOCK" in ln or "qc_post_sync" in ln or "ÉCHEC" in ln]
-        body_parts = []
-        if highlight:
-            body_parts.append("Faits saillants:\n" + "\n".join(highlight[-8:]))
-        body_parts.append("Log (fin):\n" + "\n".join(tail_lines))
-        chain = _chain_state_tail()
-        if chain:
-            body_parts.append("État chaîne:\n" + chain)
+        subject, body = format_cron_failure(args.job, proc.returncode, out)
         dedup = (args.dedup_key or "").strip() or None
-        # Famille sync tours / QC
         job_l = args.job.lower()
         if not dedup and "sync tours" in job_l:
             dedup = "qc_post_sync_fail"
         send_ops_alert(
-            f"{args.job} — ÉCHEC (code {proc.returncode})",
-            "\n\n".join(body_parts),
+            subject,
+            body,
             dedup_key=dedup,
         )
         return int(proc.returncode)

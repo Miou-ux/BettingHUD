@@ -46,20 +46,19 @@ def _send_qc_ops_alert(report: QcReport) -> None:
         return
     if report.ok and not report.warnings:
         return
-    # Sous cron_run_with_alert : le wrapper enverra déjà l'échec avec le log QC.
-    # On garde l'alerte WARN (sync peut exit 0) et FAIL seulement hors cron.
     in_cron = os.getenv("BETTINGHUD_IN_CRON_ALERT", "").strip() in ("1", "true", "yes")
     try:
+        from scripts.ops_alert_human import format_qc_alert_human
         from scripts.ops_telegram_alert import send_ops_alert
 
-        lines = report.summary_lines()[1:8]
-        body = "\n".join(lines)
         if report.blocking:
             if in_cron:
                 return
-            send_ops_alert("QC post-sync FAIL", body, dedup_key="qc_post_sync_fail")
+            subject, body = format_qc_alert_human(report, level="fail")
+            send_ops_alert(subject, body, dedup_key="qc_post_sync_fail")
         elif report.warnings:
-            send_ops_alert("QC post-sync WARN", body, dedup_key="qc_post_sync_warn")
+            subject, body = format_qc_alert_human(report, level="warn")
+            send_ops_alert(subject, body, dedup_key="qc_post_sync_warn")
     except Exception:
         pass
 
