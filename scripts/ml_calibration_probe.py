@@ -317,6 +317,19 @@ def save_probe_cache(report: dict[str, Any], path: Path | None = None) -> Path:
     return out
 
 
+def _humanize_cal_alert_line(text: str) -> str:
+    """Traduit une alerte calibration en langage lisible."""
+    s = str(text)
+    s = s.replace("Brier live", "Fiabilité modèle")
+    s = s.replace(" vs train ", " vs entraînement ")
+    s = s.replace("écart calibration", "Écart prédictions → résultats")
+    s = s.replace(" pp (sous-perf", " pts (moins bon que prévu")
+    s = s.replace(" pp (sur-perf", " pts (mieux que prévu")
+    s = s.replace("P≥80%", "Picks ≥80% proba")
+    s = s.replace("n=", "sur ")
+    return s
+
+
 def format_calibration_telegram(report: dict[str, Any]) -> str:
     ts = datetime.now(PARIS_TZ).strftime("%d/%m/%Y %H:%M")
     ref = float(report.get("brier_ref_train") or 0.174)
@@ -360,7 +373,7 @@ def format_calibration_telegram(report: dict[str, Any]) -> str:
     if alerts:
         lines.append("<b>Points d'attention</b>")
         for a in alerts[:6]:
-            lines.append(f"· {a}")
+            lines.append(f"· {_humanize_cal_alert_line(a)}")
         if len(alerts) > 6:
             lines.append(f"<i>… +{len(alerts) - 6} autre(s)</i>")
     else:

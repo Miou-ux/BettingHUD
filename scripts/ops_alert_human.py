@@ -237,12 +237,14 @@ def format_pipeline_digest_human() -> str:
     fresh = get_data_freshness_snapshot(os.path.join(root, DB_PATH_DEFAULT))
     tours_ok = step_ok_today("tours_sync")
     qc_ok = step_ok_today("qc_post_sync")
+    sync = fresh.get("last_tours_sync_iso") or fresh.get("last_sackmann_sync_iso") or "—"
+    sync_day = str(sync)[:10]
+    today = datetime.now(PARIS).date().isoformat()
 
-    icon_tours = "✅" if tours_ok else "🔴"
+    icon_tours = "✅" if (tours_ok or sync_day == today) else "🔴"
     icon_qc = "✅" if qc_ok else ("🔴" if not qc_ok and get_step("qc_post_sync") else "🟡")
 
     lines = ["<b>📦 Données tennis</b>"]
-    sync = fresh.get("last_tours_sync_iso") or fresh.get("last_sackmann_sync_iso") or "—"
     lines.append(f"{icon_tours} Sync nocturne : {str(sync)[:16].replace('T', ' ')}")
 
     atp = fresh.get("last_atp_match") or {}
@@ -263,10 +265,26 @@ def format_pipeline_digest_human() -> str:
             code = first.get("code", "?") if isinstance(first, dict) else "?"
             title = QC_HUMAN.get(code, (code, ""))[0]
             lines.append(f"{icon_qc} Contrôles qualité : {title}")
+        elif qc.get("ok") is False:
+            lines.append(f"{icon_qc} Contrôles qualité : échec cette nuit (voir alerte ops)")
         else:
             lines.append(f"{icon_qc} Contrôles qualité : à vérifier")
     else:
-        lines.append(f"{icon_qc} Contrôles qualité : pas encore exécutés")
+        # Pas d'état chaîne : sonder QC live si sync récente
+        try:
+            from scripts.qc_post_sync import run_qc_post_sync
+
+            live = run_qc_post_sync()
+            if live.ok and not live.warnings:
+                lines.append("✅ Contrôles qualité : OK (vérif live)")
+            elif live.ok:
+                lines.append("⚠️ Contrôles qualité : OK avec réserves")
+            else:
+                code = live.blocking[0].code if live.blocking else "?"
+                title = QC_HUMAN.get(code, (code, ""))[0]
+                lines.append(f"🔴 Contrôles qualité : {title}")
+        except Exception:
+            lines.append(f"{icon_qc} Contrôles qualité : pas encore exécutés")
 
     ml = fresh.get("last_ml_train_iso")
     if ml:
