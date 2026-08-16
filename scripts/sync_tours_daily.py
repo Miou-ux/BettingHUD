@@ -242,6 +242,7 @@ def run_sync_bundle() -> int:
     else:
         _append_log("pipeline_quality.py OK.")
         _stamp_sync_meta("last_sackmann_sync_ts")
+        _stamp_sync_meta("last_tours_sync_ts")
         if os.getenv("BETTINGHUD_POST_SYNC_REBUILD", "1").strip() not in ("0", "false", "False", "no", "NO"):
             if _run_py("build_feature_store.py") != 0:
                 _append_log("build_feature_store.py a echoue.")

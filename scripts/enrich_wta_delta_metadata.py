@@ -31,6 +31,8 @@ from scripts.wta_sackmann_common import (  # noqa: E402
     build_wta_players_table,
     build_te_cache_rank_maps,
     dedup_key,
+    drop_aberrant_wta_tourney_dates,
+    ensure_wta_frame_writable,
     fill_ranks_if_missing,
     load_current_rankings_map,
     parse_yyyymmdd,
@@ -65,6 +67,9 @@ def reorganize_work_dir_by_year(work_dir: Path) -> dict:
         if not frames:
             return {"dupes_removed": 0, "files_written": 0, "rows": 0}
         df = pd.concat(frames, ignore_index=True)
+        df, dropped_dates = drop_aberrant_wta_tourney_dates(df)
+        if dropped_dates:
+            print(f"reorganize: {dropped_dates} ligne(s) date aberrante retirée(s)")
         n0 = len(df)
         df["_dedup_key"] = df.apply(dedup_key, axis=1)
         df["_score"] = df.apply(row_completeness_score, axis=1)
@@ -169,9 +174,15 @@ def enrich_metadata(
     files_written = 0
     rows_touched = 0
 
+    aberrant_removed = 0
     for path in paths:
         df = pd.read_csv(path, low_memory=False)
-        file_changed = False
+        df, dropped = drop_aberrant_wta_tourney_dates(df)
+        if dropped:
+            aberrant_removed += dropped
+            df.to_csv(path, index=False)
+        df = ensure_wta_frame_writable(df)
+        file_changed = dropped > 0
         touch_idx = [i for i, row in df.iterrows() if _needs_enrichment_row(row, cutoff)]
         rows_touched += len(touch_idx)
 
@@ -261,6 +272,7 @@ def enrich_metadata(
         "delta_rows": delta_n,
         "synthetic_winner_ids_remaining": syn_remaining,
         "reorganize": reorganize_stats,
+        "aberrant_dates_removed": aberrant_removed,
         "players_csv": str(players_path) if write_players else None,
         "players_count": players_count,
     }

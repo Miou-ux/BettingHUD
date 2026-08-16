@@ -155,23 +155,26 @@ def get_ml_bundle_mtime() -> Optional[float]:
 
 
 def _format_atp_date_for_display(raw) -> str:
-    """Affiche la date TML (YYYYMMDD ou texte) en AAAA-MM-JJ."""
-    if raw is None:
-        return "—"
-    s = str(raw).strip()
-    if len(s) == 8 and s.isdigit():
-        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
-    return s
+    """Affiche la date TML en DD/MM/YYYY (Europe/Paris)."""
+    from scripts.date_display_eu import format_date_eu
+
+    return format_date_eu(raw)
 
 
 def _format_wta_date_for_display(raw) -> str:
-    """Affiche tourney_date WTA (datetime SQLite / ISO) en AAAA-MM-JJ."""
-    if raw is None:
-        return "—"
-    s = str(raw).strip()
-    if " " in s:
-        s = s.split()[0]
-    return s[:10] if len(s) >= 10 else s
+    """Affiche tourney_date WTA (datetime SQLite / ISO / YYYYMMDD) en DD/MM/YYYY."""
+    from scripts.date_display_eu import format_date_eu
+
+    return format_date_eu(raw)
+
+
+def _wta_sane_tourney_date_sql() -> str:
+    """Exclut les dates WTA aberrantes (ex. 2029) du « dernier match » affiché."""
+    return """
+      AND CAST(substr(CAST(tourney_date AS TEXT), 1, 4) AS INTEGER) >= 2010
+      AND CAST(substr(CAST(tourney_date AS TEXT), 1, 4) AS INTEGER)
+          <= CAST(strftime('%Y', 'now') AS INTEGER) + 1
+    """
 
 
 def _fetch_last_ml_source_matches(
@@ -205,7 +208,10 @@ def _fetch_last_ml_source_matches(
             """
             SELECT tourney_date, tourney_name, winner_name, loser_name
             FROM wta_matches
-            WHERE CAST(substr(CAST(tourney_date AS TEXT),1,4) AS INTEGER) >= 2010
+            WHERE 1=1
+            """
+            + _wta_sane_tourney_date_sql()
+            + """
             ORDER BY tourney_date DESC
             LIMIT 1
             """
@@ -1873,6 +1879,98 @@ def _is_publication_locked(first_captured_ts: str | None, calendar_date: str | N
     return str(local.date()) == cal and local.hour >= _PUBLICATION_LOCK_HOUR
 
 
+def _pick_players_identity_key(
+    player1: str | None,
+    player2: str | None,
+    match_name: str | None = None,
+) -> tuple[str, ...]:
+    """Clé stable pour détecter un changement de match sur un pick_key."""
+    try:
+        from scripts.scraper_results import canonical_player
+
+        a = canonical_player(player1 or "")
+        b = canonical_player(player2 or "")
+        if a and b:
+            return tuple(sorted((a, b)))
+    except Exception:
+        pass
+    name = str(match_name or "").strip().lower()
+    return (name,) if name else ()
+
+
+def _pick_identity_changed(
+    old_p1: str | None,
+    old_p2: str | None,
+    old_name: str | None,
+    new_p1: str | None,
+    new_p2: str | None,
+    new_name: str | None,
+) -> bool:
+    return _pick_players_identity_key(old_p1, old_p2, old_name) != _pick_players_identity_key(
+        new_p1, new_p2, new_name
+    )
+
+
+def _winner_matches_pick_players(
+    winner: str | None,
+    player1: str | None,
+    player2: str | None,
+) -> bool:
+    if not winner:
+        return False
+    try:
+        from scripts.scraper_results import names_match
+
+        return names_match(winner, player1 or "") or names_match(winner, player2 or "")
+    except Exception:
+        return False
+
+
+def _reset_daily_top_proba_settlement(
+    cur: sqlite3.Cursor,
+    pick_key: str,
+    *,
+    now_iso: str,
+) -> None:
+    cur.execute(
+        """
+        UPDATE daily_top_proba_picks
+        SET status = 'En cours', fav_won = NULL, winner_resolved = NULL,
+            score_final = NULL, result_source = NULL, theoretical_profit = NULL,
+            settled_ts = NULL, updated_at = ?
+        WHERE pick_key = ?
+        """,
+        (now_iso, pick_key),
+    )
+
+
+def _clear_mismatched_pick_settlements(conn: sqlite3.Connection) -> int:
+    """Annule les règlements dont le vainqueur n'est pas l'un des deux joueurs du pick."""
+    ensure_daily_top_proba_schema(conn)
+    rows = conn.execute(
+        """
+        SELECT pick_key, player1, player2, winner_resolved
+        FROM daily_top_proba_picks
+        WHERE COALESCE(status, 'En cours') NOT IN ('En cours', '')
+          AND winner_resolved IS NOT NULL
+          AND TRIM(winner_resolved) != ''
+          AND player1 IS NOT NULL
+          AND player2 IS NOT NULL
+        """
+    ).fetchall()
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    cur = conn.cursor()
+    n = 0
+    for key, p1, p2, winner in rows:
+        if _winner_matches_pick_players(winner, p1, p2):
+            continue
+        _reset_daily_top_proba_settlement(cur, str(key), now_iso=now_iso)
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
 def _should_skip_intraday_identity_overwrite(
     *,
     existing_first_ts: str | None,
@@ -1911,13 +2009,25 @@ def upsert_daily_top_proba_picks(
             if not key or not cal or not tour or rank <= 0 or not match_name:
                 continue
             existing = cur.execute(
-                "SELECT first_captured_ts, calendar_date FROM daily_top_proba_picks WHERE pick_key = ?",
+                "SELECT first_captured_ts, calendar_date, player1, player2, match_name "
+                "FROM daily_top_proba_picks WHERE pick_key = ?",
                 (key,),
             ).fetchone()
             first_ts = existing[0] if existing and existing[0] else (
                 _none_if_blank(r.get("first_captured_ts")) or now_iso
             )
             last_ts = _none_if_blank(r.get("last_captured_ts")) or now_iso
+            identity_changed = bool(
+                existing
+                and _pick_identity_changed(
+                    existing[2],
+                    existing[3],
+                    existing[4],
+                    r.get("player1"),
+                    r.get("player2"),
+                    match_name,
+                )
+            )
             if existing and _should_skip_intraday_identity_overwrite(
                 existing_first_ts=existing[0],
                 existing_calendar_date=existing[1],
@@ -2026,6 +2136,8 @@ def upsert_daily_top_proba_picks(
                     now_iso,
                 ),
             )
+            if identity_changed:
+                _reset_daily_top_proba_settlement(cur, key, now_iso=now_iso)
             n += 1
         conn.commit()
         return n
@@ -2516,10 +2628,11 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
     """Résout Gagné/Perdu sur le favori modèle via le cache match_results."""
     ensure_daily_top_proba_schema(conn)
     ensure_match_results_cache(conn)
+    n = _clear_mismatched_pick_settlements(conn)
     try:
         from scripts.scraper_results import canonical_player, names_match
     except Exception:
-        return 0
+        return n
     rows = conn.execute(
         """
         SELECT pick_key, calendar_date, match_date, player1, player2, fav_player, odd_fav,
@@ -2532,7 +2645,6 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
           AND fav_player IS NOT NULL
         """
     ).fetchall()
-    n = 0
     now_iso = datetime.utcnow().isoformat(timespec="seconds")
     for key, calendar_date, match_date, p1, p2, fav_player, odd_fav, p_model_fav, segment_brier, stake_frac in rows:
         p1c = canonical_player(p1)
@@ -2547,6 +2659,8 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
         if not hit:
             continue
         winner, score, walkover, retired, source, _resolved_date = hit
+        if not _winner_matches_pick_players(winner, p1, p2):
+            continue
         retired_eff = _retired_from_match_hit(
             walkover=bool(walkover), retired=bool(retired), score=score
         )

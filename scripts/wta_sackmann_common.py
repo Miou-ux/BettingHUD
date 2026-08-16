@@ -70,6 +70,58 @@ WTA_ITF_TOURNEY_LEVELS = frozenset({"15", "I"})
 MIN_PLAYER_AGE = 15.0
 MAX_PLAYER_AGE = 45.0
 
+# Colonnes pouvant contenir des tokens texte (R, Q, WC…) — évite TypeError float64 à l'écriture CSV.
+WTA_OBJECT_COLUMNS = frozenset(
+    {
+        "tourney_id",
+        "tourney_name",
+        "surface",
+        "tourney_level",
+        "round",
+        "score",
+        "winner_seed",
+        "winner_entry",
+        "winner_name",
+        "winner_hand",
+        "winner_ioc",
+        "loser_seed",
+        "loser_entry",
+        "loser_name",
+        "loser_hand",
+        "loser_ioc",
+    }
+)
+
+
+def max_sane_wta_year(reference: datetime | None = None) -> int:
+    ref = reference or datetime.now()
+    return int(ref.year) + 1
+
+
+def ensure_wta_frame_writable(df: pd.DataFrame) -> pd.DataFrame:
+    """Force object dtype sur colonnes texte WTA avant assignation / to_csv."""
+    for col in df.columns:
+        if col in WTA_OBJECT_COLUMNS:
+            df[col] = df[col].astype(object)
+    return df
+
+
+def drop_aberrant_wta_tourney_dates(
+    df: pd.DataFrame,
+    *,
+    reference: datetime | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """Retire les tourney_date impossibles (ex. 2029) — garde année <= now+1."""
+    if df.empty or "tourney_date" not in df.columns:
+        return df, 0
+    max_y = max_sane_wta_year(reference)
+    td = pd.to_datetime(df["tourney_date"].astype(str), format="%Y%m%d", errors="coerce")
+    ok = td.dt.year.notna() & (td.dt.year <= max_y)
+    dropped = int((~ok).sum())
+    if dropped:
+        df = df.loc[ok].copy()
+    return df, dropped
+
 SERVE_COLS = (
     "w_ace",
     "w_df",

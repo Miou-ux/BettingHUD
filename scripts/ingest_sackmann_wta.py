@@ -13,9 +13,13 @@ import argparse
 import glob
 import os
 import re
+import sys
 
 import pandas as pd
 from sqlalchemy import create_engine
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 _WTA_CSV_YEAR_RE = re.compile(r"(\d{4})\.csv$", re.IGNORECASE)
 DEFAULT_WTA_MIN_YEAR = int(os.getenv("BETTINGHUD_WTA_SACKMANN_MIN_YEAR", "2010"))
@@ -64,10 +68,13 @@ def _load_match_frames(raw_dir: str, min_year: int):
     for col in out.columns:
         if out[col].dtype == "object":
             out[col] = out[col].astype(str)
+    from scripts.wta_sackmann_common import max_sane_wta_year
+
     out["tourney_date"] = pd.to_datetime(out["tourney_date"], format="%Y%m%d", errors="coerce")
     out = out.dropna(subset=["tourney_date"])
     y0 = int(min_year)
-    out = out.loc[out["tourney_date"].dt.year >= y0]
+    y_max = max_sane_wta_year()
+    out = out.loc[(out["tourney_date"].dt.year >= y0) & (out["tourney_date"].dt.year <= y_max)]
     return out.sort_values("tourney_date").reset_index(drop=True)
 
 

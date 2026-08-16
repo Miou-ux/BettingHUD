@@ -1,10 +1,10 @@
 # Archive WTA Sackmann — sauvegarde & restauration
 
-Dernière mise à jour : **10 juillet 2026**.
+Dernière mise à jour : **16 août 2026**.
 
 L’archive sous `data/raw/tennis_wta/` est la **dernière copie connue** du dépôt [JeffSackmann/tennis_wta](https://github.com/JeffSackmann/tennis_wta) (repo **404** depuis juin 2026). Elle alimente `wta_matches` en SQLite, le ML WTA et `stats_engine`. **Ne pas modifier sans backup.**
 
-**Voir aussi :** [[OPS_PROD_DEPANNAGE]] § 6.4 · [[CHANGELOG_RECENT]] · `scripts/_wta_delta_acceptance.md` · `scripts/backup_wta_sackmann_archive.py`.
+**Voir aussi :** [[OPS_PROD_DEPANNAGE]] § 6.4 · [[DONNEES_ATP_WTA]] · [[CHANGELOG_RECENT]] · `scripts/_wta_delta_acceptance.md` · `scripts/backup_wta_sackmann_archive.py`.
 
 ---
 
@@ -17,14 +17,22 @@ L’archive sous `data/raw/tennis_wta/` est la **dernière copie connue** du dé
 | **Schéma** | 49 colonnes Sackmann (`wta_matches_*.csv`) |
 | **Fichiers** | 35 CSV : main 2010–2026, qual/ITF 2010–2026, `wta_players.csv`, `wta_rankings_current.csv` |
 
-### Fraîcheur des matchs (prod, 10/07/2026)
+### Fraîcheur des matchs (prod, 16/08/2026)
 
 | Fichier / table | `max(tourney_date)` | Source |
 |-----------------|---------------------|--------|
-| `wta_matches_2026.csv` (main) | **2026-07-10** | tennis-data + pont **Flashscore** |
-| `wta_matches_qual_itf_2026.csv` | **2026-07-10** | pont **Flashscore** (prematch TE ITF) — tennis-data **sans ITF** dans le xlsx 2026 |
-| `wta_rankings_current.csv` | ranking_date **2026-07-10** | `refresh_wta_rankings_current.py` (matchs + cache TE) |
-| SQLite `wta_matches` | **406 666** lignes · max **2026-07-10** | `ingest_sackmann_wta.py` après pipeline |
+| `wta_matches_2026.csv` (main) | **2026-08-15** | tennis-data + pont **Flashscore** |
+| `wta_matches_qual_itf_2026.csv` | **2026-08-15** | pont **Flashscore** (prematch TE ITF) |
+| `wta_rankings_current.csv` | ranking_date **2026-08-15** | `refresh_wta_rankings_current.py` |
+| SQLite `wta_matches` | **409 028** lignes · max **2026-08-15** | `ingest_sackmann_wta.py` après pipeline |
+| QC C1 doublons | **0** (307 supprimés 16/08) | `enrich_wta_delta_metadata --dedup` |
+
+### Incident qualité 16/08/2026
+
+- Ligne `20290720` supprimée ; gate C1 repassée au vert.
+- Bug enrich dtype corrigé — voir [[DONNEES_ATP_WTA]] §4.
+
+### Fraîcheur des matchs (prod, 10/07/2026 — historique)
 
 ### Pipeline delta (post-Sackmann)
 

@@ -6,6 +6,26 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Qualité données ATP/WTA — nettoyage WTA (16 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Incident** | Date WTA affichée **2029** ; **307 doublons C1** ; sync nocturne `rc=1` ; enrich metadata en échec |
+| **Cause** | Ligne delta corrompue ; doublons multi-sources ; bug pandas dtype `round`/`entry` ; meta sync bloquée par QC |
+| **Correctifs** | `drop_aberrant_wta_tourney_dates`, `ensure_wta_frame_writable`, filtre ingest, stamp `last_tours_sync_ts` sur ingest OK |
+| **Prod** | 307 dupes + 1 ligne 2029 supprimés ; **409 028** lignes WTA ; QC **0 blocking** ; feature store rebuild |
+| **Affichage** | Dates EU DD/MM/YYYY CET ; filtre SQL dates aberrantes (`bets_db._wta_sane_tourney_date_sql`) |
+
+Doc complète : **`docs/DONNEES_ATP_WTA.md`**.
+
+| Script | Rôle |
+|--------|------|
+| `scripts/fix_wta_data_cleanup.py` | Nettoyage manuel dedup + ingest + QC |
+| `scripts/_audit_atp_wta_data.py` | Audit fraîcheur / couverture ATP+WTA |
+| `scripts/wta_delta_qc_gates.py` | Gates C1 doublons + D1 rangs |
+
+---
+
 # Top picks du jour illimité + renommage (24 juillet 2026)
 
 | Élément | Détail |

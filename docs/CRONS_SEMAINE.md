@@ -93,7 +93,7 @@ gantt
 
 **WTA (depuis juin 2026)** : le cron 03:30 n’appelle plus `fetch_wta_sackmann_raw.py` (repo mort) ; il append le delta tennis-data + stats Flashscore sur `data/raw/tennis_wta/`, puis ingest.
 
-**ATP** : `sync_tml_recent.py` dans le même bundle. En cas d’échec WTA en tête de chaîne, tout le job peut échouer avant TML — surveiller `tours_auto_sync.log` (`=== fin sync ATP+WTA rc=0 ===`).
+**ATP** : `sync_tml_recent.py` dans le même bundle. Surveiller `tours_auto_sync.log` (`=== fin sync ATP+WTA rc=0 ===`) et QC C1/D1 WTA — voir [[DONNEES_ATP_WTA]].
 
 ---
 
