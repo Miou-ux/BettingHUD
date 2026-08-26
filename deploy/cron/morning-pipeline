@@ -4,9 +4,9 @@
 # NOTE: cron Ubuntu (vixie) ignore CRON_TZ pour le *scheduling* — le serveur doit être
 # en timezone Europe/Paris (timedatectl). CRON_TZ reste documentaire / env des jobs.
 CRON_TZ=Europe/Paris
-# 04:25 — scrape TE + snapshot (après sync tours 00:30, avant publish 05:00)
-25 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning build 04:25" --log data/logs/morning_build_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only
-# 04:35 — preflight chaîne (imports / snapshot / dry-run picks) avant publish 05:00
-35 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Preflight morning 04:35" --log data/logs/preflight_morning_cron.log --dedup-key preflight_morning -- /opt/bettinghud/venv/bin/python scripts/preflight_morning_chain.py
+# 04:30 — scrape TE + snapshot (après sync tours 00:30 ~2h20–4h, attend sync si besoin)
+30 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning build 04:30" --log data/logs/morning_build_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --build-only
+# 04:56 — preflight (après build ~25 min → fin ~04:55)
+56 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Preflight morning 04:56" --log data/logs/preflight_morning_cron.log --dedup-key preflight_morning -- /opt/bettinghud/venv/bin/python scripts/preflight_morning_chain.py
 # 05:00 — publications uniquement (Top 5, 1D1P, canal TG/Discord — sync/build déjà faits)
 0 5 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Morning publish 05:00" --log data/logs/morning_publish_cron.log -- /opt/bettinghud/venv/bin/python scripts/morning_live_pipeline.py --publish-only

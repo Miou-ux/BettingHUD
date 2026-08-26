@@ -112,7 +112,7 @@ def ensure_tours_sync(*, _log, force: bool = False) -> bool:
     from scripts.sync_tours_daily import run_sync_bundle
 
     if not force and step_ok_today("tours_sync"):
-        _log("Sync tours déjà OK aujourd'hui (cron 03:30 ou passe précédente) — skip exécution.")
+        _log("Sync tours déjà OK aujourd'hui (cron 00:30 ou passe précédente) — skip exécution.")
         if validate_tours_data(_log=_log):
             return True
         _log("Garde-fou données échoué malgré sync marqué OK — relance sync.")
@@ -316,7 +316,13 @@ def run_shadow_step(*, _log) -> None:
 
 def run_publish_only_chain(*, _log, allow_emergency_build: bool = True) -> int:
     """Cron 05:00 — publications uniquement (sync + build doivent être terminés avant)."""
-    _log("=== Publications matin 05:00 (sans sync — prep crons 00:30→04:35) ===")
+    from scripts.morning_chain_state import step_ok_today, wait_for_step_ok
+
+    _log("=== Publications matin 05:00 (sans sync — prep crons 00:30→04:56) ===")
+
+    if not step_ok_today("build"):
+        _log("Build pas encore marqué OK — attente fin job 04:30 (max 25 min).")
+        wait_for_step_ok("build", max_wait_sec=25 * 60, log=_log)
 
     if not validate_tours_data(_log=_log):
         _log("ÉCHEC : données tours invalides — publication annulée.")

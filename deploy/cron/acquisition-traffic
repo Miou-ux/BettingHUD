@@ -3,8 +3,8 @@ CRON_TZ=Europe/Paris
 
 # Publications quotidiennes (Top 5, 1D1P, canal TG) : morning_live_pipeline.py --publish-only (05:00)
 
-# 04:48 — image OG stats (après build 04:25, avant publications 05:00)
-48 4 * * * ubuntu cd /opt/bettinghud && COURTALPHA_ROOT=/opt/courtalpha /opt/bettinghud/venv/bin/python scripts/generate_og_snapshot.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
+# 04:58 — image OG stats (après build 04:30 + preflight 04:56, avant publications 05:00)
+58 4 * * * ubuntu cd /opt/bettinghud && COURTALPHA_ROOT=/opt/courtalpha /opt/bettinghud/venv/bin/python scripts/generate_og_snapshot.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1
 
 # CourtAlphaX tweet — DÉSACTIVÉ (COURTALPHAX_X_ENABLED=0)
 #0 7 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/courtalphax_daily_pick.py >> /opt/bettinghud/data/logs/acquisition.log 2>&1

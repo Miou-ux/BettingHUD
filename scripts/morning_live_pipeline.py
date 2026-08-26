@@ -2,10 +2,10 @@
 """Pipeline matinal BettingHUD (scrape + snapshot, notifications Telegram séparées).
 
 Phases (Europe/Paris, cron PROD) :
-  - **00:30** : sync tours (cron ``data-sync`` — doit finir avant 04:25)
-  - **04:25** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
+  - **00:30** : sync tours (cron ``data-sync`` — doit finir avant build 04:30)
+  - **04:30** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
+  - **04:56** : preflight (cron séparé)
   - **05:00** : ``--publish-only`` — **publications seules** (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
-  - **05:00** : ``--morning-publish`` — chaîne complète sync→build→publish (rattrapage manuel uniquement)
 
 Modes manuels :
   - ``--telegram-only`` / ``--telegram-only --source morning-sync`` — envoi sans rebuild
@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--build-only",
         action="store_true",
-        help="04:25 Paris : scrape + snapshot + report algo (pas de Telegram)",
+        help="04:30 Paris : scrape + snapshot + report algo (pas de Telegram)",
     )
     mode.add_argument(
         "--telegram-only",
@@ -328,6 +328,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.build_only:
         _log, log_path = _open_log("build")
         _log("Démarrage phase build (scrape + snapshot).")
+        try:
+            from scripts.morning_chain_state import (
+                step_ok_today,
+                tours_sync_in_progress,
+                wait_for_step_ok,
+            )
+
+            if tours_sync_in_progress() or not step_ok_today("tours_sync"):
+                _log("Sync tours 00:30 pas terminé — attente (max 60 min).")
+                wait_for_step_ok("tours_sync", max_wait_sec=3600, log=_log)
+        except Exception as exc:
+            _log(f"Attente sync tours ignorée : {exc}")
         rc = run_build_phase(_log=_log)
         if rc == 0:
             try:
@@ -342,13 +354,13 @@ def main(argv: list[str] | None = None) -> int:
                     detail={"source": "build-only", "validated": build_ok},
                 )
                 if not build_ok:
-                    _log("Post-check validate_build ÉCHEC après build 04:25.")
+                    _log("Post-check validate_build ÉCHEC après build 04:30.")
                     try:
                         from scripts.ops_alert_human import format_simple_ops
                         from scripts.ops_telegram_alert import send_ops_alert
 
                         _, body = format_simple_ops(
-                            "Préparation snapshot (04:25) — contrôle final KO",
+                            "Préparation snapshot (04:30) — contrôle final KO",
                             [
                                 "Le snapshot a été construit mais ne passe pas les garde-fous qualité.",
                                 "• Profils joueurs TE incomplets ou snapshot trop vieux",

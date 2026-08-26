@@ -17,7 +17,7 @@ Ce qui **tourne tout seul** sur le serveur `bettinghud` (crons + systemd). Tu n�
 
 | Besoin | Mécanisme | Fréquence |
 |--------|-----------|-----------|
-| **Scrape TE + snapshot enrichi (ML live)** | Cron `morning-pipeline` 04:25 + thread `live-data-daemon` (dashboard systemd) | **04:25** build · refresh snapshot ~**15 min** |
+| **Scrape TE + snapshot enrichi (ML live)** | Cron `morning-pipeline` 04:30 + thread `live-data-daemon` (dashboard systemd) | **04:30** build · refresh snapshot ~**15 min** |
 | **Sync historique ATP/WTA + ingest SQLite** | Cron `data-sync` → `sync_tours_daily.py` | **00:30** quotidien (~4 h max observé) |
 | **Réentraînement ML** | Cron `data-sync` → `update_model_tml.py` | **Sam 23:00** |
 | **Rapport ML / Brier (admin TG)** | Cron `ml-weekly-telegram` | **Lun 08:00** |
@@ -26,7 +26,7 @@ Ce qui **tourne tout seul** sur le serveur `bettinghud` (crons + systemd). Tu n�
 | **Bot Telegram** (`/jour`, `/top5`, Parier) | `bettinghud-telegram-bot.service` | **24/7** |
 | **Résultats paris + top probas jour** | `bettinghud-daemon.service` | **~10 min** |
 
-**Logs de contrôle** : `tours_auto_sync.log` (sync 03:30), `ml_train_cron.log` (dim.), `morning_publish_cron.log`, `telegram_bot_daemon.log`.
+**Logs de contrôle** : `tours_auto_sync.log` (sync 00:30), `ml_train_cron.log` (sam.), `morning_publish_cron.log`, `telegram_bot_daemon.log`.
 
 > **CourtAlpha (Settings)** : certains pipelines affichent encore « thread dashboard » — en PROD la **source de vérité est le cron** (`deploy/cron/data-sync`, `morning-pipeline`), pas une visite UI Streamlit `:8501`.
 
@@ -45,7 +45,7 @@ Ce qui **tourne tout seul** sur le serveur `bettinghud` (crons + systemd). Tu n�
 
 | Jour | Crons actifs (heure Paris) |
 |------|----------------------------|
-| **Lun → Sam** | 00:30 sync · 04:15 backup · 04:25 build · 04:35 preflight · 04:48 OG · **05:00 publications** · ***/2 min** billing |
+| **Lun → Sam** | 00:30 sync · 04:15 backup · 04:30 build · 04:56 preflight · 04:58 OG · **05:00 publications** · ***/2 min** billing |
 | **Lundi** | **08:00** rapport ML + Brier WTA → admin Telegram |
 | **Dimanche** | **+** 00:15 backup WTA · 04:10 aliases rangs · **Sam 23:00** retrain ML · 10:00 récap TG · 11:00 brouillon Reddit · 18:00 rapport trafic |
 
@@ -57,10 +57,10 @@ gantt
     section Nuit
     Sync ATP+WTA+ingest   :00:30, 210m
     Backup DB             :04:15, 10m
-    Build snapshot TE     :04:25, 30m
-    Preflight morning     :04:35, 10m
+    Build snapshot TE     :04:30, 30m
+    Preflight morning     :04:56, 5m
     section Matin
-    Image OG stats        :04:48, 5m
+    Image OG stats        :04:58, 2m
     Publications TG/Discord :05:00, 5m
     Digest admin          :06:30, 5m
     Portfolio reconcile   :06:40, 5m
@@ -80,14 +80,14 @@ gantt
 |-------|--------|------|-----|
 | **00:30** | `sync_tours_daily.py` | ATP (`sync_tml_recent`) + **WTA delta** + QC post-sync (lock anti-doublon) | `data/logs/tours_cron.log` · `data/logs/tours_auto_sync.log` |
 | **04:15** | `backup_prod_db_server.py` | Backup SQLite serveur (rétention 30j) | `data/logs/backup_db_server.log` |
-| **04:25** | `morning_live_pipeline.py --build-only` | Scrape TE, snapshot ML, cache Telegram + **validate_build** | `data/logs/morning_build_cron.log` |
-| **04:35** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
-| **04:48** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
+| **04:30** | `morning_live_pipeline.py --build-only` | Scrape TE, snapshot ML, cache Telegram + **validate_build** | `data/logs/morning_build_cron.log` |
+| **04:56** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
+| **04:58** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
 | **05:00** | `morning_live_pipeline.py --publish-only` | **Publications seules** : 1D1P + Top 5 + canal TG/Discord (sync/build déjà faits) | `data/logs/morning_publish_cron.log` |
 | **06:40** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` | Ledger Top picks / 1D1P vs Kelly replay (alerte si dérive) | `data/logs/reconcile_portfolio.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
-**Ordre matin** : 00:30 (sync tours, ~4 h max) → 04:15 backup → 04:25 build → 04:35 preflight → 04:48 (OG) → **05:00 publish**.
+**Ordre matin** : 00:30 (sync tours, ~2h20–4h) → 04:15 backup → 04:30 build (~25 min) → 04:56 preflight → 04:58 (OG) → **05:00 publish**.
 
 **Rattrapage manuel** : `morning_live_pipeline.py --morning-publish` (chaîne complète sync→build→publish).
 
@@ -129,11 +129,11 @@ gantt
 | Fichier repo | Sur serveur | Contenu |
 |--------------|-------------|---------|
 | `deploy/cron/reconcile-portfolio` | `bettinghud-reconcile-portfolio` | 06:40 réconciliation ledger |
-| `deploy/cron/morning-pipeline` | `bettinghud-morning-pipeline` | 04:25 build · 04:35 preflight · **05:00 publish-only** |
+| `deploy/cron/morning-pipeline` | `bettinghud-morning-pipeline` | 04:30 build · 04:56 preflight · **05:00 publish-only** |
 | `deploy/cron/data-sync` | `bettinghud-data-sync` | **00:30** sync quotidien · **sam. 23:00** ML |
 | `deploy/cron/ops-p0` | `bettinghud-ops-p0` | 04:15 backup · */5 min watchdog |
 | `deploy/cron/wta-sackmann-backup` | `bettinghud-wta-backup` | **00:15 dim.** |
-| `deploy/cron/acquisition-traffic` | `bettinghud-acquisition-traffic` | **04:48** OG quot. · dim. 10h/11h/18h |
+| `deploy/cron/acquisition-traffic` | `bettinghud-acquisition-traffic` | **04:58** OG quot. · dim. 10h/11h/18h |
 | `deploy/cron/bettinghud-replay-warm` | `bettinghud-replay-warm` | **05:10+** warm cache replay (après publish) |
 | `deploy/cron/wta-weekly-rank-aliases` | `bettinghud-wta-weekly-rank-aliases` | **04:10 dim.** |
 | `deploy/cron/telegram-channel` | `bettinghud-telegram-channel` | dim. 10h |

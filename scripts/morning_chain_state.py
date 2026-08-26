@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHAIN_STATE_PATH = os.path.join(ROOT, "data", "cache", "morning_chain_state.json")
+TOURS_SYNC_LOCK_PATH = os.path.join(ROOT, "data", "cache", "tours_sync.lock")
 
 
 def _paris_calendar_date() -> str:
@@ -58,3 +60,33 @@ def step_ok_today(step: str) -> bool:
 
 def get_step(step: str) -> dict[str, Any]:
     return dict(_read().get(step) or {})
+
+
+def tours_sync_in_progress() -> bool:
+    """True si le lock sync tours est présent (job 00:30 encore actif)."""
+    try:
+        if not os.path.isfile(TOURS_SYNC_LOCK_PATH):
+            return False
+        age_sec = time.time() - os.path.getmtime(TOURS_SYNC_LOCK_PATH)
+        return age_sec < 6 * 3600
+    except OSError:
+        return False
+
+
+def wait_for_step_ok(
+    step: str,
+    *,
+    max_wait_sec: int,
+    poll_sec: int = 30,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Attend qu'une étape soit OK aujourd'hui (garde-fou entre crons)."""
+    deadline = time.time() + max(0, max_wait_sec)
+    while time.time() < deadline:
+        if step_ok_today(step):
+            return True
+        if log:
+            remaining = int(deadline - time.time())
+            log(f"Attente {step}… ({remaining}s restantes)")
+        time.sleep(max(5, poll_sec))
+    return step_ok_today(step)

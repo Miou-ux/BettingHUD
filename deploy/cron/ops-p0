@@ -1,7 +1,7 @@
 # Ops P0 — backup DB serveur + watchdog santé (Europe/Paris)
 CRON_TZ=Europe/Paris
 
-# 04:15 — backup SQLite local (après sync tours, avant build 04:25)
+# 04:15 — backup SQLite local (après sync tours, avant build 04:30)
 15 4 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Backup DB 04:15" --log data/logs/backup_db_server.log --dedup-key backup_db_server -- /opt/bettinghud/venv/bin/python scripts/backup_prod_db_server.py
 
 # Toutes les 5 min — health dashboard + heartbeat daemon (+ restart auto)
