@@ -16,7 +16,7 @@ from scripts.bets_db import DB_PATH_DEFAULT
 
 PARIS = ZoneInfo("Europe/Paris")
 BACKUP_DIR = os.path.join(ROOT, "backups", "prod")
-KEEP_DAYS = int(os.getenv("BETTINGHUD_SERVER_BACKUP_KEEP_DAYS", "30"))
+KEEP_DAYS = int(os.getenv("BETTINGHUD_SERVER_BACKUP_KEEP_DAYS", "14"))
 
 
 def _log(msg: str) -> None:

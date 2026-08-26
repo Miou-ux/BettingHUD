@@ -2,4 +2,4 @@
 CRON_TZ=Europe/Paris
 
 # Dimanche 00:15 — tarball + manifest (avant sync tours 00:30)
-15 0 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/backup_wta_sackmann_archive.py --retain 12 >> /opt/bettinghud/data/logs/wta_backup_cron.log 2>&1
+15 0 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/backup_wta_sackmann_archive.py --retain 4 >> /opt/bettinghud/data/logs/wta_backup_cron.log 2>&1

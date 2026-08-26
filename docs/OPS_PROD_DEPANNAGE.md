@@ -454,6 +454,29 @@ ls -la /opt/bettinghud/data/cache/live_matches_snapshot*.joblib
 
 **Comportement normal** : pas de push automatique de `bettinghud.db`. Au premier déploiement, une copie `scp` a pu aligner les deux bases ; ensuite chaque environnement diverge si les paris ne sont saisis que d’un côté.
 
+### 6.10 Espace disque — nettoyage PROD
+
+**Cibles sûres** (août 2026 — ~16 Go récupérables typiques) :
+
+| Cible | Chemin | Rétention | Gain typique |
+|-------|--------|-----------|--------------|
+| Backups SQLite serveur | `/opt/bettinghud/backups/prod/` | **14** derniers (cron 04:15) | ~4 Go |
+| Cache pip | `~/.cache/pip/` | purge complète | ~7 Go |
+| Journaux systemd | `/var/log/journal/` | vacuum 500M | ~3 Go |
+| Archives WTA tarball | `data/backups/wta_sackmann/` | **4** dernières (dim. cron) | ~100 Mo |
+
+**Script** :
+
+```bash
+cd /opt/bettinghud
+./venv/bin/python scripts/disk_cleanup_prod.py          # dry-run
+./venv/bin/python scripts/disk_cleanup_prod.py --apply  # exécution
+```
+
+Variable `BETTINGHUD_SERVER_BACKUP_KEEP_DAYS=14` (défaut dans `backup_prod_db_server.py`).
+
+**Hors scope BettingHUD** (demander avant suppression) : `~/freqtrade/` (~14 Go), `/opt/lifeinvestment/venv` (~5.6 Go).
+
 ### 6.7 CourtAlpha — 403 Forbidden sur https://courtalpha.tech/
 
 **Cause** : déploiement `frontend/dist/` via `scp` Windows → dossier en `700`, nginx (`www-data`) ne peut pas lire.
