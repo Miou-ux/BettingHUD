@@ -1,8 +1,8 @@
 # Sync données tours + entraînement ML — PROD (Europe/Paris)
 CRON_TZ=Europe/Paris
 
-# 03:30 — ATP/WTA sync (alerte TG si échec ; dedup avec QC post-sync FAIL)
-30 3 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Sync tours 03:30" --log data/logs/tours_cron.log --dedup-key qc_post_sync_fail -- /opt/bettinghud/venv/bin/python scripts/sync_tours_daily.py
+# 00:30 — ATP/WTA sync (fenêtre ~4h avant build 04:25 / publish 05:00)
+30 0 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Sync tours 00:30" --log data/logs/tours_cron.log --dedup-key qc_post_sync_fail -- /opt/bettinghud/venv/bin/python scripts/sync_tours_daily.py
 
-# Dimanche 04:00 — ML train + post-hook rebuild/restart (alerte TG si échec train)
-0 4 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "ML train hebdo" --log data/logs/ml_train_cron.log -- /opt/bettinghud/venv/bin/python scripts/update_model_tml.py --min-year 2020
+# Samedi 23:00 — ML train hebdo (hors fenêtre matin ; évite conflit sync/build dimanche)
+0 23 * * 6 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "ML train hebdo" --log data/logs/ml_train_cron.log -- /opt/bettinghud/venv/bin/python scripts/update_model_tml.py --min-year 2020

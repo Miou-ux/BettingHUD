@@ -12,15 +12,42 @@ Usage:
 from __future__ import annotations
 
 import datetime as _dt
+import fcntl
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 LOG_DIR = os.path.join(ROOT, "data", "logs")
 LOG_PATH = os.path.join(LOG_DIR, "tours_auto_sync.log")
+TOURS_SYNC_LOCK_PATH = os.path.join(ROOT, "data", "cache", "tours_sync.lock")
+
+
+@contextmanager
+def _tours_sync_lock(*, blocking: bool = True):
+    """Verrou exclusif — évite deux sync tours concurrentes (cron 00:30 + publish 05:00)."""
+    os.makedirs(os.path.dirname(TOURS_SYNC_LOCK_PATH), exist_ok=True)
+    fd = open(TOURS_SYNC_LOCK_PATH, "a+", encoding="utf-8")
+    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flags)
+    except BlockingIOError:
+        fd.close()
+        raise
+    try:
+        fd.seek(0)
+        fd.truncate()
+        fd.write(f"pid={os.getpid()} started={_dt.datetime.now().isoformat(timespec='seconds')}\n")
+        fd.flush()
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            fd.close()
 
 
 def _append_log(line: str) -> None:
@@ -187,9 +214,28 @@ def _stamp_sync_meta(meta_key: str, iso: str | None = None) -> None:
         _append_log(f"bets_meta {meta_key}: {e}")
 
 
-def run_sync_bundle() -> int:
+def run_sync_bundle(*, blocking_lock: bool = True) -> int:
     """Exécute la séquence complète. Retourne 0 si aucune erreur fatale (codes partiels tolérés)."""
     os.makedirs(LOG_DIR, exist_ok=True)
+    try:
+        lock_ctx = _tours_sync_lock(blocking=blocking_lock)
+    except BlockingIOError:
+        _append_log("=== sync ATP+WTA ignorée — autre sync déjà en cours (lock) ===")
+        try:
+            from scripts.morning_chain_state import step_ok_today
+
+            if step_ok_today("tours_sync"):
+                _append_log("tours_sync déjà OK aujourd'hui malgré lock — rc=0")
+                return 0
+        except Exception:
+            pass
+        return 2
+
+    with lock_ctx:
+        return _run_sync_bundle_locked()
+
+
+def _run_sync_bundle_locked() -> int:
     _append_log("=== debut sync ATP+WTA ===")
     rc = 0
     if _update_wta_sackmann_raw() != 0:

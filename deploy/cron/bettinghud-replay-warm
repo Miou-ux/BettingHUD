@@ -1,0 +1,4 @@
+# Pré-chauffe cache replay CourtAlpha (1D1P / Top5) — Europe/Paris
+CRON_TZ=Europe/Paris
+# Après publish 05:00 + toutes les 30 min (évite timeout HTTP ~3 min au cold start)
+10,40 5-23 * * * ubuntu cd /opt/bettinghud && PYTHONPATH=/opt/courtalpha:/opt/bettinghud BETTINGHUD_HEADLESS=1 /opt/bettinghud/venv/bin/python scripts/warm_replay_api_cache.py >> data/logs/replay_warm_cron.log 2>&1

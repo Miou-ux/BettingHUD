@@ -1,0 +1,5 @@
+# Maintenance hebdo WTA — aliases rangs (Europe/Paris)
+CRON_TZ=Europe/Paris
+
+# Dimanche 04:10 — après sync tours 00:30, avant build 04:25
+10 4 * * 0 ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "WTA rangs hebdo 04:10" --log data/logs/wta_weekly_rank_aliases.log -- /opt/bettinghud/venv/bin/python scripts/wta_weekly_rank_aliases.py --apply-top 5

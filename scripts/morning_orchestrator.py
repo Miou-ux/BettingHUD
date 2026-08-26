@@ -314,8 +314,42 @@ def run_shadow_step(*, _log) -> None:
         _log(f"Shadow Top5 ignoré (erreur non bloquante) : {exc}")
 
 
+def run_publish_only_chain(*, _log, allow_emergency_build: bool = True) -> int:
+    """Cron 05:00 — publications uniquement (sync + build doivent être terminés avant)."""
+    _log("=== Publications matin 05:00 (sans sync — prep crons 00:30→04:35) ===")
+
+    if not validate_tours_data(_log=_log):
+        _log("ÉCHEC : données tours invalides — publication annulée.")
+        return 1
+
+    build_ready = validate_build(_log=_log)
+    if not build_ready:
+        from scripts.morning_chain_state import step_ok_today
+
+        if step_ok_today("build"):
+            _log("Garde-fou build strict KO mais build cron OK aujourd'hui — fallback snapshot.")
+            build_ready = snapshot_ok_for_publish_fallback(_log=_log)
+        elif allow_emergency_build:
+            _log("Build pas prêt — tentative build d'urgence (dernier recours).")
+            build_ready = run_build_step(_log=_log)
+        else:
+            build_ready = snapshot_ok_for_publish_fallback(_log=_log)
+
+    if not build_ready:
+        _log("Chaîne interrompue : snapshot/build indisponible (publications non envoyées).")
+        return 2
+
+    if not run_publish_step(_log=_log):
+        _log("Chaîne interrompue : publications en échec.")
+        return 3
+
+    run_shadow_step(_log=_log)
+    _log("=== Publications matin 05:00 terminées avec succès ===")
+    return 0
+
+
 def run_publish_chain(*, _log, force_tours_sync: bool = False) -> int:
-    """Chaîne complète pour le cron 05:00. Retourne 0 seulement si tout a réussi."""
+    """Chaîne complète sync → build → publish (manuel / rattrapage). Retourne 0 si tout OK."""
     _log("=== Chaîne matinale : sync tours → build → publications ===")
 
     tours_ok = ensure_tours_sync(_log=_log, force=force_tours_sync)

@@ -2,8 +2,10 @@
 """Pipeline matinal BettingHUD (scrape + snapshot, notifications Telegram séparées).
 
 Phases (Europe/Paris, cron PROD) :
-  - **02:00** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
-  - **05:00** : ``--morning-publish`` — chaîne **sync tours (si besoin) → build → publications** avec garde-fous (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
+  - **00:30** : sync tours (cron ``data-sync`` — doit finir avant 04:25)
+  - **04:25** : ``--build-only`` — scrape TE, snapshot full, report algo (préparation, pas de publication)
+  - **05:00** : ``--publish-only`` — **publications seules** (Top 5, 1 Day 1 Pick TG+Discord, canal TG)
+  - **05:00** : ``--morning-publish`` — chaîne complète sync→build→publish (rattrapage manuel uniquement)
 
 Modes manuels :
   - ``--telegram-only`` / ``--telegram-only --source morning-sync`` — envoi sans rebuild
@@ -296,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--build-only",
         action="store_true",
-        help="02:00 Paris : scrape + snapshot + report algo (pas de Telegram)",
+        help="04:25 Paris : scrape + snapshot + report algo (pas de Telegram)",
     )
     mode.add_argument(
         "--telegram-only",
@@ -306,7 +308,12 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--morning-publish",
         action="store_true",
-        help="05:00 Paris : chaîne sync tours → build → publications (garde-fous)",
+        help="Chaîne complète sync tours → build → publications (rattrapage manuel)",
+    )
+    mode.add_argument(
+        "--publish-only",
+        action="store_true",
+        help="05:00 Paris : publications uniquement (sync/build via crons précédents)",
     )
     ap.add_argument(
         "--source",
@@ -324,16 +331,24 @@ def main(argv: list[str] | None = None) -> int:
         rc = run_build_phase(_log=_log)
         if rc == 0:
             try:
+                from scripts.morning_chain_state import record_step
                 from scripts.morning_orchestrator import validate_build
 
-                if not validate_build(_log=_log):
-                    _log("Post-check validate_build ÉCHEC après build 02:00.")
+                build_ok = validate_build(_log=_log)
+                record_step(
+                    "build",
+                    ok=build_ok,
+                    rc=0 if build_ok else 1,
+                    detail={"source": "build-only", "validated": build_ok},
+                )
+                if not build_ok:
+                    _log("Post-check validate_build ÉCHEC après build 04:25.")
                     try:
                         from scripts.ops_alert_human import format_simple_ops
                         from scripts.ops_telegram_alert import send_ops_alert
 
                         _, body = format_simple_ops(
-                            "Préparation snapshot (02:00) — contrôle final KO",
+                            "Préparation snapshot (04:25) — contrôle final KO",
                             [
                                 "Le snapshot a été construit mais ne passe pas les garde-fous qualité.",
                                 "• Profils joueurs TE incomplets ou snapshot trop vieux",
@@ -362,11 +377,20 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"Fin (code {rc}). Journal : {log_path}")
         return rc
 
+    if args.publish_only:
+        from scripts.morning_orchestrator import run_publish_only_chain
+
+        _log, log_path = _open_log("publish-only")
+        _log("Démarrage publications matin 05:00 (Top 5 / 1D1P / canal — sans sync).")
+        rc = run_publish_only_chain(_log=_log)
+        _log(f"Fin (code {rc}). Journal : {log_path}")
+        return rc
+
     if args.morning_publish:
         from scripts.morning_orchestrator import run_publish_chain
 
         _log, log_path = _open_log("morning-publish")
-        _log("Démarrage publications matin 05:00 (chaîne sync → build → Telegram/Discord/canal).")
+        _log("Démarrage chaîne complète (sync → build → publications).")
         rc = run_publish_chain(_log=_log)
         _log(f"Fin (code {rc}). Journal : {log_path}")
         return rc
