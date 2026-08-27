@@ -6,6 +6,36 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ops — faux positifs watchdog TG (28 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Alertes Telegram récurrentes `🚨 OPS — Watchdog PROD — anomalie` avec `portfolio daemon heartbeat > 900s` (~1×/h) |
+| **Cause** | Heartbeat touché **seulement au début** de chaque passe ; cycle réel ≈ **16 min** (scrape Playwright ~6 min + pause 10 min) > seuil watchdog **15 min** |
+| **Impact** | Faux positifs — services actifs, daemon en scrape normal |
+| **Correctif** | `portfolio_results_daemon.py` : heartbeat aussi **en fin de passe** ; `prod_health_watchdog.py` : seuil défaut **900 → 1200 s** |
+| **Prod** | Déployé 28/08/2026 — `git pull` + restart `bettinghud-daemon` |
+
+Voir `docs/OPS_PROD_DEPANNAGE.md` § watchdog heartbeat.
+
+Variables : `BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC` (déf. 1200), heartbeat `data/cache/.portfolio_results_daemon.heartbeat`.
+
+---
+
+# CourtAlpha Web — mise Kelly BetModal (26 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Modal « Confirmer le pari » (Top 5, 1D1P, Paris) affichait **10 €** fixe au lieu de la mise Kelly |
+| **Cause** | Régression : `BetModal` ne chargeait plus la bankroll app ni `computeKellyStake` (seul Live passait `defaultStake`) |
+| **Correctif** | `deploy/courtalpha/frontend/src/components/BetModal.tsx` — fetch `/api/portfolio/summary`, Kelly **0,85 × Brier segment**, cap 15 % BR, recalcule à chaque changement de cote (sauf si l’utilisateur a modifié la mise à la main) |
+| **Alignement** | Même logique que `scripts/telegram_bet_flow.kelly_stake_for_pick` et `ValueBetCard` (Live) |
+| **Déploiement** | `npm run build` → `scp dist/` → `chmod a+rX` sur `/opt/courtalpha/frontend/dist` |
+
+Voir aussi `docs/WEB_REACT.md` § Paris / Top 5 / Live.
+
+---
+
 # Qualité données ATP/WTA — nettoyage WTA (16 août 2026)
 
 | Élément | Détail |

@@ -208,57 +208,59 @@ def run_pass(*, db_path: str, lock_max_sec: float) -> int:
     from scripts.scraper_results import ResultsScraper
 
     touch_daemon_heartbeat()
-
-    _maybe_run_closing_odds_archive()
-
     try:
-        _run_daily_top_proba_pass(db_path)
-    except Exception as exc:
-        LOGGER.warning("Top probas journalier ignoré : %s", exc)
+        _maybe_run_closing_odds_archive()
 
-    pending = _count_pending(db_path)
-    open_picks = _count_open_algo_picks(db_path, window_days=7)
-    if pending == 0 and open_picks == 0:
-        LOGGER.info("Aucun pari « En cours » ni pick algo ouvert — scrape ignoré")
         try:
-            _sync_algo_report(db_path)
+            _run_daily_top_proba_pass(db_path)
         except Exception as exc:
-            LOGGER.warning("Sync report algo ignorée : %s", exc)
-        _maybe_od1p_results()
-        return 0
+            LOGGER.warning("Top probas journalier ignoré : %s", exc)
 
-    if scrape_in_progress(max_lock_sec=lock_max_sec):
-        LOGGER.info("Scrape résultats déjà en cours — passe ignorée")
-        return 2
+        pending = _count_pending(db_path)
+        open_picks = _count_open_algo_picks(db_path, window_days=7)
+        if pending == 0 and open_picks == 0:
+            LOGGER.info("Aucun pari « En cours » ni pick algo ouvert — scrape ignoré")
+            try:
+                _sync_algo_report(db_path)
+            except Exception as exc:
+                LOGGER.warning("Sync report algo ignorée : %s", exc)
+            _maybe_od1p_results()
+            return 0
 
-    if not acquire_scrape_lock():
-        LOGGER.info("Verrou scrape indisponible — passe ignorée")
-        return 2
+        if scrape_in_progress(max_lock_sec=lock_max_sec):
+            LOGGER.info("Scrape résultats déjà en cours — passe ignorée")
+            return 2
 
-    try:
-        if pending:
-            LOGGER.info("Début passe (%d pari(s) portefeuille en cours)…", pending)
-        else:
-            LOGGER.info(
-                "Début passe (0 pari portefeuille, %d pick(s) algo ouvert(s))…",
-                open_picks,
-            )
-        t0 = time.time()
-        scraper = ResultsScraper(db_path=db_path)
-        n = asyncio.run(scraper.update_pending_bets())
-        elapsed = time.time() - t0
-        LOGGER.info("Passe terminée : %d pari(s) liquidé(s) en %.0f s", n, elapsed)
+        if not acquire_scrape_lock():
+            LOGGER.info("Verrou scrape indisponible — passe ignorée")
+            return 2
+
         try:
-            _sync_algo_report(db_path)
+            if pending:
+                LOGGER.info("Début passe (%d pari(s) portefeuille en cours)…", pending)
+            else:
+                LOGGER.info(
+                    "Début passe (0 pari portefeuille, %d pick(s) algo ouvert(s))…",
+                    open_picks,
+                )
+            t0 = time.time()
+            scraper = ResultsScraper(db_path=db_path)
+            n = asyncio.run(scraper.update_pending_bets())
+            elapsed = time.time() - t0
+            LOGGER.info("Passe terminée : %d pari(s) liquidé(s) en %.0f s", n, elapsed)
+            try:
+                _sync_algo_report(db_path)
+            except Exception as exc:
+                LOGGER.warning("Sync report algo ignorée : %s", exc)
+            _maybe_od1p_results()
+            return 0
         except Exception as exc:
-            LOGGER.warning("Sync report algo ignorée : %s", exc)
-        _maybe_od1p_results()
-        return 0
-    except Exception as exc:
-        LOGGER.exception("Passe en échec : %s", exc)
-        return 1
+            LOGGER.exception("Passe en échec : %s", exc)
+            return 1
+        finally:
+            release_scrape_lock()
     finally:
-        release_scrape_lock()
+        touch_daemon_heartbeat()
 
 
 def main() -> int:

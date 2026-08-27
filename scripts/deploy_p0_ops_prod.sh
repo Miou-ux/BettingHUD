@@ -13,6 +13,7 @@ FILES=(
   scripts/post_ml_train_hook.py
   scripts/backup_prod_db_server.py
   scripts/prod_health_watchdog.py
+  scripts/portfolio_results_daemon.py
   scripts/update_model_tml.py
 )
 

@@ -16,7 +16,8 @@ sys.path.insert(0, ROOT)
 
 PARIS = ZoneInfo("Europe/Paris")
 HEALTH_URL = os.getenv("BETTINGHUD_HEALTH_URL", "http://127.0.0.1:8501/_stcore/health")
-DAEMON_MAX_AGE = float(os.getenv("BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC", "900"))
+# 1200 s : marge vs intervalle daemon (600 s) + scrape Playwright (~6 min)
+DAEMON_MAX_AGE = float(os.getenv("BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC", "1200"))
 COOLDOWN_PATH = os.path.join(ROOT, "data", "cache", ".health_watchdog_last_alert.ts")
 COOLDOWN_SEC = int(os.getenv("BETTINGHUD_WATCHDOG_ALERT_COOLDOWN_SEC", "1800"))
 AUTO_RESTART = os.getenv("BETTINGHUD_WATCHDOG_AUTO_RESTART", "1").strip().lower() not in (

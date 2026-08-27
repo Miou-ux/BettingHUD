@@ -4,7 +4,7 @@
 
 > Voir aussi : [[SCHEDULE_MISES_A_JOUR]] · [[CRONS_SEMAINE]] · [[OPS_PROD_DEPANNAGE]] · [[PROD_RESILIENCE]] · [[PROD_AUDIT]] · [[ENVIRONNEMENTS]] · [[ML_BUNDLE_ROLLBACK]]
 
-**Dernière mise à jour** : 9 juillet 2026
+**Dernière mise à jour** : 28 août 2026
 
 ---
 
@@ -62,7 +62,9 @@
 - Sync résultats TE (Playwright) si paris en cours
 - 1D1P résultats → TG + Discord
 - Archive closing odds (~04:00 Paris)
-- Heartbeat : `data/cache/.portfolio_results_daemon.heartbeat`
+- Heartbeat : `data/cache/.portfolio_results_daemon.heartbeat` (touché début **et** fin de passe ; watchdog max **1200 s**)
+
+> **28 août 2026** : correctif faux positifs TG watchdog — voir [[OPS_PROD_DEPANNAGE]] § 0ter et [[CHANGELOG_RECENT]] § watchdog.
 
 ---
 

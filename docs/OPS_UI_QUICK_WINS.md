@@ -38,7 +38,7 @@ py -3 scripts/audit_daily_picks_parity.py --export data/reports/audit_picks_pari
 |------------|--------|
 | CSV prematch | Dernier `data/scraped/prematch_odds_*.csv` (mtime) |
 | Snapshot live | `snapshot_meta()` + `data/cache/live_matches_snapshot*.joblib` |
-| Daemon résultats | `data/cache/.portfolio_results_daemon.heartbeat` (< 11 min = actif) |
+| Daemon résultats | `data/cache/.portfolio_results_daemon.heartbeat` (< **12 min** = actif ; seuil watchdog **1200 s**) |
 | Pipeline matin | Dernier `data/cache/logs/morning_pipeline_*.log` ou `data/logs/morning_pipeline_cron.log` |
 | Paris en cours | `COUNT(*)` sur `user_bets` statut « En cours » |
 

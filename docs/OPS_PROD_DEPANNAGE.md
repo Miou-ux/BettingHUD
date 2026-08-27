@@ -1,10 +1,59 @@
 # Ops production & dépannage (PROD)
 
-Dernière mise à jour : **14 juillet 2026**.
+Dernière mise à jour : **28 août 2026**.
 
 Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d’environnement, incidents rencontrés en mise en production et procédures de correction.
 
 **Voir aussi** : [[ENVIRONNEMENTS]], [[DEPLOY_SERVEUR]], [[CHANGELOG_RECENT]] § alignement affichage 14/07/2026.
+
+---
+
+## 0ter. Watchdog TG — faux positifs heartbeat daemon (28 août 2026)
+
+**Symptôme** : messages Telegram `🚨 OPS — Watchdog PROD — anomalie` avec :
+
+```
+• portfolio daemon heartbeat > 900s
+```
+
+Environ **1× par heure**, alors que `systemctl is-active bettinghud-daemon` reste **active**.
+
+### Cause
+
+Le cron `prod_health_watchdog.py` (toutes les **5 min**) vérifie l’âge du fichier `data/cache/.portfolio_results_daemon.heartbeat`. Avant correctif :
+
+- heartbeat touché **au début** de chaque passe daemon ;
+- passe Playwright TE ≈ **6 min** + intervalle **10 min** → **~16 min** entre deux heartbeats ;
+- seuil watchdog **900 s (15 min)** → alerte alors que le daemon tourne normalement.
+
+171/172 alertes historiques dans `data/logs/health_watchdog.log` étaient de ce type.
+
+### Correctif (28/08/2026)
+
+| Fichier | Changement |
+|---------|------------|
+| `scripts/portfolio_results_daemon.py` | `touch_daemon_heartbeat()` aussi en **fin de passe** (`finally`) |
+| `scripts/prod_health_watchdog.py` | Seuil défaut `BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC` : **900 → 1200** |
+
+Écart max entre heartbeats après fix : **~10 min** (pause entre passes).
+
+### Déploiement prod
+
+```bash
+ssh bettinghud "cd /opt/bettinghud && git pull origin main"
+ssh bettinghud "sudo systemctl restart bettinghud-daemon"
+ssh bettinghud "cd /opt/bettinghud && venv/bin/python scripts/prod_health_watchdog.py"
+```
+
+Attendu : `[HH:MM:SS] OK`.
+
+### Diagnostic rapide
+
+```bash
+ssh bettinghud "grep ALERTE /opt/bettinghud/data/logs/health_watchdog.log | tail -10"
+ssh bettinghud "stat /opt/bettinghud/data/cache/.portfolio_results_daemon.heartbeat"
+ssh bettinghud "systemctl is-active bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot"
+```
 
 ---
 
