@@ -18,7 +18,7 @@
 | **Settlement paris / résultats** | ✅ Oui | Daemon portfolio 10 min |
 | **Closing odds archive** | ⚠️ Partiel | Daemon 04:00 — archives récentes seulement |
 | **Alertes incident** | ✅ Oui | TG admin via `cron_run_with_alert` + watchdog 5 min |
-| **Déploiement code** | ❌ Non | `git pull` + restart SSH manuel |
+| **Déploiement code** | ⚠️ Procédure | `git pull` + reinstall crons + restart — voir [[OPS_PROD_DEPANNAGE]] § 0quater |
 | **Promotion modèle** | ❌ Non | `scp` + rebuild manuel |
 | **Backup DB hors serveur** | ⚠️ Partiel | Backup **serveur** 04:15 ; copie PC si allumé |
 | **Monitoring externe** | ❌ Non | Watchdog interne OK ; UptimeRobot optionnel |

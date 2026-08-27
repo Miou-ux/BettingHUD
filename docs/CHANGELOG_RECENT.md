@@ -22,6 +22,20 @@ Variables : `BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC` (déf. 1200), heartbeat `da
 
 ---
 
+# Ops — réconciliation prod ↔ GitHub (28 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Problème** | Prod bloquée à `f888350` avec 13 fichiers modifiés localement ; `git pull` impossible |
+| **Cause** | Hotfixes scp/SSH sans commit ni pull (crons matin, morning pipeline, backup) |
+| **Action** | `git reset --hard origin/main` + réinstall crons + restart services |
+| **Backup** | `backups/prod/prod_drift_before_reconcile_20260828_002804.patch` sur serveur |
+| **État final** | HEAD `1638006` = GitHub ; watchdog OK ; scripts `_*.py` diag prod conservés untracked |
+
+Runbook : `docs/OPS_PROD_DEPANNAGE.md` § 0quater.
+
+---
+
 # CourtAlpha Web — mise Kelly BetModal (26 août 2026)
 
 | Élément | Détail |

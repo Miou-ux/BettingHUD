@@ -1,6 +1,6 @@
 # Crons PROD — vue hebdomadaire
 
-Dernière mise à jour : **16 juillet 2026** · fuseau **`Europe/Paris`**.
+Dernière mise à jour : **28 août 2026** · fuseau **`Europe/Paris`**.
 
 Serveur : **`bettinghud`** (`/opt/bettinghud`). Fichiers source : `deploy/cron/*` → `/etc/cron.d/bettinghud-*`.
 

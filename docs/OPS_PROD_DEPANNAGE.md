@@ -57,6 +57,75 @@ ssh bettinghud "systemctl is-active bettinghud-dashboard bettinghud-daemon betti
 
 ---
 
+## 0quater. Audit réconciliation prod ↔ GitHub (28 août 2026)
+
+**Contexte** : `/opt/bettinghud` était bloqué en `git pull` (HEAD **`f888350`**, **4 commits** derrière `origin/main`) avec des **modifs locales non commitées** sur crons et scripts matin.
+
+### État avant réconciliation
+
+| Élément | Prod (avant) | GitHub `main` (cible) |
+|---------|--------------|------------------------|
+| **HEAD git** | `f888350` | `1638006` |
+| **Commits manquants** | 4 | `da1cf59` · `42e9ddd` · `b9959b5` · `1638006` |
+| **Fichiers trackés modifiés** | 13 (crons, morning pipeline, backup, docs) | — |
+| **Fichiers untracked bloquants** | `disk_cleanup_prod.py`, `bettinghud-replay-warm`, `wta-weekly-rank-aliases` | déjà dans le repo |
+| **Scripts diag prod-only** | ~20 `scripts/_*.py` untracked | hors repo (OK, conservés) |
+
+### Nature de la dérive
+
+1. **Hotfixes appliqués en prod** (scp / édition directe) **sans** `git pull` ni commit — notamment la chaîne matin `00:30 sync → 04:30 build → 04:56 preflight → 05:00 publish-only`.
+2. **Working tree prod** contenait une variante **04:25 / 04:35 / 04:48** (intermédiaire `da1cf59`, remplacée par **04:30 / 04:56 / 04:58** dans `b9959b5`) — **jamais installée** dans `/etc/cron.d/` (les crons actifs correspondaient déjà à GitHub).
+3. **`backup_prod_db_server.py`** : écart **CRLF/LF** uniquement (contenu identique).
+4. **Watchdog** : déjà corrigé via `checkout origin/main` avant l’audit complet.
+
+### Action effectuée (28/08/2026 00:28 Paris)
+
+```bash
+# Sur bettinghud — sauvegarde puis alignement strict GitHub
+cd /opt/bettinghud
+git fetch origin main
+git diff HEAD > backups/prod/prod_drift_before_reconcile_20260828_002804.patch
+rm -f deploy/cron/bettinghud-replay-warm deploy/cron/wta-weekly-rank-aliases scripts/disk_cleanup_prod.py
+git reset --hard origin/main
+
+# Réinstaller tous les crons depuis deploy/cron/*
+for f in deploy/cron/*; do
+  sudo cp "$f" "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo chmod 644 "/etc/cron.d/bettinghud-$(basename "$f")"
+done
+
+sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+venv/bin/python scripts/prod_health_watchdog.py   # OK attendu
+```
+
+**Backup dérive** : `backups/prod/prod_drift_before_reconcile_20260828_002804.patch` (~48 Ko).
+
+### État après réconciliation
+
+| Vérification | Résultat |
+|--------------|----------|
+| `git rev-parse HEAD` | `1638006` (= `origin/main`) |
+| `git diff origin/main` | vide (trackés alignés) |
+| Services systemd | dashboard · daemon · telegram-bot **active** |
+| Watchdog | **OK** |
+| Crons matin installés | 04:30 build · 04:56 preflight · 05:00 publish |
+| Untracked restants | scripts diag `_*.py` prod-only (volontairement conservés) |
+
+### Runbook déploiement standard (à suivre désormais)
+
+```bash
+ssh bettinghud "cd /opt/bettinghud && git pull origin main"
+# Réinstaller crons si deploy/cron/* a changé :
+ssh bettinghud 'cd /opt/bettinghud && for f in deploy/cron/*; do b=$(basename "$f"); sudo cp "$f" "/etc/cron.d/bettinghud-$b"; sudo sed -i "s/\r$//" "/etc/cron.d/bettinghud-$b"; sudo chmod 644 "/etc/cron.d/bettinghud-$b"; done'
+ssh bettinghud "sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot"
+ssh bettinghud "cd /opt/bettinghud && venv/bin/python scripts/prod_health_watchdog.py"
+```
+
+> **Règle** : ne plus patcher prod en scp isolé — commit local → push GitHub → `git pull` sur serveur.
+
+---
+
 ## 0. Incident Waltert / TG Top 5 vide (14 juillet 2026)
 
 **Symptômes** :
