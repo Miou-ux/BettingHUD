@@ -22,6 +22,17 @@ Variables : `BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC` (déf. 1200), heartbeat `da
 
 ---
 
+# Projection jour — fenêtre jusqu'à 07:00 le lendemain (28 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Besoin** | US Open : matchs datés J+1 (nuit) restent dans la projection du jour J |
+| **Logique** | `paris_projection_date()` + `is_today_paris_match()` : date J + matchs J+1 jusqu'à **07:00** Paris |
+| **Variable** | `BETTINGHUD_PROJECTION_DAY_CUTOFF_HOUR` (déf. `7`) |
+| **Publication matin 05:00** | `calendar_date` explicite = date calendaire (inchangé) |
+
+---
+
 # Ops — réconciliation prod ↔ GitHub (28 août 2026)
 
 | Élément | Détail |

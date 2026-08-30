@@ -50,13 +50,14 @@ def load_1d1p_today_pick(
     from scripts.daily_top_proba_store import (
         collect_hybrid_proba_picks,
         load_today_matches_for_daily_top_proba,
+        paris_projection_date,
         snapshot_age_min_from_meta,
     )
     from scripts.hyb_p75_p80_selection import best_1d1p_pick_from_hyb, count_hyb_pool_candidates
     from scripts.match_rank_quality import duplicate_model_prob_keys
     from scripts.tournament_tier import is_major_atp_wta_by_name
 
-    cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
+    cal_day = calendar_date or paris_projection_date().isoformat()
 
     def _major_row(row: dict[str, Any]) -> bool:
         return is_major_atp_wta_by_name(
