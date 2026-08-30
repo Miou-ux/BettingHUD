@@ -43,8 +43,6 @@ DEFAULT_DAEMON_MIN_INTERVAL_SEC = int(
 DEFAULT_JSONL_MIN_INTERVAL_SEC = int(
     os.getenv("BETTINGHUD_DAILY_TOP_PROBA_JSONL_INTERVAL_SEC", "3600")
 )
-# Fin de journée projection : matchs datés J+1 inclus jusqu'à cette heure (Paris, déf. minuit).
-PROJECTION_DAY_CUTOFF_HOUR = int(os.getenv("BETTINGHUD_PROJECTION_DAY_CUTOFF_HOUR", "0"))
 
 
 def paris_projection_date(now: datetime | None = None) -> datetime.date:
@@ -52,10 +50,23 @@ def paris_projection_date(now: datetime | None = None) -> datetime.date:
     return (now or datetime.now(PARIS_TZ)).date()
 
 
-def _projection_day_cutoff(ref: datetime.date, *, cutoff_hour: int | None = None) -> datetime:
-    hour = PROJECTION_DAY_CUTOFF_HOUR if cutoff_hour is None else int(cutoff_hour)
-    hour = max(0, min(23, hour))
-    return datetime.combine(ref + timedelta(days=1), dt_time(hour, 0), tzinfo=PARIS_TZ)
+def parse_match_start_paris(m: dict) -> datetime | None:
+    """Heure de début prévue du match en Europe/Paris (``date`` TE + ``time``)."""
+    d = _match_calendar_date(m)
+    if d is None:
+        return None
+    ts = str(m.get("time") or "").strip()
+    if ts.startswith("Demain"):
+        ts = ts.replace("Demain", "", 1).strip()
+    if not ts:
+        return None
+    if ts.lower().startswith("aujourd"):
+        return datetime.combine(d, dt_time(0, 0), tzinfo=PARIS_TZ)
+    try:
+        sched_time = datetime.strptime(ts, "%H:%M").time()
+    except ValueError:
+        return None
+    return datetime.combine(d, sched_time, tzinfo=PARIS_TZ)
 
 
 def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
@@ -156,22 +167,20 @@ def is_today_paris_match(
     today: datetime.date | None = None,
     now: datetime | None = None,
 ) -> bool:
-    """Match du jour Paris : date J + matchs TE datés J+1 jusqu'à minuit (00:00 J+1)."""
+    """Match du jour Paris : début prévu entre 00:00 et 23:59:59 Europe/Paris."""
     now = now or datetime.now(PARIS_TZ)
     ref = today or paris_projection_date(now)
-    if now >= _projection_day_cutoff(ref):
-        if today is not None and ref < paris_projection_date(now):
-            return False
-        if today is None:
-            ref = paris_projection_date(now)
+    day_start = datetime.combine(ref, dt_time(0, 0), tzinfo=PARIS_TZ)
+    day_end = datetime.combine(ref + timedelta(days=1), dt_time(0, 0), tzinfo=PARIS_TZ)
+
+    start = parse_match_start_paris(m)
+    if start is not None:
+        return day_start <= start < day_end
+
     d = _match_calendar_date(m)
     if d is None:
         return not str(m.get("time") or "").startswith("Demain")
-    if d == ref:
-        return True
-    if d == ref + timedelta(days=1) and now < _projection_day_cutoff(ref):
-        return True
-    return False
+    return d == ref
 
 
 def sanitize_stale_demain_time_label(m: dict) -> dict:

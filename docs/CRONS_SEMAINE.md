@@ -18,7 +18,7 @@ Ce qui **tourne tout seul** sur le serveur `bettinghud` (crons + systemd). Tu n�
 | Besoin | Mécanisme | Fréquence |
 |--------|-----------|-----------|
 | **Scrape TE + snapshot enrichi (ML live)** | Cron `morning-pipeline` 04:30 + thread `live-data-daemon` (dashboard systemd) | **04:30** build · refresh snapshot ~**15 min** |
-| **Projection « jour » live** | `is_today_paris_match` | J + matchs **J+1** jusqu'à **00:00** Paris |
+| **Projection « jour » live** | `is_today_paris_match` | début prévu **00:00–23:59:59** Paris |
 | **Sync historique ATP/WTA + ingest SQLite** | Cron `data-sync` → `sync_tours_daily.py` | **00:30** quotidien (~4 h max observé) |
 | **Réentraînement ML** | Cron `data-sync` → `update_model_tml.py` | **Sam 23:00** |
 | **Rapport ML / Brier (admin TG)** | Cron `ml-weekly-telegram` | **Lun 08:00** |
