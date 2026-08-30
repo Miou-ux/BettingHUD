@@ -42,6 +42,17 @@ Extension `is_today_paris_match` (matchs J+1 jusqu'à 07:00 Paris) **annulée** 
 
 ---
 
+# Projection jour — matchs J+1 jusqu'à minuit (30 août 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Besoin** | US Open : session du soir datée J+1 sur TE, mais jouée **avant minuit** Paris |
+| **Règle** | `is_today_paris_match` : date **J** + matchs datés **J+1** tant qu'on est **avant 00:00 J+1** (Europe/Paris) |
+| **Variable** | `BETTINGHUD_PROJECTION_DAY_CUTOFF_HOUR` (déf. `0` = minuit) |
+| **≠ 07:00** | Pas de prolongation après minuit (nuit 01h–06h = jour suivant) |
+
+---
+
 # CourtAlpha Web — mise Kelly BetModal (26 août 2026)
 
 | Élément | Détail |

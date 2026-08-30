@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from scripts.daily_top_proba_store import collect_daily_top_proba_rows
+from scripts.daily_top_proba_store import (
+    collect_daily_top_proba_rows,
+    is_today_paris_match,
+    paris_projection_date,
+)
+
+PARIS = ZoneInfo("Europe/Paris")
 
 
 def _match(p1, p2, p1_prob, tour="WTA", date="2026-05-27"):
@@ -222,6 +230,26 @@ def test_filter_matches_for_daily_top_proba():
     }
     out = filter_matches_for_daily_top_proba([ok, bad_odds, bad_rank, stale])
     assert len(out) == 1
+
+
+def test_is_today_paris_match_includes_next_day_until_midnight():
+    ref = datetime(2026, 8, 30, tzinfo=PARIS).date()
+    evening = datetime(2026, 8, 30, 22, 0, tzinfo=PARIS)
+    after_midnight = datetime(2026, 8, 31, 0, 30, tzinfo=PARIS)
+
+    today_match = {"date": "2026-08-30", "time": "20:00"}
+    tomorrow_match = {"date": "2026-08-31", "time": "17:00"}
+
+    assert is_today_paris_match(today_match, today=ref, now=evening)
+    assert is_today_paris_match(tomorrow_match, today=ref, now=evening)
+    assert not is_today_paris_match(today_match, today=ref, now=after_midnight)
+    assert is_today_paris_match(tomorrow_match, today=ref + timedelta(days=1), now=after_midnight)
+
+
+def test_projection_cutoff_default_is_midnight():
+    ref = datetime(2026, 8, 30, tzinfo=PARIS).date()
+    assert paris_projection_date(datetime(2026, 8, 30, 23, 59, tzinfo=PARIS)) == ref
+    assert paris_projection_date(datetime(2026, 8, 31, 0, 1, tzinfo=PARIS)).isoformat() == "2026-08-31"
 
 
 if __name__ == "__main__":
