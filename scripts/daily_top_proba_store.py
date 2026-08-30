@@ -43,11 +43,21 @@ DEFAULT_DAEMON_MIN_INTERVAL_SEC = int(
 DEFAULT_JSONL_MIN_INTERVAL_SEC = int(
     os.getenv("BETTINGHUD_DAILY_TOP_PROBA_JSONL_INTERVAL_SEC", "3600")
 )
+# Session de nuit : matchs J+1 inclus si début avant cette heure (Paris, déf. 05:00).
+PROJECTION_NIGHT_CUTOFF_HOUR = int(os.getenv("BETTINGHUD_PROJECTION_NIGHT_CUTOFF_HOUR", "5"))
 
 
 def paris_projection_date(now: datetime | None = None) -> datetime.date:
     """Jour de référence projection (date calendaire Europe/Paris)."""
     return (now or datetime.now(PARIS_TZ)).date()
+
+
+def _projection_day_window(ref: datetime.date) -> tuple[datetime, datetime]:
+    """Fenêtre projection jour J : [J 00:00 ; J+1 cutoff[ (Europe/Paris)."""
+    hour = max(0, min(23, PROJECTION_NIGHT_CUTOFF_HOUR))
+    day_start = datetime.combine(ref, dt_time(0, 0), tzinfo=PARIS_TZ)
+    day_end = datetime.combine(ref + timedelta(days=1), dt_time(hour, 0), tzinfo=PARIS_TZ)
+    return day_start, day_end
 
 
 def parse_match_start_paris(m: dict) -> datetime | None:
@@ -167,11 +177,10 @@ def is_today_paris_match(
     today: datetime.date | None = None,
     now: datetime | None = None,
 ) -> bool:
-    """Match du jour Paris : début prévu entre 00:00 et 23:59:59 Europe/Paris."""
+    """Match du jour Paris : début entre J 00:00 et J+1 cutoff (déf. 05:00) Europe/Paris."""
     now = now or datetime.now(PARIS_TZ)
     ref = today or paris_projection_date(now)
-    day_start = datetime.combine(ref, dt_time(0, 0), tzinfo=PARIS_TZ)
-    day_end = datetime.combine(ref + timedelta(days=1), dt_time(0, 0), tzinfo=PARIS_TZ)
+    day_start, day_end = _projection_day_window(ref)
 
     start = parse_match_start_paris(m)
     if start is not None:

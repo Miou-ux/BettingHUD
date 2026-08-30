@@ -232,14 +232,15 @@ def test_filter_matches_for_daily_top_proba():
     assert len(out) == 1
 
 
-def test_is_today_paris_match_uses_strict_start_time():
+def test_is_today_paris_match_uses_strict_start_time_with_night_window():
     ref = datetime(2026, 8, 30, tzinfo=PARIS).date()
 
     assert is_today_paris_match({"date": "2026-08-30", "time": "20:00"}, today=ref)
     assert is_today_paris_match({"date": "2026-08-30", "time": "23:59"}, today=ref)
+    assert is_today_paris_match({"date": "2026-08-31", "time": "01:00"}, today=ref)
+    assert is_today_paris_match({"date": "2026-08-31", "time": "04:59"}, today=ref)
+    assert not is_today_paris_match({"date": "2026-08-31", "time": "05:00"}, today=ref)
     assert not is_today_paris_match({"date": "2026-08-31", "time": "17:00"}, today=ref)
-    assert not is_today_paris_match({"date": "2026-08-31", "time": "01:00"}, today=ref)
-    assert not is_today_paris_match({"date": "2026-08-31", "time": "00:00"}, today=ref)
     assert is_today_paris_match({"date": "2026-08-31", "time": "01:00"}, today=ref + timedelta(days=1))
 
 

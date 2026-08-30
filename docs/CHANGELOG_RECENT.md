@@ -42,14 +42,15 @@ Extension `is_today_paris_match` (matchs J+1 jusqu'à 07:00 Paris) **annulée** 
 
 ---
 
-# Projection jour — heure de début stricte (30 août 2026)
+# Projection jour — heure stricte + session de nuit J+1 (30 août 2026)
 
 | Élément | Détail |
 |---------|--------|
-| **Besoin** | Projection « jour J » = matchs dont le **début prévu** est entre **00:00 et 23:59:59** Europe/Paris |
-| **Règle** | `parse_match_start_paris` (`date` TE + `time`) puis `is_today_paris_match` |
-| **≠ date TE J+1** | Un match daté 31/08 à 17h ou 01h **n'est pas** compté dans la projection du 30/08 |
-| **Fallback** | Sans heure parseable : date calendaire TE = J |
+| **Besoin** | Projection « jour J » = début prévu **J 00:00 → J+1 05:00** Europe/Paris |
+| **Règle** | `parse_match_start_paris` puis fenêtre `_projection_day_window` |
+| **Session de nuit** | Matchs TE datés J+1 à 01h–04h (US Open NYC) inclus dans J |
+| **Exclus** | J+1 à partir de **05:00** (ex. 17h) |
+| **Variable** | `BETTINGHUD_PROJECTION_NIGHT_CUTOFF_HOUR` (déf. `5`) |
 
 ---
 
