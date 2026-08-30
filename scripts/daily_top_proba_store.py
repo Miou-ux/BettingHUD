@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 import time
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -43,26 +43,6 @@ DEFAULT_DAEMON_MIN_INTERVAL_SEC = int(
 DEFAULT_JSONL_MIN_INTERVAL_SEC = int(
     os.getenv("BETTINGHUD_DAILY_TOP_PROBA_JSONL_INTERVAL_SEC", "3600")
 )
-# Journée de projection : inclut les matchs datés J+1 jusqu'à cette heure (Paris).
-PROJECTION_DAY_CUTOFF_HOUR = int(os.getenv("BETTINGHUD_PROJECTION_DAY_CUTOFF_HOUR", "7"))
-
-
-def paris_calendar_date(now: datetime | None = None) -> datetime.date:
-    """Date calendaire Europe/Paris (sans extension nuit)."""
-    return (now or datetime.now(PARIS_TZ)).date()
-
-
-def paris_projection_date(now: datetime | None = None) -> datetime.date:
-    """Journée « betting » : avant cutoff → veille ; après → jour calendaire."""
-    now = now or datetime.now(PARIS_TZ)
-    if now.hour < PROJECTION_DAY_CUTOFF_HOUR:
-        return now.date() - timedelta(days=1)
-    return now.date()
-
-
-def _projection_day_cutoff(ref: datetime.date, *, cutoff_hour: int | None = None) -> datetime:
-    hour = PROJECTION_DAY_CUTOFF_HOUR if cutoff_hour is None else int(cutoff_hour)
-    return datetime.combine(ref + timedelta(days=1), dt_time(hour, 0), tzinfo=PARIS_TZ)
 
 
 def filter_matches_for_daily_top_proba(matches: list) -> list[dict]:
@@ -157,28 +137,12 @@ def snapshot_age_min_from_meta(meta: dict | None) -> float | None:
         return None
 
 
-def is_today_paris_match(
-    m: dict,
-    *,
-    today: datetime.date | None = None,
-    now: datetime | None = None,
-) -> bool:
-    """Match du jour de projection (Paris) : date J + matchs J+1 jusqu'à cutoff (déf. 07:00)."""
-    now = now or datetime.now(PARIS_TZ)
-    ref = today or paris_projection_date(now)
-    if now >= _projection_day_cutoff(ref):
-        if today is not None and today < paris_projection_date(now):
-            return False
-        if today is None:
-            ref = paris_projection_date(now)
+def is_today_paris_match(m: dict, *, today: datetime.date | None = None) -> bool:
+    today = today or datetime.now(PARIS_TZ).date()
     d = _match_calendar_date(m)
-    if d is None:
-        return not str(m.get("time") or "").startswith("Demain")
-    if d == ref:
-        return True
-    if d == ref + timedelta(days=1) and now < _projection_day_cutoff(ref):
-        return True
-    return False
+    if d is not None:
+        return d == today
+    return not str(m.get("time") or "").startswith("Demain")
 
 
 def sanitize_stale_demain_time_label(m: dict) -> dict:
@@ -194,7 +158,7 @@ def sanitize_stale_demain_time_label(m: dict) -> dict:
 
 def format_match_time_display(m: dict, *, ref_date: datetime.date | None = None) -> str | None:
     """Libellé horaire Telegram / UI : « Aujourd'hui 10:00 » ou « Demain 10:00 » selon ``date``."""
-    ref = ref_date or paris_projection_date()
+    ref = ref_date or datetime.now(PARIS_TZ).date()
     sm = sanitize_stale_demain_time_label(m)
     t = str(sm.get("time") or "").strip()
     d = _match_calendar_date(sm)
@@ -340,7 +304,7 @@ def collect_daily_top_proba_rows(
     ml: TennisMLModel | None = None,
 ) -> list[dict]:
     """Top ``top_limit`` matchs/jour/circuit triés par proba favori modèle."""
-    cal_day = calendar_date or paris_projection_date().isoformat()
+    cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
     cal_date_obj = datetime.strptime(cal_day, "%Y-%m-%d").date()
     if ml is None:
         ml = TennisMLModel()
@@ -434,7 +398,7 @@ def collect_top5_proba_picks(
     Top 5 : ``major_only=True``, ``limit`` défaut = ``HYBRID_DEFAULT_LIMIT`` (6).
     Paris du jour : ``major_only=False``, ``limit=None`` (tournois mineurs inclus).
     """
-    cal_day = calendar_date or paris_projection_date().isoformat()
+    cal_day = calendar_date or datetime.now(PARIS_TZ).date().isoformat()
     cal_date_obj = datetime.strptime(cal_day, "%Y-%m-%d").date()
     if ml is None:
         ml = TennisMLModel()

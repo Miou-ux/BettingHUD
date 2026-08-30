@@ -53,9 +53,9 @@ def _snapshot_age_min(meta: dict | None) -> float | None:
 
 
 def _count_today_pool(matches: list[dict]) -> int:
-    from scripts.daily_top_proba_store import is_today_paris_match, paris_projection_date
+    from scripts.daily_top_proba_store import is_today_paris_match
 
-    cal = paris_projection_date()
+    cal = datetime.now(PARIS_TZ).date()
     return sum(1 for m in matches if is_today_paris_match(m, today=cal))
 
 
@@ -90,9 +90,7 @@ def load_picks(
         channel_enum = channel
     else:
         channel_enum = Channel(str(channel).strip().lower())
-    from scripts.daily_top_proba_store import paris_projection_date
-
-    cal_day = paris_projection_date().isoformat()
+    cal_day = datetime.now(PARIS_TZ).date().isoformat()
 
     if channel_enum == Channel.TELEGRAM:
         try:
