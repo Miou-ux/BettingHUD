@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 _DEDUP_PATH = Path(ROOT) / "data" / "cache" / "ops_alert_dedup.json"
-_DEFAULT_COOLDOWN_SEC = 1200  # 20 min
+_DEFAULT_COOLDOWN_SEC = 3600  # 1 h — limite le spam TG ops
 
 
 def _load_env() -> None:
@@ -64,6 +64,10 @@ def _normalize_dedup_key(subject: str, explicit: str | None) -> str:
         return "qc_post_sync_fail"
     if "sync tours" in s and ("échec" in s or "echec" in s or "fail" in s):
         return "qc_post_sync_fail"  # même famille que QC bloquant (souvent la cause)
+    if "watchdog" in s or "surveillance serveur" in s:
+        return "watchdog_prod"
+    if "portfolio reconcile" in s:
+        return "portfolio_reconcile"
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:24]
 
 
@@ -120,9 +124,13 @@ def send_ops_alert(
     if body and ("<b>" in body or body.lstrip().startswith("<")):
         text = body[:3900]
     else:
-        text = f"🚨 OPS — {subject}"
-        if body:
-            text = f"{text}\n{body}"[:3900]
+        # Corps déjà formaté (HTML) si sujet commence par emoji
+        if subject.lstrip()[:1] in "🔴⚠️✅📋":
+            text = body[:3900] if body else subject[:3900]
+        else:
+            text = f"🚨 OPS — {subject}"
+            if body:
+                text = f"{text}\n{body}"[:3900]
     if dry_run:
         print(text, flush=True)
         _remember_dedup(key, subject)

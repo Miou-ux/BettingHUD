@@ -8,6 +8,17 @@ Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d�
 
 ---
 
+## 0ter bis. Alertes ops Telegram — lisibilité (5 oct. 2026)
+
+| Sujet | Détail |
+|-------|--------|
+| **Stats serve WTA delta** | La ligne log « retry serve enrich (w_svpt NULL) » est une **2ᵉ passe normale**, pas une panne. QC prod : `blocking=0 warnings=0`. |
+| **Watchdog** | Messages en **français** (`format_watchdog_alert`), dedup **1 h** (`watchdog_prod`). |
+| **QC warnings** | Plus de TG pour warnings seuls (sauf `BETTINGHUD_WTA_QC_ALERT_WARN=1`). |
+| **Dedup ops** | Cooldown défaut **3600 s** (`BETTINGHUD_OPS_ALERT_COOLDOWN_SEC`). |
+
+---
+
 ## 0ter. Watchdog TG — faux positifs heartbeat daemon (28 août 2026)
 
 **Symptôme** : messages Telegram `🚨 OPS — Watchdog PROD — anomalie` avec :

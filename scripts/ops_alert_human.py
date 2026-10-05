@@ -43,7 +43,68 @@ QC_HUMAN: dict[str, tuple[str, str]] = {
         "Horodatage sync incohérent",
         "La date « dernier sync » affichée n'a pas été mise à jour aujourd'hui.",
     ),
+    "wta_gates_import": (
+        "Contrôle WTA indisponible",
+        "Le script de vérification WTA n'a pas pu tourner (import manquant).",
+    ),
+    "wta_raw_missing": (
+        "Dossier WTA absent",
+        "Les CSV WTA delta ne sont pas sur le disque.",
+    ),
+    "wta_load_failed": (
+        "Lecture CSV WTA en échec",
+        "Impossible de charger les matchs WTA bruts.",
+    ),
+    "wta_csv_empty": (
+        "Archive WTA vide",
+        "Aucun match WTA dans les fichiers delta.",
+    ),
 }
+
+
+def format_watchdog_alert(issues: list[str], restarted: list[str] | None = None) -> tuple[str, str]:
+    """Alerte surveillance serveur (watchdog) en français."""
+    bullets: list[str] = []
+    for raw in issues:
+        low = raw.lower()
+        if "heartbeat" in low:
+            sec = re.search(r">\s*(\d+)s", raw)
+            mins = f"~{int(sec.group(1)) // 60} min" if sec else "plusieurs minutes"
+            bullets.append(
+                "• <b>Suivi des paris (daemon)</b> : pas de signal récent "
+                f"({mins}). Normal pendant un gros scrape (~15 min max)."
+            )
+        elif "health ko" in low or "dashboard" in low:
+            bullets.append("• <b>Site / dashboard</b> : ne répond pas au test santé.")
+        elif "telegram-bot" in low:
+            bullets.append("• <b>Bot Telegram</b> : service arrêté.")
+        elif "bettinghud-daemon" in low:
+            bullets.append("• <b>Daemon paris</b> : service arrêté.")
+        elif "bettinghud-dashboard" in low:
+            bullets.append("• <b>Dashboard</b> : service arrêté.")
+        else:
+            bullets.append(f"• {raw}")
+
+    subject = "⚠️ Surveillance serveur — à vérifier"
+    parts = [
+        f"<b>{subject}</b>",
+        f"<i>{_now_label()}</i>",
+        "",
+        "<b>Constat</b>",
+        *bullets,
+    ]
+    if restarted:
+        parts.extend(["", "<b>Action auto</b>", f"• Redémarrage tenté : {', '.join(restarted)}"])
+    parts.extend(
+        [
+            "",
+            "<b>Impact possible</b>",
+            "• Retard sur résultats / picks live si le daemon était bloqué.",
+            "",
+            "<i>Si tout redevient vert sous 20 min, tu peux ignorer.</i>",
+        ]
+    )
+    return subject, "\n".join(parts)
 
 # Jobs cron → libellé français
 JOB_HUMAN: dict[str, str] = {

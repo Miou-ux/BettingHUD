@@ -19,7 +19,7 @@ HEALTH_URL = os.getenv("BETTINGHUD_HEALTH_URL", "http://127.0.0.1:8501/_stcore/h
 # 1200 s : marge vs intervalle daemon (600 s) + scrape Playwright (~6 min)
 DAEMON_MAX_AGE = float(os.getenv("BETTINGHUD_WATCHDOG_DAEMON_MAX_AGE_SEC", "1200"))
 COOLDOWN_PATH = os.path.join(ROOT, "data", "cache", ".health_watchdog_last_alert.ts")
-COOLDOWN_SEC = int(os.getenv("BETTINGHUD_WATCHDOG_ALERT_COOLDOWN_SEC", "1800"))
+COOLDOWN_SEC = int(os.getenv("BETTINGHUD_WATCHDOG_ALERT_COOLDOWN_SEC", "3600"))
 AUTO_RESTART = os.getenv("BETTINGHUD_WATCHDOG_AUTO_RESTART", "1").strip().lower() not in (
     "0",
     "false",
@@ -115,8 +115,7 @@ def main() -> int:
         _log("OK")
         return 0
 
-    body = "\n".join(f"• {x}" for x in issues)
-    _log(f"ALERTE: {body}")
+    _log(f"ALERTE: {'; '.join(issues)}")
 
     if _cooldown_active():
         _log("cooldown alerte actif — skip TG")
@@ -129,12 +128,11 @@ def main() -> int:
                 if _restart(unit):
                     restarted.append(unit)
 
+    from scripts.ops_alert_human import format_watchdog_alert
     from scripts.ops_telegram_alert import send_ops_alert
 
-    extra = ""
-    if restarted:
-        extra = "\nRestart tenté: " + ", ".join(restarted)
-    send_ops_alert("Watchdog PROD — anomalie", body + extra)
+    subject, body = format_watchdog_alert(issues, restarted or None)
+    send_ops_alert(subject, body, dedup_key="watchdog_prod")
     _touch_cooldown()
     return 1
 

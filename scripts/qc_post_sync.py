@@ -41,6 +41,11 @@ def _qc_alert_enabled() -> bool:
     return os.getenv("BETTINGHUD_WTA_QC_ALERT", "1").strip().lower() not in ("0", "false", "no")
 
 
+def _qc_warn_alert_enabled() -> bool:
+    """Alertes TG pour warnings seuls (sans blocking) — désactivé par défaut."""
+    return os.getenv("BETTINGHUD_WTA_QC_ALERT_WARN", "0").strip().lower() in ("1", "true", "yes")
+
+
 def _send_qc_ops_alert(report: QcReport) -> None:
     if not _qc_alert_enabled():
         return
@@ -56,9 +61,14 @@ def _send_qc_ops_alert(report: QcReport) -> None:
                 return
             subject, body = format_qc_alert_human(report, level="fail")
             send_ops_alert(subject, body, dedup_key="qc_post_sync_fail")
-        elif report.warnings:
+        elif report.warnings and _qc_warn_alert_enabled():
             subject, body = format_qc_alert_human(report, level="warn")
-            send_ops_alert(subject, body, dedup_key="qc_post_sync_warn")
+            send_ops_alert(
+                subject,
+                body,
+                dedup_key="qc_post_sync_warn",
+                cooldown_sec=7200,
+            )
     except Exception:
         pass
 

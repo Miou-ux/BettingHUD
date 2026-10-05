@@ -260,7 +260,7 @@ def _run_sync_bundle_locked() -> int:
         _append_log("enrich_wta_delta_metadata.py --dedup a echoue (non bloquant).")
     else:
         _append_log("enrich_wta_delta_metadata.py --dedup OK.")
-    _append_log("WTA delta: retry serve enrich main tour (lignes w_svpt NULL)")
+    _append_log("WTA delta: 2e passe stats serve (complément matchs main tour)")
     rc_serve2 = _run_py_with_args(
         "enrich_wta_delta_te_stats.py",
         _wta_delta_extra_args() + ["--main-tour-only"],
