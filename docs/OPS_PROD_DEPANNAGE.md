@@ -12,7 +12,7 @@ Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d�
 
 | Sujet | Détail |
 |-------|--------|
-| **Stats serve WTA delta** | La ligne log « retry serve enrich (w_svpt NULL) » est une **2ᵉ passe normale**, pas une panne. QC prod : `blocking=0 warnings=0`. |
+| **Stats serve WTA delta** | La ligne log « 2e passe stats serve » est **normale**. Rapport ML hebdo : métrique **main tour hors ITF** (seuil 85 %) ; le ratio global type 3187/6524 inclut ITF sans stats — **non bloquant**. |
 | **Watchdog** | Messages en **français** (`format_watchdog_alert`), dedup **1 h** (`watchdog_prod`). |
 | **QC warnings** | Plus de TG pour warnings seuls (sauf `BETTINGHUD_WTA_QC_ALERT_WARN=1`). |
 | **Dedup ops** | Cooldown défaut **3600 s** (`BETTINGHUD_OPS_ALERT_COOLDOWN_SEC`). |

@@ -150,6 +150,14 @@ def _parse_last_ml_train_log(lines: list[str]) -> dict[str, Any]:
 
 
 def _wta_db_stats(db_path: str, *, cutoff: int = 20260526) -> dict[str, Any]:
+    from scripts.wta_sackmann_common import WTA_ITF_TOURNEY_LEVELS
+
+    date_filter = (
+        "CAST(REPLACE(SUBSTR(CAST(tourney_date AS TEXT), 1, 10), '-', '') AS INTEGER) >= ?"
+    )
+    null_expr = (
+        "SUM(CASE WHEN w_svpt IS NULL OR TRIM(CAST(w_svpt AS TEXT)) = '' THEN 1 ELSE 0 END)"
+    )
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
@@ -161,23 +169,42 @@ def _wta_db_stats(db_path: str, *, cutoff: int = 20260526) -> dict[str, Any]:
         max_raw, total = row[0], int(row[1] or 0)
         max_s = str(max_raw or "")[:10].replace("-", "")
         recent = conn.execute(
-            """
-            SELECT COUNT(*),
-                   SUM(CASE WHEN w_svpt IS NULL OR TRIM(CAST(w_svpt AS TEXT)) = '' THEN 1 ELSE 0 END)
+            f"""
+            SELECT COUNT(*), {null_expr}
             FROM wta_matches
-            WHERE CAST(REPLACE(SUBSTR(CAST(tourney_date AS TEXT), 1, 10), '-', '') AS INTEGER) >= ?
+            WHERE {date_filter}
             """,
             (cutoff,),
         ).fetchone()
         delta_n = int(recent[0] or 0)
         null_n = int(recent[1] or 0)
         fill_pct = 100.0 * (delta_n - null_n) / delta_n if delta_n else None
+
+        itf_levels = sorted(WTA_ITF_TOURNEY_LEVELS)
+        ph = ",".join("?" * len(itf_levels))
+        main_params: list[Any] = [cutoff, *itf_levels]
+        main_recent = conn.execute(
+            f"""
+            SELECT COUNT(*), {null_expr}
+            FROM wta_matches
+            WHERE {date_filter}
+              AND tourney_level NOT IN ({ph})
+            """,
+            main_params,
+        ).fetchone()
+        main_n = int(main_recent[0] or 0)
+        main_null = int(main_recent[1] or 0)
+        main_fill_pct = 100.0 * (main_n - main_null) / main_n if main_n else None
+
         return {
             "total_rows": total,
             "max_date": max_s,
             "delta_rows": delta_n,
             "delta_null_svpt": null_n,
             "delta_fill_pct": fill_pct,
+            "main_tour_rows": main_n,
+            "main_tour_null_svpt": main_null,
+            "main_tour_fill_pct": main_fill_pct,
         }
     finally:
         conn.close()
@@ -253,9 +280,13 @@ def collect_report(
         except ValueError:
             pass
 
-    fill = wta.get("delta_fill_pct")
-    if fill is not None and fill < 85.0:
-        alerts.append(f"Stats serve WTA delta < 85 % ({fill:.1f} %).")
+    fill_main = wta.get("main_tour_fill_pct")
+    if fill_main is not None and fill_main < 85.0:
+        filled = int(wta.get("main_tour_rows", 0) or 0) - int(wta.get("main_tour_null_svpt", 0) or 0)
+        total = int(wta.get("main_tour_rows", 0) or 0)
+        alerts.append(
+            f"Stats serve WTA main tour < 85 % ({fill_main:.1f} %, {filled}/{total} matchs)."
+        )
 
     if j6 and not j6.get("go_prod"):
         alerts.append("Gate J6 FAIL vs baseline (régression Brier WTA).")
@@ -355,13 +386,23 @@ def format_report_html(report: dict[str, Any]) -> str:
             f"  {lm.get('tourney_name', '—')} · {lm.get('winner_name')} def {lm.get('loser_name')}"
         )
 
-    fill = wta.get("delta_fill_pct")
-    if fill is not None:
-        icon = _status_icon(fill >= 85.0)
+    fill_main = wta.get("main_tour_fill_pct")
+    if fill_main is not None:
+        main_n = int(wta.get("main_tour_rows") or 0)
+        main_filled = main_n - int(wta.get("main_tour_null_svpt") or 0)
+        icon = _status_icon(fill_main >= 85.0)
         lines.append(
-            f"Stats serve delta (post-cutoff) : {icon} <b>{fill:.1f}%</b> "
-            f"({wta.get('delta_rows', 0) - wta.get('delta_null_svpt', 0)}/{wta.get('delta_rows', 0)} matchs)"
+            f"Stats serve WTA (main tour, hors ITF) : {icon} <b>{fill_main:.1f}%</b> "
+            f"({main_filled}/{main_n} matchs)"
         )
+        fill_all = wta.get("delta_fill_pct")
+        if fill_all is not None and main_n < int(wta.get("delta_rows") or 0):
+            all_n = int(wta.get("delta_rows") or 0)
+            all_filled = all_n - int(wta.get("delta_null_svpt") or 0)
+            lines.append(
+                f"  <i>Archive complète (ITF inclus) : {all_filled}/{all_n} "
+                f"({fill_all:.0f} %) — normal sans stats serve ITF</i>"
+            )
 
     lines.append(f"Bundle : <code>{Path(report['model_path']).name}</code>")
 
