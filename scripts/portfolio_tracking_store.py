@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from scripts.backtest_pack12_global_2026 import MAX_STAKE_PCT
+from scripts.simulate_top10_proba_2026 import MAX_STAKE_PCT
 from scripts.backtest_staking_sim import kelly_full_fraction
 from scripts.kelly_policy import KELLY_BASE_FRAC
 from scripts.published_picks_store import MODE_1D1P, MODE_TOP5, NO_PICK_KEY
