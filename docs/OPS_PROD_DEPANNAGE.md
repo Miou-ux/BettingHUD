@@ -51,7 +51,7 @@ venv/bin/python scripts/prod_health_watchdog.py
 test -f scripts/backtest_pack12_global_2026.py && echo OK pack12
 test -f scripts/wta_weekly_rank_aliases.py && echo OK wta_weekly
 venv/bin/python -c "from scripts.backtest_pack12_global_2026 import MAX_STAKE_PCT"
-venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh
+venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh
 venv/bin/python scripts/preflight_morning_chain.py   # exit 0 ou warnings slate vide OK
 ```
 

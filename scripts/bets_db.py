@@ -2708,7 +2708,11 @@ def sync_daily_top_proba_from_results(conn: sqlite3.Connection) -> int:
 
         refresh_portfolio_tracking(conn)
     except Exception:
-        pass
+        import logging
+
+        logging.getLogger("bets_db").exception(
+            "refresh_portfolio_tracking après sync_daily_top_proba"
+        )
     return n
 
 

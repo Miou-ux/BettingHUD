@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from typing import Any
 MODE_TOP5 = "top5"
 MODE_1D1P = "1d1p"
 NO_PICK_KEY = "__none__"
+
+_LOGGER = logging.getLogger("published_picks_store")
 
 
 def ensure_published_picks_schema(conn: sqlite3.Connection) -> None:
@@ -168,7 +171,11 @@ def save_published_picks(
 
         on_published_picks_saved(conn, mode=mode, calendar_date=cal)
     except Exception:
-        pass
+        _LOGGER.exception(
+            "portfolio ledger non mis à jour après publication mode=%s date=%s",
+            mode,
+            cal,
+        )
     return n
 
 

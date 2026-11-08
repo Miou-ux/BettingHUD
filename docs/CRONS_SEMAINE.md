@@ -85,7 +85,7 @@ gantt
 | **04:56** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
 | **04:58** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
 | **05:00** | `morning_live_pipeline.py --publish-only` | **Publications seules** : 1D1P + Top 5 + canal TG/Discord (sync/build déjà faits) | `data/logs/morning_publish_cron.log` |
-| **06:40** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` | Ledger Top picks / 1D1P vs Kelly replay (alerte si dérive) | `data/logs/reconcile_portfolio.log` |
+| **06:40** | `reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift` | Publish→ledger : preflight imports, comble trous TG, Kelly + alerte dérive | `data/logs/reconcile_portfolio.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
 **Ordre matin** : 00:30 (sync tours, ~2h20–4h) → 04:15 backup → 04:30 build (~25 min) → 04:56 preflight → 04:58 (OG) → **05:00 publish**.

@@ -25,6 +25,16 @@ def main() -> int:
         help="Sync settlement + recompute ledger avant compare",
     )
     p.add_argument(
+        "--heal",
+        action="store_true",
+        help="Resync jours publiés TG manquants dans portfolio_daily_bets",
+    )
+    p.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Vérifie que le runtime publish→ledger est importable (exit 1 si KO)",
+    )
+    p.add_argument(
         "--json",
         action="store_true",
         help="Sortie JSON (sinon résumé lisible)",
@@ -40,17 +50,31 @@ def main() -> int:
     from scripts.portfolio_tracking_store import (
         MODE_1D1P,
         MODE_TOP5,
+        heal_portfolio_ledger_gaps,
+        ledger_publication_gap_report,
         reconcile_portfolio_ledger,
         refresh_portfolio_tracking,
+        verify_portfolio_tracking_runtime,
     )
+
+    if args.preflight:
+        try:
+            verify_portfolio_tracking_runtime()
+        except Exception as exc:
+            print(f"preflight KO: {exc}")
+            return 1
+        print("preflight OK — publish→ledger importable")
 
     modes = [MODE_TOP5, MODE_1D1P] if args.mode == "both" else [args.mode]
     conn = open_db(args.db)
     reports: list[dict] = []
     try:
         sync_daily_top_proba_from_results(conn)
-        if args.refresh:
-            refresh_portfolio_tracking(conn)
+        if args.heal:
+            healed = heal_portfolio_ledger_gaps(conn)
+            print(f"heal: {healed} lignes ledger resynchronisées")
+        if args.refresh or args.heal:
+            refresh_portfolio_tracking(conn, heal_gaps=False)
 
         for mode in modes:
             rep = reconcile_portfolio_ledger(
@@ -66,6 +90,21 @@ def main() -> int:
                 mode = rep.get("mode")
                 if rep.get("skipped"):
                     print(f"[{mode}] skip — {rep.get('reason')}")
+                    continue
+                gaps = ledger_publication_gap_report(conn, str(mode))
+                ng = len(gaps.get("missing_days") or []) + len(
+                    gaps.get("partial_days") or []
+                )
+                if ng:
+                    print(
+                        f"[{mode}] ledger gaps: {ng} jours "
+                        f"(missing={len(gaps.get('missing_days') or [])}, "
+                        f"partial={len(gaps.get('partial_days') or [])})"
+                    )
+                if rep.get("skipped_sim"):
+                    print(f"[{mode}] sim skip — {rep.get('reason')}")
+                    if rep.get("n_gaps"):
+                        all_ok = False
                     continue
                 ok = bool(rep.get("ok"))
                 all_ok = all_ok and ok

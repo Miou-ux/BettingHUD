@@ -8,11 +8,15 @@ import unittest
 
 from scripts.portfolio_tracking_store import (
     MODE_1D1P,
+    MODE_TOP5,
     build_portfolio_curve_and_summary,
+    heal_portfolio_ledger_gaps,
     init_portfolio_tracking,
+    ledger_publication_gap_report,
     load_portfolio_replay_picks,
     recompute_portfolio_ledger,
     sync_portfolio_from_published,
+    verify_portfolio_tracking_runtime,
 )
 from scripts.published_picks_store import ensure_published_picks_schema, save_published_picks
 
@@ -23,6 +27,7 @@ class PortfolioTrackingStoreTests(unittest.TestCase):
         self.tmp.close()
         self.db_path = self.tmp.name
         self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
         from scripts.bets_db import ensure_daily_top_proba_schema
 
         ensure_daily_top_proba_schema(self.conn)
@@ -42,6 +47,71 @@ class PortfolioTrackingStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.conn.close()
         os.unlink(self.db_path)
+
+    def test_runtime_importable(self) -> None:
+        verify_portfolio_tracking_runtime()
+
+    def test_save_published_populates_ledger_via_hook(self) -> None:
+        init_portfolio_tracking(
+            self.conn, mode=MODE_TOP5, start_date="2026-07-24", bankroll_start_eur=100.0
+        )
+        save_published_picks(
+            self.conn,
+            mode=MODE_TOP5,
+            calendar_date="2026-07-24",
+            picks=[
+                {
+                    "pick_key": "2026-07-24|ATP|01",
+                    "fav_player": "A",
+                    "match_name": "A vs B",
+                    "player1": "A",
+                    "player2": "B",
+                    "p_model_fav": 0.8,
+                    "ev_fav_pct": 20.0,
+                    "odd_fav": 1.5,
+                }
+            ],
+            source="test",
+        )
+        n = self.conn.execute(
+            "SELECT COUNT(*) FROM portfolio_daily_bets WHERE mode=? AND calendar_date=?",
+            (MODE_TOP5, "2026-07-24"),
+        ).fetchone()[0]
+        self.assertEqual(n, 1)
+        gaps = ledger_publication_gap_report(self.conn, MODE_TOP5)
+        self.assertEqual(gaps["missing_days"], [])
+        self.assertEqual(gaps["partial_days"], [])
+
+    def test_heal_closes_gap_after_manual_delete(self) -> None:
+        init_portfolio_tracking(
+            self.conn, mode=MODE_1D1P, start_date="2026-07-24", bankroll_start_eur=100.0
+        )
+        save_published_picks(
+            self.conn,
+            mode=MODE_1D1P,
+            calendar_date="2026-07-24",
+            picks=[
+                {
+                    "pick_key": "2026-07-24|ATP|01",
+                    "fav_player": "A",
+                    "match_name": "A vs B",
+                    "p_model_fav": 0.8,
+                    "odd_fav": 1.5,
+                }
+            ],
+            source="test",
+        )
+        self.conn.execute(
+            "DELETE FROM portfolio_daily_bets WHERE mode=? AND calendar_date=?",
+            (MODE_1D1P, "2026-07-24"),
+        )
+        self.conn.commit()
+        gaps = ledger_publication_gap_report(self.conn, MODE_1D1P)
+        self.assertEqual(gaps["missing_days"], ["2026-07-24"])
+        healed = heal_portfolio_ledger_gaps(self.conn, mode=MODE_1D1P)
+        self.assertGreaterEqual(healed, 1)
+        gaps2 = ledger_publication_gap_report(self.conn, MODE_1D1P)
+        self.assertEqual(gaps2["missing_days"], [])
 
     def test_ledger_roundtrip(self) -> None:
         init_portfolio_tracking(
