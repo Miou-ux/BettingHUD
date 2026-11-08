@@ -6,6 +6,20 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ops — réconciliation prod scripts portfolio/WTA (8 novembre 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Rafale d’alertes Telegram ops (reconcile 06h40, WTA hebdo dim., canal public, preflight) |
+| **Cause** | Crons et `portfolio_tracking_store` sur `origin/main` référencent `backtest_pack12_global_2026.py` et `wta_weekly_rank_aliases.py` **jamais commités** ; prod en dérive (`d75f9e5`, working tree modifié) |
+| **Correctifs code** | Ajout au repo : `backtest_pack12_global_2026.py`, `backtest_portfolio_improvements.py`, `wta_weekly_rank_aliases.py`, `probe_wta_name_rank_gaps.py` ; preflight : `meta` vide sans `AttributeError` |
+| **Prod** | Backup DB `bettinghud_prod_20261108_101330.db` + patch dérive → `git reset --hard origin/main` + réinstall crons + restart services |
+| **Vérif** | `reconcile_portfolio_tracking.py --refresh`, imports `backtest_pack12`, `wta_weekly_rank_aliases --dry-run` |
+
+Runbook : `docs/OPS_PROD_DEPANNAGE.md` § 0quinquies.
+
+---
+
 # Ops — faux positifs watchdog TG (28 août 2026)
 
 | Élément | Détail |

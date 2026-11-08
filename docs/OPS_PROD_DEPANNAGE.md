@@ -8,6 +8,55 @@ Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d�
 
 ---
 
+## 0quinquies. Scripts portfolio/WTA absents en prod (8 novembre 2026)
+
+**Symptôme** : alertes Telegram récurrentes `Portfolio reconcile 06:40`, `WTA rangs hebdo 04:10`, échec canal public / Discord board ; message matin `Preflight morning` avec traceback.
+
+**Causes**
+
+1. Fichiers référencés par les crons et `portfolio_tracking_store.py` mais **hors Git** : `backtest_pack12_global_2026.py`, `wta_weekly_rank_aliases.py`, dépendances backtest.
+2. Prod **non alignée** sur `origin/main` (HEAD ancien + modifications locales non commitées).
+3. Preflight : crash si snapshot vide et `meta is None` (corrigé).
+
+### Procédure (appliquée 08/11/2026)
+
+```bash
+ssh bettinghud
+cd /opt/bettinghud
+
+# 1) Backup DB (cron 04:15 ou manuel)
+venv/bin/python scripts/backup_prod_db_server.py
+
+# 2) Sauvegarde dérive git
+git fetch origin main
+git diff HEAD > backups/prod/prod_drift_before_reconcile_$(date +%Y%m%d_%H%M%S).patch
+
+# 3) Alignement strict GitHub (scripts _*.py diag untracked conservés)
+git reset --hard origin/main
+
+# 4) Crons
+for f in deploy/cron/*; do
+  sudo cp "$f" "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo chmod 644 "/etc/cron.d/bettinghud-$(basename "$f")"
+done
+
+sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+venv/bin/python scripts/prod_health_watchdog.py
+```
+
+### Vérifications post-déploiement
+
+```bash
+test -f scripts/backtest_pack12_global_2026.py && echo OK pack12
+test -f scripts/wta_weekly_rank_aliases.py && echo OK wta_weekly
+venv/bin/python -c "from scripts.backtest_pack12_global_2026 import MAX_STAKE_PCT"
+venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh
+venv/bin/python scripts/preflight_morning_chain.py   # exit 0 ou warnings slate vide OK
+```
+
+---
+
 ## 0ter bis. Alertes ops Telegram — lisibilité (5 oct. 2026)
 
 | Sujet | Détail |

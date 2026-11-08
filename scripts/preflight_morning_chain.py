@@ -83,9 +83,10 @@ def main() -> None:
     else:
         ok(f"capped_p1_prob on all {n} matches")
 
+    built_at = (meta or {}).get("built_at")
     age_h = (
-        (datetime.now(PARIS).timestamp() - float(meta.get("built_at") or 0)) / 3600
-        if meta.get("built_at")
+        (datetime.now(PARIS).timestamp() - float(built_at)) / 3600
+        if built_at
         else 999
     )
     if age_h > 24:
