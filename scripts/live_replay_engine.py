@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import joblib
 import pandas as pd
 
 from scripts.backtest_pack12_global_2026 import (
@@ -44,15 +46,52 @@ class LiveReplayMeta:
     kelly_frac: float
 
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LIVE_POOL_CACHE = Path(ROOT) / "data" / "cache" / "live_replay_day_pools_2026.joblib"
+_JSONL_DIR = Path(ROOT) / "data" / "live_snapshots"
+
+
+def _live_pool_cache_fingerprint() -> tuple[float, float, str]:
+    """Invalidate cache when morning JSONL or live replay CSV change."""
+    jsonl_mt = 0.0
+    if _JSONL_DIR.is_dir():
+        for p in _JSONL_DIR.glob("2026-*.jsonl"):
+            try:
+                jsonl_mt = max(jsonl_mt, p.stat().st_mtime)
+            except OSError:
+                pass
+    csv_path = Path(ROOT) / "data" / "backtest_2026_live_replay.csv"
+    csv_mt = csv_path.stat().st_mtime if csv_path.is_file() else 0.0
+    bundle = Path(ROOT) / "models" / "xgb_model_tml_v47.pkl"
+    bundle_mt = bundle.stat().st_mtime if bundle.is_file() else 0.0
+    return jsonl_mt, csv_mt, f"{bundle_mt:.0f}"
+
+
 def _day_pools_live(
     ml: TennisMLModel,
     *,
     start: str = LIVE_CUTOFF,
     end: str | None = None,
 ) -> dict[str, tuple[list[dict], set]]:
-    pools = _daily_pools_unlimited(2026, ml)
+    fp = _live_pool_cache_fingerprint()
+    if _LIVE_POOL_CACHE.is_file():
+        try:
+            cached = joblib.load(_LIVE_POOL_CACHE)
+            if isinstance(cached, dict) and cached.get("fingerprint") == fp:
+                pools_raw: dict[str, list[dict]] = cached.get("pools") or {}
+            else:
+                pools_raw = _daily_pools_unlimited(2026, ml)
+                _LIVE_POOL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                joblib.dump({"fingerprint": fp, "pools": pools_raw}, _LIVE_POOL_CACHE)
+        except Exception:
+            pools_raw = _daily_pools_unlimited(2026, ml)
+    else:
+        pools_raw = _daily_pools_unlimited(2026, ml)
+        _LIVE_POOL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump({"fingerprint": fp, "pools": pools_raw}, _LIVE_POOL_CACHE)
+
     out: dict[str, tuple[list[dict], set]] = {}
-    for day, rows in sorted(pools.items()):
+    for day, rows in sorted(pools_raw.items()):
         if day < start:
             continue
         if end and day > end:
@@ -99,6 +138,7 @@ def select_historical_top5_live(
     limit: int | None = None,
     end_date: str | None = None,
     start_date: str | None = None,
+    prefer_portfolio_ledger: bool = False,
 ) -> list[dict]:
     """Top picks du jour — historique aligné backtest live replay (HYB illimité par défaut)."""
     from scripts.published_picks_store import (
@@ -109,20 +149,21 @@ def select_historical_top5_live(
 
     conn = open_db(db_path)
     try:
-        from scripts.portfolio_tracking_store import (
-            get_tracking_config,
-            load_portfolio_replay_picks,
-        )
-
-        cfg = get_tracking_config(conn, MODE_TOP5)
-        if cfg:
-            if start_date is None:
-                start_date = cfg["start_date"]
-            ledger = load_portfolio_replay_picks(
-                conn, MODE_TOP5, exclude_date=exclude_date
+        if prefer_portfolio_ledger:
+            from scripts.portfolio_tracking_store import (
+                get_tracking_config,
+                load_portfolio_replay_picks,
             )
-            if ledger:
-                return ledger
+
+            cfg = get_tracking_config(conn, MODE_TOP5)
+            if cfg:
+                if start_date is None:
+                    start_date = cfg["start_date"]
+                ledger = load_portfolio_replay_picks(
+                    conn, MODE_TOP5, exclude_date=exclude_date
+                )
+                if ledger:
+                    return ledger
     finally:
         conn.close()
 
@@ -161,6 +202,7 @@ def select_historical_1d1p_live(
     exclude_date: str | None,
     end_date: str | None = None,
     start_date: str | None = None,
+    prefer_portfolio_ledger: bool = False,
 ) -> list[dict]:
     """1D1P historique : meilleure proba HYB sur pool matin (ou pick publié)."""
     from scripts.daily_top_proba_store import dedupe_top_proba_rows_by_match, matchup_players_key
@@ -174,20 +216,21 @@ def select_historical_1d1p_live(
 
     conn = open_db(db_path)
     try:
-        from scripts.portfolio_tracking_store import (
-            get_tracking_config,
-            load_portfolio_replay_picks,
-        )
-
-        cfg = get_tracking_config(conn, MODE_1D1P)
-        if cfg:
-            if start_date is None:
-                start_date = cfg["start_date"]
-            ledger = load_portfolio_replay_picks(
-                conn, MODE_1D1P, exclude_date=exclude_date
+        if prefer_portfolio_ledger:
+            from scripts.portfolio_tracking_store import (
+                get_tracking_config,
+                load_portfolio_replay_picks,
             )
-            if ledger:
-                return ledger
+
+            cfg = get_tracking_config(conn, MODE_1D1P)
+            if cfg:
+                if start_date is None:
+                    start_date = cfg["start_date"]
+                ledger = load_portfolio_replay_picks(
+                    conn, MODE_1D1P, exclude_date=exclude_date
+                )
+                if ledger:
+                    return ledger
     finally:
         conn.close()
 
@@ -363,6 +406,9 @@ def _enrich_pick_pnl_walk(
                 raw = cap_amt
             deploy_left = b0 - by_day_deploy[cal]
             stake = min(raw, liquid, deploy_left)
+            applied_frac = (stake / b0) if b0 > 0 else 0.0
+            enriched["replay_stake_eur"] = round(max(0.0, stake), 2)
+            enriched["theoretical_stake_frac"] = round(applied_frac, 6)
             if stake > 0:
                 pnl = stake * (odd - 1.0) if won else -stake
                 profit_eur = round(pnl, 2)
@@ -372,11 +418,14 @@ def _enrich_pick_pnl_walk(
             else:
                 # Cote très basse → Kelly = 0 : pari réglé mais 0 € engagé
                 profit_eur = 0.0
+                enriched["replay_stake_eur"] = 0.0
+                enriched["theoretical_stake_frac"] = 0.0
         elif void:
             profit_eur = 0.0
+            enriched["replay_stake_eur"] = 0.0
+            enriched["theoretical_stake_frac"] = 0.0
 
         enriched["replay_net_profit_eur"] = profit_eur
-        enriched["theoretical_stake_frac"] = enriched.get("theoretical_stake_frac")
         out.append(enriched)
         n_cum += 1
 
@@ -402,6 +451,60 @@ def _enrich_pick_pnl_walk(
                 }
             )
     return out, curve
+
+
+def summary_from_enriched_walk(
+    enriched: list[dict],
+    *,
+    bankroll_start: float,
+) -> dict[str, Any]:
+    """Summary P/L depuis le walk Kelly pick-par-pick (aligné ledger)."""
+    br = float(bankroll_start)
+    total_staked = 0.0
+    n_won = n_lost = n_void = n_open = 0
+    peak = br
+    max_dd = 0.0
+
+    for row in enriched:
+        st = str(row.get("status") or "").lower()
+        if "gagn" in st:
+            n_won += 1
+        elif "perdu" in st:
+            n_lost += 1
+        elif "annul" in st:
+            n_void += 1
+        else:
+            n_open += 1
+        profit = row.get("replay_net_profit_eur")
+        stake = float(row.get("replay_stake_eur") or 0.0)
+        if stake > 0:
+            total_staked += stake
+        if profit is not None:
+            br += float(profit)
+        peak = max(peak, br)
+        dd = ((peak - br) / peak * 100.0) if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+
+    n_decided = n_won + n_lost
+    net = br - bankroll_start
+    return {
+        "n_picks": len(enriched),
+        "n_settled": n_won + n_lost + n_void,
+        "n_open": n_open,
+        "n_won": n_won,
+        "n_lost": n_lost,
+        "n_void": n_void,
+        "hit_pct": round((n_won / n_decided * 100.0) if n_decided > 0 else 0.0, 1),
+        "bankroll_start_eur": round(bankroll_start, 2),
+        "bankroll_final_eur": round(br, 2),
+        "net_profit_eur": round(net, 2),
+        "growth_pct": round((net / bankroll_start * 100.0) if bankroll_start > 0 else 0.0, 1),
+        "total_staked_eur": round(total_staked, 2),
+        "roi_on_staked_pct": round((net / total_staked * 100.0) if total_staked > 0 else 0.0, 1),
+        "max_drawdown_pct": round(max_dd, 1),
+        "kelly_base_frac": _resolve_kelly_frac(None),
+        "replay_mode": "kelly_walk",
+    }
 
 
 def _summary_from_picks(

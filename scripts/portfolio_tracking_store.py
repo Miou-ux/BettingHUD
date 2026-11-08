@@ -12,7 +12,115 @@ from scripts.kelly_policy import KELLY_BASE_FRAC
 from scripts.published_picks_store import MODE_1D1P, MODE_TOP5, NO_PICK_KEY
 
 DEFAULT_BANKROLL_EUR = 100.0
+DEFAULT_GLOBAL_BRIER = 0.1741
 MODES = (MODE_TOP5, MODE_1D1P)
+
+
+def _row_mapping(row: Any) -> dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    if isinstance(row, sqlite3.Row):
+        return {k: row[k] for k in row.keys()}
+    raise TypeError(f"sqlite row expected, got {type(row)!r}")
+
+
+def verify_portfolio_tracking_runtime() -> None:
+    """Vérifie que le publish→ledger peut tourner (CI / cron / preflight).
+
+    Ne charge pas ``live_replay_engine`` (chaîne backtest lourde / optionnelle).
+  """
+    kelly_full_fraction(0.62, 1.4)
+    _ = KELLY_BASE_FRAC
+    _ = MAX_STAKE_PCT
+
+
+def _ledger_ml_context(ml: Any | None) -> tuple[Any | None, dict, float]:
+    """Contexte Brier pour Kelly : ML si dispo, sinon défauts sûrs."""
+    if ml is not None:
+        seg_map = getattr(ml, "segment_brier_scores", {}) or {}
+        glob_b = float(getattr(ml, "global_test_brier", DEFAULT_GLOBAL_BRIER))
+        return ml, seg_map, glob_b
+    try:
+        from scripts.live_replay_engine import load_ml
+
+        loaded = load_ml()
+        seg_map = getattr(loaded, "segment_brier_scores", {}) or {}
+        glob_b = float(getattr(loaded, "global_test_brier", DEFAULT_GLOBAL_BRIER))
+        return loaded, seg_map, glob_b
+    except Exception:
+        return None, {}, DEFAULT_GLOBAL_BRIER
+
+
+def ledger_publication_gap_report(
+    conn: sqlite3.Connection,
+    mode: str,
+    *,
+    since: str | None = None,
+) -> dict[str, Any]:
+    """Jours publiés TG sans ledger (ou compte de picks incohérent)."""
+    cfg = get_tracking_config(conn, mode)
+    if not cfg:
+        return {"mode": mode, "missing_days": [], "partial_days": []}
+    start = str(since or cfg["start_date"])[:10]
+    pub_rows = conn.execute(
+        """
+        SELECT calendar_date, COUNT(*) AS c
+        FROM daily_published_picks
+        WHERE mode = ? AND calendar_date >= ?
+          AND COALESCE(pick_key, '') != ?
+          AND publish_rank > 0
+        GROUP BY calendar_date
+        """,
+        (mode, start, NO_PICK_KEY),
+    ).fetchall()
+    led_rows = conn.execute(
+        """
+        SELECT calendar_date, COUNT(*) AS c
+        FROM portfolio_daily_bets
+        WHERE mode = ? AND calendar_date >= ?
+        GROUP BY calendar_date
+        """,
+        (mode, start),
+    ).fetchall()
+    pub = {str(r[0]): int(r[1]) for r in pub_rows}
+    led = {str(r[0]): int(r[1]) for r in led_rows}
+    missing_days: list[str] = []
+    partial_days: list[str] = []
+    for cal, pc in sorted(pub.items()):
+        lc = led.get(cal, 0)
+        if lc <= 0:
+            missing_days.append(cal)
+        elif lc != pc:
+            partial_days.append(cal)
+    return {
+        "mode": mode,
+        "since": start,
+        "missing_days": missing_days,
+        "partial_days": partial_days,
+        "n_pub_days": len(pub),
+        "n_led_days": len(led),
+    }
+
+
+def heal_portfolio_ledger_gaps(
+    conn: sqlite3.Connection,
+    *,
+    mode: str | None = None,
+) -> int:
+    """Resynchronise les jours publiés manquants ou partiels dans le ledger."""
+    modes = (mode,) if mode else MODES
+    n_sync = 0
+    for m in modes:
+        if not get_tracking_config(conn, m):
+            continue
+        rep = ledger_publication_gap_report(conn, m)
+        days = rep["missing_days"] + rep["partial_days"]
+        for cal in days:
+            n_sync += sync_portfolio_from_published(conn, mode=m, calendar_date=cal)
+        if n_sync:
+            sync_portfolio_settlement(conn, mode=m)
+            recompute_portfolio_ledger(conn, m)
+    return n_sync
 
 
 def ensure_portfolio_tracking_schema(conn: sqlite3.Connection) -> None:
@@ -202,7 +310,7 @@ def sync_portfolio_from_published(
     )
     n = 0
     for pub in pub_rows:
-        d = dict(pub)
+        d = _row_mapping(pub)
         pk = str(d.get("pick_key") or "")
         rank = int(d.get("publish_rank") or 0)
         if rank <= 0 or pk == NO_PICK_KEY:
@@ -213,7 +321,8 @@ def sync_portfolio_from_published(
             (pk,),
         ).fetchone()
         if full:
-            merged.update({k: full[k] for k in full.keys() if full[k] is not None})
+            full_d = _row_mapping(full)
+            merged.update({k: v for k, v in full_d.items() if v is not None})
         conn.execute(
             """
             INSERT INTO portfolio_daily_bets (
@@ -313,18 +422,13 @@ def recompute_portfolio_ledger(
     ml: Any | None = None,
     kelly_frac: float | None = None,
 ) -> int:
-    """Recalcule stakes / PnL / bankroll séquentielle sur le ledger."""
+    """Recalcule stakes / PnL / bankroll — même walk Kelly que ``kelly_replay_metrics``."""
     cfg = get_tracking_config(conn, mode)
     if not cfg:
         return 0
     ensure_portfolio_tracking_schema(conn)
 
-    if ml is None:
-        from scripts.live_replay_engine import load_ml
-
-        ml = load_ml()
-    seg_map = getattr(ml, "segment_brier_scores", {}) or {}
-    glob_b = float(getattr(ml, "global_test_brier", 0.1741))
+    ml, seg_map, glob_b = _ledger_ml_context(ml)
     kf = float(KELLY_BASE_FRAC if kelly_frac is None else kelly_frac)
 
     rows = conn.execute(
@@ -338,58 +442,48 @@ def recompute_portfolio_ledger(
     if not rows:
         return 0
 
+    from scripts.live_replay_engine import _enrich_pick_pnl_walk, _kelly_eligible
+    from scripts.ml_model import resolve_match_brier_segment_key
+
+    picks = [portfolio_bet_to_pick_row(dict(r)) for r in rows]
+    settled_picks = [p for p in picks if _kelly_eligible(p)]
+    settled_keys = {
+        (str(p.get("calendar_date") or "")[:10], str(p.get("match_name") or "").lower())
+        for p in settled_picks
+    }
+    enriched, _ = _enrich_pick_pnl_walk(
+        picks,
+        ml,
+        bankroll_start=float(cfg["bankroll_start_eur"]),
+        kelly_frac=kf,
+        sim_history=[],
+        settled_keys=settled_keys,
+    )
+
     br = float(cfg["bankroll_start_eur"])
-    by_day_liquid: dict[str, float] = {}
-    by_day_b0: dict[str, float] = {}
-    by_day_deploy: dict[str, float] = {}
     n = 0
 
-    for row in rows:
-        d = dict(row)
-        cal = str(d["calendar_date"])[:10]
-        status = str(d.get("status") or "En cours")
-        odd = float(d.get("odd_fav") or 0)
-        p = float(d.get("p_model_fav") or 0)
-        seg_key = d.get("segment_brier")
-        if seg_key is None:
-            try:
-                from scripts.ml_model import resolve_match_brier_segment_key
-
-                seg_key = seg_map.get(
-                    str(resolve_match_brier_segment_key(d)),
-                    glob_b,
-                )
-            except Exception:
-                seg_key = glob_b
-        seg_b = float(seg_key or glob_b)
-
-        stake_frac = 0.0
-        stake_eur = 0.0
-        profit_eur = 0.0
+    for ep in enriched:
+        cal = str(ep.get("calendar_date") or "")[:10]
+        rank = int(ep.get("bet_rank") or ep.get("rank") or 0)
+        status = str(ep.get("status") or "En cours")
         bankroll_before = br
 
-        if _is_settled_status(status) and "annul" not in status.lower():
-            if cal not in by_day_b0:
-                by_day_b0[cal] = br
-                by_day_liquid[cal] = br
-                by_day_deploy[cal] = 0.0
-            stake_frac, stake_eur = _stake_for_pick(
-                bankroll_liquid=by_day_liquid[cal],
-                bankroll_day_start=by_day_b0[cal],
-                day_deployed=by_day_deploy[cal],
-                p_model=p,
-                odd=odd,
-                segment_brier=seg_b,
-                global_brier=glob_b,
-                kelly_frac=kf,
-            )
-            profit_eur = _profit_for_status(status, odd, stake_eur)
-            if stake_eur > 0:
-                by_day_liquid[cal] -= stake_eur
-                by_day_deploy[cal] += stake_eur
-            br += profit_eur
+        profit_eur = ep.get("replay_net_profit_eur")
+        stake_eur = float(ep.get("replay_stake_eur") or 0.0)
+        stake_frac = float(ep.get("theoretical_stake_frac") or 0.0)
+
+        if profit_eur is not None:
+            br += float(profit_eur)
         elif _is_settled_status(status):
             profit_eur = 0.0
+
+        try:
+            seg_b = float(
+                seg_map.get(str(resolve_match_brier_segment_key(ep)), glob_b)
+            )
+        except Exception:
+            seg_b = glob_b
 
         bankroll_after = br
         conn.execute(
@@ -403,13 +497,13 @@ def recompute_portfolio_ledger(
             (
                 round(stake_frac, 6),
                 round(stake_eur, 2),
-                round(profit_eur, 2) if _is_settled_status(status) else None,
+                round(float(profit_eur), 2) if _is_settled_status(status) else None,
                 round(bankroll_before, 2),
                 round(bankroll_after, 2),
                 seg_b,
                 cal,
                 mode,
-                int(d["bet_rank"]),
+                rank,
             ),
         )
         n += 1
@@ -596,10 +690,18 @@ def reconcile_portfolio_ledger(
     if not cfg:
         return {"mode": mode, "ok": True, "skipped": True, "reason": "no_tracking_config"}
 
+    ml, _, _ = _ledger_ml_context(ml)
+    gap_report = ledger_publication_gap_report(conn, mode)
+    gap_days = gap_report["missing_days"] + gap_report["partial_days"]
     if ml is None:
-        from scripts.live_replay_engine import load_ml
-
-        ml = load_ml()
+        return {
+            "mode": mode,
+            "ok": len(gap_days) == 0,
+            "skipped_sim": True,
+            "reason": "ml_unavailable",
+            "ledger_gaps": gap_report,
+            "n_gaps": len(gap_days),
+        }
 
     ledger_rows = conn.execute(
         """
@@ -625,11 +727,27 @@ def reconcile_portfolio_ledger(
         row.pop("theoretical_stake_frac", None)
         sim_picks.append(row)
 
-    from scripts.live_replay_engine import kelly_replay_metrics
+    from scripts.live_replay_engine import (
+        _enrich_pick_pnl_walk,
+        _kelly_eligible,
+        summary_from_enriched_walk,
+    )
 
-    enriched, _, sim_summary = kelly_replay_metrics(
+    settled_picks = [p for p in sim_picks if _kelly_eligible(p)]
+    settled_keys = {
+        (str(p.get("calendar_date") or "")[:10], str(p.get("match_name") or "").lower())
+        for p in settled_picks
+    }
+    enriched, _ = _enrich_pick_pnl_walk(
         sim_picks,
         ml,
+        bankroll_start=float(cfg["bankroll_start_eur"]),
+        kelly_frac=float(KELLY_BASE_FRAC),
+        sim_history=[],
+        settled_keys=settled_keys,
+    )
+    sim_summary = summary_from_enriched_walk(
+        enriched,
         bankroll_start=float(cfg["bankroll_start_eur"]),
     )
 
@@ -700,7 +818,7 @@ def reconcile_portfolio_ledger(
                 "delta": round(abs(lv - sv), 2),
             }
 
-    ok = not mismatches and not summary_diff
+    ok = not mismatches and not summary_diff and not gap_days
     return {
         "mode": mode,
         "ok": ok,
@@ -710,13 +828,22 @@ def reconcile_portfolio_ledger(
         "summary_ledger": ledger_summary,
         "summary_sim": sim_summary,
         "summary_diff": summary_diff,
+        "ledger_gaps": gap_report,
+        "n_gaps": len(gap_days),
         "tracking_start_date": cfg["start_date"],
         "bankroll_start_eur": cfg["bankroll_start_eur"],
     }
 
 
-def refresh_portfolio_tracking(conn: sqlite3.Connection, *, mode: str | None = None) -> None:
+def refresh_portfolio_tracking(
+    conn: sqlite3.Connection,
+    *,
+    mode: str | None = None,
+    heal_gaps: bool = False,
+) -> None:
     """Sync settlement + recompute — appelé par daemon / publish."""
+    if heal_gaps:
+        heal_portfolio_ledger_gaps(conn, mode=mode)
     sync_portfolio_settlement(conn, mode=mode)
     for m in ((mode,) if mode else MODES):
         if get_tracking_config(conn, m):

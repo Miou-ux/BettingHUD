@@ -6,6 +6,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Ledger portfolio — verrou publish→ledger (8 novembre 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Incident** | Hook `save_published_picks` → `on_published_picks_saved` en échec silencieux (`except: pass`) quand imports backtest manquants sur prod — trous massifs `portfolio_daily_bets` (Top5) |
+| **Verrous** | Log `exception` sur échec ledger ; `verify_portfolio_tracking_runtime()` (preflight cron) ; `ledger_publication_gap_report` + `heal_portfolio_ledger_gaps` ; reconcile `--preflight --heal` ; Kelly recompute sans dépendre de `load_ml()` |
+| **Tests** | `test_portfolio_tracking_store` : hook TG→ledger, heal après suppression |
+| **Cron** | `CRONS_SEMAINE.md` : reconcile 06h40 avec `--preflight --heal --refresh --fail-on-drift` |
+
+---
+
 # Ops — réconciliation prod scripts portfolio/WTA (8 novembre 2026)
 
 | Élément | Détail |
@@ -17,6 +28,17 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 | **Vérif** | `reconcile_portfolio_tracking.py --refresh`, imports `backtest_pack12`, `wta_weekly_rank_aliases --dry-run` |
 
 Runbook : `docs/OPS_PROD_DEPANNAGE.md` § 0quinquies.
+
+---
+
+# Ops — drift portfolio ledger vs replay (8 novembre 2026)
+
+| Élément | Détail |
+|---------|--------|
+| **Symptôme** | Cron reconcile 06h40 : centaines d’écarts `profit_eur`, `total_staked` ledger >> sim |
+| **Cause** | `recompute_portfolio_ledger` utilisait le `segment_brier` figé en SQL (publication) ; le walk replay recalcule via `resolve_match_brier_segment_key` → mises Kelly différentes |
+| **Correctif** | Ledger recalculé via le même `_enrich_pick_pnl_walk` que la réconciliation ; summary sim depuis `summary_from_enriched_walk` (plus `simulate_sequential_intraday` hétérogène) |
+| **Vérif** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` → OK top5 + 1d1p |
 
 ---
 

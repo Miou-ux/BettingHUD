@@ -167,18 +167,22 @@ Script : `scripts/reconcile_portfolio_tracking.py`
 Compare les lignes `portfolio_daily_bets` avec un **rejeu Kelly frais** (`kelly_replay_metrics`) sur les mêmes picks.
 
 ```bash
-py -3 scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift
+py -3 scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift
 py -3 scripts/reconcile_portfolio_tracking.py --json
 ```
 
 | Flag | Rôle |
 |------|------|
+| `--preflight` | Vérifie que le runtime publish→ledger est importable |
+| `--heal` | Resync les jours TG absents du ledger |
 | `--refresh` | Sync settlement + recompute ledger avant compare |
 | `--tol-eur` | Tolérance P/L (défaut 0,02 €) |
-| `--fail-on-drift` | Exit code 1 si écart (cron / CI) |
+| `--fail-on-drift` | Exit code 1 si écart P/L ou trou ledger (cron / CI) |
+
+Le hook `save_published_picks` logue les échecs ledger (logger `published_picks_store`).
 
 Cron suggéré (après daemon, ~06:40 Paris) — installé via `deploy/cron/reconcile-portfolio` :
 
 ```cron
-40 6 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Portfolio reconcile 06:40" --log data/logs/reconcile_portfolio.log --dedup-key portfolio_reconcile_drift -- /opt/bettinghud/venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --fail-on-drift
+40 6 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Portfolio reconcile 06:40" --log data/logs/reconcile_portfolio.log --dedup-key portfolio_reconcile_drift -- /opt/bettinghud/venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift
 ```
