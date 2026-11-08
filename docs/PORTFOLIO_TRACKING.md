@@ -54,7 +54,9 @@ Depuis **juillet 2026**, le suivi **théorique** CourtAlpha (**Top picks du jour
 | `save_published_picks()` | `on_published_picks_saved()` → copie snapshot + recompute Kelly |
 | `sync_daily_top_proba_from_results()` | `refresh_portfolio_tracking()` → statut/score + recompute |
 
-**Kelly ledger** : fraction base `KELLY_BASE_FRAC` (0,85), Brier segment, cap 15 % liquidité/jour — même logique que `live_replay_engine.kelly_replay_metrics`.
+**Kelly ledger** : fraction base `KELLY_BASE_FRAC` (0,85), Brier segment **résolu à la recompute** (pas seulement la valeur SQL figée au publish), cap 15 % liquidité/jour — même walk que la réconciliation : `live_replay_engine._enrich_pick_pnl_walk` → `replay_stake_eur`.
+
+**Publish→ledger** : échec du hook `on_published_picks_saved` est logué (`published_picks_store`, plus de `except: pass` silencieux). Preflight cron : `verify_portfolio_tracking_runtime()`.
 
 **Void (`Annulé`)** : P/L = 0 €, mise ledger = 0 € (pas d'impact bankroll).
 
@@ -123,8 +125,9 @@ py -3 scripts/reset_user_portfolio.py \
 | `scripts/bets_db.py` | Hook settlement → refresh ledger |
 | `deploy/courtalpha/api/services/one_day_one_pick.py` | Replay 1D1P ledger |
 | `deploy/courtalpha/api/services/top5_replay.py` | Replay Top5 ledger |
-| `scripts/reconcile_portfolio_tracking.py` | Réconciliation ledger vs Kelly replay |
-| `tests/test_portfolio_tracking_store.py` | Test roundtrip ledger |
+| `scripts/reconcile_portfolio_tracking.py` | Réconciliation ledger vs walk Kelly ; `--preflight`, `--heal`, gaps publication |
+| `scripts/_diag_portfolio_drift.py` | Diagnostic mismatches Brier / stake / PnL (ops) |
+| `tests/test_portfolio_tracking_store.py` | Hook publish, heal gaps, roundtrip ledger |
 
 ---
 
@@ -143,20 +146,28 @@ ORDER BY calendar_date, bet_rank;
 
 ## 8. Deploy PROD
 
+**Recommandé** (depuis nov. 2026) : déploiement Git + crons, pas `scp` fichier par fichier.
+
 ```bash
-scp scripts/portfolio_tracking_store.py scripts/init_portfolio_tracking.py \
-    scripts/reset_user_portfolio.py scripts/live_replay_engine.py \
-    scripts/published_picks_store.py scripts/bets_db.py \
-    bettinghud:/opt/bettinghud/scripts/
+ssh bettinghud
+cd /opt/bettinghud
+git pull origin main
 
-scp deploy/courtalpha/api/services/one_day_one_pick.py \
-    deploy/courtalpha/api/services/top5_replay.py \
-    bettinghud:/opt/courtalpha/api/services/
+# Si deploy/cron/* ou requirements ont changé
+for f in deploy/cron/*; do
+  sudo cp "$f" "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo chmod 644 "/etc/cron.d/bettinghud-$(basename "$f")"
+done
+./venv/bin/pip install -r requirements.txt   # si besoin
 
-sudo systemctl restart courtalpha-api bettinghud-daemon
+sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh
 ```
 
-Voir aussi : [[OPS_PROD_DEPANNAGE]] · [[PUBLISHED_PICKS_REPLAY]].
+Runbook complet : [[DEPLOY_SERVEUR]] § 8 · incidents : [[OPS_PROD_DEPANNAGE]] § 0quinquies, 0sexies.
+
+Voir aussi : [[PUBLISHED_PICKS_REPLAY]].
 
 ---
 
@@ -164,7 +175,7 @@ Voir aussi : [[OPS_PROD_DEPANNAGE]] · [[PUBLISHED_PICKS_REPLAY]].
 
 Script : `scripts/reconcile_portfolio_tracking.py`
 
-Compare les lignes `portfolio_daily_bets` avec un **rejeu Kelly frais** (`kelly_replay_metrics`) sur les mêmes picks.
+Compare chaque ligne `portfolio_daily_bets` avec le **même walk Kelly** que le recompute : `_enrich_pick_pnl_walk` (Brier segment résolu + `replay_stake_eur`). Le summary agrégé sim utilise `summary_from_enriched_walk` — **pas** un second chemin `simulate_sequential_intraday` / `kelly_replay_metrics` hétérogène.
 
 ```bash
 py -3 scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift
@@ -173,16 +184,48 @@ py -3 scripts/reconcile_portfolio_tracking.py --json
 
 | Flag | Rôle |
 |------|------|
-| `--preflight` | Vérifie que le runtime publish→ledger est importable |
-| `--heal` | Resync les jours TG absents du ledger |
-| `--refresh` | Sync settlement + recompute ledger avant compare |
+| `--preflight` | `verify_portfolio_tracking_runtime()` — imports publish→ledger |
+| `--heal` | `heal_portfolio_ledger_gaps` — comble les jours publiés TG absents du ledger |
+| `--refresh` | Settlement sync + `recompute_portfolio_ledger` (walk unifié) avant compare |
 | `--tol-eur` | Tolérance P/L (défaut 0,02 €) |
 | `--fail-on-drift` | Exit code 1 si écart P/L ou trou ledger (cron / CI) |
 
-Le hook `save_published_picks` logue les échecs ledger (logger `published_picks_store`).
+Échecs ledger à la publication : logger `published_picks_store` (niveau exception). Rapport de trous : `ledger_publication_gap_report`.
 
-Cron suggéré (après daemon, ~06:40 Paris) — installé via `deploy/cron/reconcile-portfolio` :
+Cron prod (06:40 Paris) — `deploy/cron/reconcile-portfolio` :
 
 ```cron
 40 6 * * * ubuntu cd /opt/bettinghud && /opt/bettinghud/venv/bin/python scripts/cron_run_with_alert.py --job "Portfolio reconcile 06:40" --log data/logs/reconcile_portfolio.log --dedup-key portfolio_reconcile_drift -- /opt/bettinghud/venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift
 ```
+
+Historique incident **08/11/2026** : dérive massive corrigée par alignement walk (`f457367`) + verrou publish→ledger (`05512a5`). Runbook : [[OPS_PROD_DEPANNAGE]] § 0sexies.
+
+---
+
+## 10. Architecture Kelly (référence rapide)
+
+```mermaid
+flowchart LR
+  publish[save_published_picks] --> hook[on_published_picks_saved]
+  hook --> ldb[(portfolio_daily_bets)]
+  settle[sync / bets_db] --> refresh[refresh_portfolio_tracking]
+  refresh --> recompute[recompute_portfolio_ledger]
+  recompute --> walk[_enrich_pick_pnl_walk]
+  reconcile[reconcile_portfolio_tracking] --> walk
+  walk --> compare[Compare stake / PnL / BR]
+```
+
+- **Colonne audit** `segment_brier` : snapshot au publish (trace) ; **mises** recalculées via résolution segment + bundle actuel au recompute.
+- **Void** : stake et P/L ledger à 0 (inchangé).
+
+---
+
+## 11. Dépannage dérive P/L
+
+| Étape | Commande |
+|-------|----------|
+| Preflight + heal + refresh | `reconcile_portfolio_tracking.py --preflight --heal --refresh` |
+| Détail 30 picks | `_diag_portfolio_drift.py --mode top5 --limit 30` |
+| JSON pour scripts | `reconcile_portfolio_tracking.py --refresh --json` |
+
+Si mismatch persiste après `--refresh` : vérifier bundle ML (`models/`), `portfolio_tracking_config`, puis logs `data/logs/reconcile_portfolio.log` et `published_picks_store` le matin du jour manquant.

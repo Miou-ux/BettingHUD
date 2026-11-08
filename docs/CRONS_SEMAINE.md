@@ -85,7 +85,7 @@ gantt
 | **04:56** | `preflight_morning_chain.py` | Smoke imports / snapshot / dry-run picks avant publish | `data/logs/preflight_morning_cron.log` |
 | **04:58** | `generate_og_snapshot.py` | Image OG stats CourtAlpha (avant posts 05:00) | `data/logs/acquisition.log` |
 | **05:00** | `morning_live_pipeline.py --publish-only` | **Publications seules** : 1D1P + Top 5 + canal TG/Discord (sync/build déjà faits) | `data/logs/morning_publish_cron.log` |
-| **06:40** | `reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift` | Publish→ledger : preflight imports, comble trous TG, Kelly + alerte dérive | `data/logs/reconcile_portfolio.log` |
+| **06:40** | `reconcile_portfolio_tracking.py --preflight --heal --refresh --fail-on-drift` | Publish→ledger : preflight imports, comble trous TG, Kelly walk unifié + alerte dérive | `data/logs/reconcile_portfolio.log` |
 | ***/2 min** | `billing_indexer.py` | Index paiements ETH premium | `data/logs/billing_indexer.log` |
 
 **Ordre matin** : 00:30 (sync tours, ~2h20–4h) → 04:15 backup → 04:30 build (~25 min) → 04:56 preflight → 04:58 (OG) → **05:00 publish**.
@@ -93,6 +93,8 @@ gantt
 **Rattrapage manuel** : `morning_live_pipeline.py --morning-publish` (chaîne complète sync→build→publish).
 
 **Alertes** : wrapper `cron_run_with_alert.py` + anti-doublon 20 min (`data/cache/ops_alert_dedup.json`). Kill-switch `BETTINGHUD_OPS_ALERT=0`.
+
+**Portfolio 06:40** (depuis nov. 2026) : le job échoue si imports publish→ledger cassés, trous TG non réparable, ou drift P/L Kelly (`--fail-on-drift`). Runbooks : [[OPS_PROD_DEPANNAGE]] § 0quinquies / 0sexies · [[PORTFOLIO_TRACKING]] § 9.
 
 État chaîne : `data/cache/morning_chain_state.json`
 

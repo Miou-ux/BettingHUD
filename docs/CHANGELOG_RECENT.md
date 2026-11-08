@@ -6,14 +6,29 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 
 ---
 
+# Journal ops prod — 8 novembre 2026 (synthèse)
+
+| Élément | Détail |
+|---------|--------|
+| **Prod HEAD** | `05512a5` (aligné `origin/main` après `git reset --hard` + pull) |
+| **Backups** | DB `backups/prod/bettinghud_prod_20261108_101330.db` · patch dérive `prod_drift_before_reconcile_20261108_101543.patch` |
+| **Vérif finale** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` → 0 mismatch top5 (~213 picks) + 1d1p (~77 picks) |
+| **Docs** | `OPS_PROD_DEPANNAGE` § 0quinquies / 0sexies · `PORTFOLIO_TRACKING` § 9–11 · `DEPLOY_SERVEUR` § 8 |
+
+**Telegram ops** : la rafale d’alertes venait surtout de crons en échec (scripts absents du repo + prod en dérive), puis du drift Kelly — pas une panne globale du bot utilisateur. Timeouts `api.telegram.org` sur le polling restent du bruit de fond.
+
+---
+
 # Ledger portfolio — verrou publish→ledger (8 novembre 2026)
 
 | Élément | Détail |
 |---------|--------|
+| **Commit** | `05512a5` |
 | **Incident** | Hook `save_published_picks` → `on_published_picks_saved` en échec silencieux (`except: pass`) quand imports backtest manquants sur prod — trous massifs `portfolio_daily_bets` (Top5) |
 | **Verrous** | Log `exception` sur échec ledger ; `verify_portfolio_tracking_runtime()` (preflight cron) ; `ledger_publication_gap_report` + `heal_portfolio_ledger_gaps` ; reconcile `--preflight --heal` ; Kelly recompute sans dépendre de `load_ml()` |
+| **Fichiers** | `published_picks_store.py`, `bets_db.py`, `reconcile_portfolio_tracking.py`, `portfolio_tracking_store.py`, `deploy/cron/reconcile-portfolio`, `tests/test_portfolio_tracking_store.py` |
 | **Tests** | `test_portfolio_tracking_store` : hook TG→ledger, heal après suppression |
-| **Cron** | `CRONS_SEMAINE.md` : reconcile 06h40 avec `--preflight --heal --refresh --fail-on-drift` |
+| **Cron** | [[CRONS_SEMAINE]] — reconcile 06h40, flags preflight / heal / refresh / fail-on-drift |
 
 ---
 
@@ -35,10 +50,14 @@ Runbook : `docs/OPS_PROD_DEPANNAGE.md` § 0quinquies.
 
 | Élément | Détail |
 |---------|--------|
+| **Commit** | `f457367` |
 | **Symptôme** | Cron reconcile 06h40 : centaines d’écarts `profit_eur`, `total_staked` ledger >> sim |
 | **Cause** | `recompute_portfolio_ledger` utilisait le `segment_brier` figé en SQL (publication) ; le walk replay recalcule via `resolve_match_brier_segment_key` → mises Kelly différentes |
 | **Correctif** | Ledger recalculé via le même `_enrich_pick_pnl_walk` que la réconciliation ; summary sim depuis `summary_from_enriched_walk` (plus `simulate_sequential_intraday` hétérogène) |
+| **Outil** | `scripts/_diag_portfolio_drift.py` |
 | **Vérif** | `reconcile_portfolio_tracking.py --refresh --fail-on-drift` → OK top5 + 1d1p |
+
+Runbook : [[OPS_PROD_DEPANNAGE]] § 0sexies · détail ledger : [[PORTFOLIO_TRACKING]] § 9–11.
 
 ---
 

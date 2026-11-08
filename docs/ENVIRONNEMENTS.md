@@ -1,6 +1,6 @@
 # Environnements PREPROD / PROD
 
-Dernière mise à jour : **28 mai 2026**.
+Dernière mise à jour : **8 novembre 2026**.
 
 Convention officielle du projet :
 
@@ -17,7 +17,7 @@ Variable d’environnement : **`BETTINGHUD_ENV`** = `preprod` (défaut) ou `prod
 
 ## Règles d’or
 
-1. **Tout changement de code** : développer et valider en **PREPROD**, puis déployer en **PROD** (`git push` → `git pull` sur le serveur).
+1. **Tout changement de code** : développer et valider en **PREPROD**, puis déployer en **PROD** (`git push` → `git pull` sur le serveur). Après un déploiement touchant portfolio ou crons : `reconcile_portfolio_tracking.py --preflight --heal --refresh` sur prod — voir [[DEPLOY_SERVEUR]] § 8 et [[PORTFOLIO_TRACKING]] § 8.
 2. **Paris réels** : enregistrés en priorité en **PROD** (portefeuille de référence).
 3. **PREPROD** : tests, backtests, essais UI, retrain ML, rebuild snapshot sans impact sur les utilisateurs « live ».
 4. **Ne jamais** lancer un nettoyage destructif de `user_bets` en PROD sans sauvegarde explicite.
@@ -50,6 +50,12 @@ PREPROD (PC)                    PROD (serveur)
 ```
 
 Détail serveur : [[DEPLOY_SERVEUR]].
+
+### Agent Cursor (PREPROD)
+
+Pour laisser l’agent exécuter commandes SSH / git / tests sans demander à chaque fois : **Cursor → Settings → Agents → Approvals & Execution → Run Everything**. Réglage **local IDE**, pas versionné dans le dépôt. Les actions destructives PROD (reset DB, `git reset --hard`) restent à valider explicitement — procédures : [[OPS_PROD_DEPANNAGE]].
+
+Après une session agent qui touche portfolio ou crons : mettre à jour les `.md` concernés (`CHANGELOG_RECENT`, `OPS_PROD_DEPANNAGE`, `PORTFOLIO_TRACKING`) puis `git push` → `git pull` sur le serveur.
 
 ---
 

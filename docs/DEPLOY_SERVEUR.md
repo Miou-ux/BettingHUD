@@ -1,6 +1,6 @@
 # Déploiement serveur dédié (Ubuntu)
 
-Dernière mise à jour : **28 mai 2026**.
+Dernière mise à jour : **8 novembre 2026**.
 
 Guide pour héberger BettingHUD sur un **serveur dédié** Ubuntu — environnement **PROD** (production actuelle : **192.95.30.217**).
 
@@ -268,15 +268,42 @@ Premier déploiement : exécuter `scripts/init_courtalphax_account.py` puis test
 
 ## 8. Mise à jour après un push GitHub
 
+### Chemin standard (recommandé)
+
 ```bash
 ssh bettinghud
 cd /opt/bettinghud
-git pull
+git fetch origin main
+git pull origin main
 ./venv/bin/pip install -r requirements.txt   # si requirements changé
+
+# Si deploy/cron/* a changé (ex. reconcile 06:40)
+for f in deploy/cron/*; do
+  sudo cp "$f" "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo sed -i 's/\r$//' "/etc/cron.d/bettinghud-$(basename "$f")"
+  sudo chmod 644 "/etc/cron.d/bettinghud-$(basename "$f")"
+done
+
 sudo systemctl restart bettinghud-dashboard bettinghud-daemon bettinghud-telegram-bot
+venv/bin/python scripts/prod_health_watchdog.py
+venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh
 ```
 
 Si le modèle ou la base locale a changé, recopier `data/bettinghud.db` et/ou `models/*.pkl` puis rebuild snapshot si besoin.
+
+### Prod en forte dérive (`git status` sale, HEAD ancien)
+
+Ne pas `scp` des dizaines de scripts : aligner sur GitHub après sauvegarde.
+
+```bash
+venv/bin/python scripts/backup_prod_db_server.py
+git fetch origin main
+git diff HEAD > backups/prod/prod_drift_before_reconcile_$(date +%Y%m%d_%H%M%S).patch
+git reset --hard origin/main
+# puis réinstall crons + restart comme ci-dessus
+```
+
+Procédure détaillée et vérifs imports WTA/backtest : [[OPS_PROD_DEPANNAGE]] § 0quinquies.
 
 ---
 

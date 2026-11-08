@@ -4,7 +4,16 @@
 
 > Voir aussi : [[SCHEDULE_MISES_A_JOUR]] · [[CRONS_SEMAINE]] · [[OPS_PROD_DEPANNAGE]] · [[PROD_RESILIENCE]] · [[PROD_AUDIT]] · [[ENVIRONNEMENTS]] · [[ML_BUNDLE_ROLLBACK]]
 
-**Dernière mise à jour** : 28 août 2026
+**Dernière mise à jour** : 8 novembre 2026
+
+### Addendum 08/11/2026 — déploiement & ledger
+
+| Sujet | État |
+|-------|------|
+| **Dérive git prod** | Corrigée via `git reset --hard origin/main` + réinstall crons (voir [[OPS_PROD_DEPANNAGE]] § 0quinquies) |
+| **Scripts manquants sur `main`** | `backtest_pack12_global_2026.py`, WTA weekly, etc. — commités ; crons ne doivent plus `ImportError` |
+| **Drift Kelly ledger** | Unifié sur `_enrich_pick_pnl_walk` (`f457367`) ; reconcile 06:40 avec heal/preflight (`05512a5`) |
+| **Autonomie reconcile** | ✅ Si prod suit `main` et bundle ML présent — sinon alerte ops attendue |
 
 ---
 

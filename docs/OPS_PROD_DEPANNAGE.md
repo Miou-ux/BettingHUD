@@ -1,6 +1,6 @@
 # Ops production & dépannage (PROD)
 
-Dernière mise à jour : **28 août 2026**.
+Dernière mise à jour : **8 novembre 2026**.
 
 Guide opérationnel : ce qui est déployé, ce qui ne l’est pas, variables d’environnement, incidents rencontrés en mise en production et procédures de correction.
 
@@ -54,6 +54,71 @@ venv/bin/python -c "from scripts.backtest_pack12_global_2026 import MAX_STAKE_PC
 venv/bin/python scripts/reconcile_portfolio_tracking.py --preflight --heal --refresh
 venv/bin/python scripts/preflight_morning_chain.py   # exit 0 ou warnings slate vide OK
 ```
+
+**Commits GitHub liés** (ordre chronologique, branche `main`) :
+
+| SHA | Sujet |
+|-----|--------|
+| *(série nov.)* | Ajout scripts manquants `backtest_pack12_global_2026.py`, WTA weekly, preflight `meta` vide |
+| `f457367` | Align portfolio ledger Kelly recompute with replay walk (`_enrich_pick_pnl_walk`) |
+| `05512a5` | Verrou publish→ledger, heal gaps, cron reconcile `--preflight --heal` |
+
+**État prod attendu après session 08/11/2026** : `HEAD` = `05512a5`, `reconcile --refresh --fail-on-drift` → **0 écart** top5 + 1d1p.
+
+**Artefacts backup** (sur serveur) :
+
+- `backups/prod/bettinghud_prod_20261108_101330.db`
+- `backups/prod/prod_drift_before_reconcile_20261108_101543.patch`
+
+Détail ledger / Kelly : [[PORTFOLIO_TRACKING]] § 9–11 · synthèse changelog : [[CHANGELOG_RECENT]].
+
+---
+
+## 0sexies. Drift portfolio ledger vs replay Kelly (8 novembre 2026)
+
+**Symptôme** : alerte cron `Portfolio reconcile 06:40` — des **centaines** de lignes avec `profit_eur` ledger ≠ replay ; totaux `total_staked` ledger >> simulation.
+
+**Ce que ce n’est pas** : une panne du bot Telegram utilisateur ni un bug de settlement des matchs (statuts / scores en général cohérents).
+
+### Cause racine
+
+| Couche | Comportement avant correctif |
+|--------|------------------------------|
+| **Publication** | `segment_brier` figé dans `portfolio_daily_bets` au moment du publish |
+| **`recompute_portfolio_ledger`** | Recalcul Kelly à partir de ce Brier SQL |
+| **Réconciliation / replay** | Walk via `resolve_match_brier_segment_key` + bundle ML **actuel** |
+
+Dès que le segment Brier évolue (retrain, mapping, fraîcheur bundle), les **mises Kelly** divergeaient → dérive cumulative sur toute l’historique ledger.
+
+### Diagnostic
+
+```bash
+cd /opt/bettinghud
+venv/bin/python scripts/_diag_portfolio_drift.py --mode top5 --limit 30
+venv/bin/python scripts/reconcile_portfolio_tracking.py --refresh --json
+```
+
+Sur l’incident nov. 2026 : **30/30** mismatches diag montraient `segment_brier` stocké ≠ résolu au walk.
+
+### Correctif (`f457367`)
+
+| Fichier | Changement |
+|---------|------------|
+| `portfolio_tracking_store.py` | `recompute_portfolio_ledger` délègue au même **`_enrich_pick_pnl_walk`** que la réconciliation |
+| `live_replay_engine.py` | `replay_stake_eur` sur le walk ; `summary_from_enriched_walk` pour le summary sim |
+| `reconcile_portfolio_tracking.py` | Compare via ce walk (plus de mélange avec `simulate_sequential_intraday`) |
+| `_diag_portfolio_drift.py` | Outil one-shot : mismatches Brier / stake / PnL |
+
+### Vérification & cron
+
+```bash
+venv/bin/python scripts/reconcile_portfolio_tracking.py \
+  --preflight --heal --refresh --fail-on-drift
+```
+
+Attendu : `mismatch_count=0` par mode (top5, 1d1p). Cron : `deploy/cron/reconcile-portfolio` (06:40 Paris) — voir [[CRONS_SEMAINE]].
+
+**Effet métier** : après `--refresh`, les colonnes Kelly/PnL du ledger reflètent le **bundle ML courant** (bankroll théorique peut bouger vs affichage historique figé avant fix). Documenter toute re-init BR dans `portfolio_tracking_config`.
 
 ---
 
