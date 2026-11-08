@@ -12,7 +12,7 @@ La référence opérationnelle actuelle complète est `ARCHITECTURE_ACTUELLE_ET_
 |---------|--------|
 | **Symptôme** | Rafale d’alertes Telegram ops (reconcile 06h40, WTA hebdo dim., canal public, preflight) |
 | **Cause** | Crons et `portfolio_tracking_store` sur `origin/main` référencent `backtest_pack12_global_2026.py` et `wta_weekly_rank_aliases.py` **jamais commités** ; prod en dérive (`d75f9e5`, working tree modifié) |
-| **Correctifs code** | Ajout au repo : `backtest_pack12_global_2026.py`, `backtest_portfolio_improvements.py`, `wta_weekly_rank_aliases.py`, `probe_wta_name_rank_gaps.py` ; preflight : `meta` vide sans `AttributeError` |
+| **Correctifs code** | Ajout au repo : `backtest_pack12_global_2026.py`, `backtest_portfolio_improvements.py`, `wta_weekly_rank_aliases.py`, `probe_wta_name_rank_gaps.py`, `enrich_backtest_csv_reliability.py` ; preflight : `meta` vide sans `AttributeError` ; ledger : `MAX_STAKE_PCT` via `simulate_top10_proba_2026` (évite chaîne backtest au reconcile) |
 | **Prod** | Backup DB `bettinghud_prod_20261108_101330.db` + patch dérive → `git reset --hard origin/main` + réinstall crons + restart services |
 | **Vérif** | `reconcile_portfolio_tracking.py --refresh`, imports `backtest_pack12`, `wta_weekly_rank_aliases --dry-run` |
 
